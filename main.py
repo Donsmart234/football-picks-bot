@@ -59,6 +59,20 @@ async def run() -> None:
     web_app = web.Application()
     web_app.router.add_get("/health", health)
     web_app.router.add_get("/", health)
+
+    async def diag(_: web.Request) -> web.Response:
+        sb = services.bookmaker if hasattr(services, "bookmaker") else None
+        import httpx as _h
+        from bookmakers import SportyBetNG as _S
+        try:
+            async with _h.AsyncClient(headers=_S.HEADERS, timeout=30) as c:
+                r = await c.get(_S.BASE + "/factsCenter/pcUpcomingEvents",
+                                params={"sportId": "sr:sport:1", "marketId": "1", "pageSize": 1, "pageNum": 1,
+                                        "option": 1, "timeline": 24})
+            return web.Response(text=f"sportybet {r.status_code} {r.text[:200]!r}")
+        except Exception as e:
+            return web.Response(text=f"sportybet error {type(e).__name__}: {e}")
+    web_app.router.add_get("/diag", diag)
     secret = _secret_token()
 
     async def telegram_webhook(request: web.Request) -> web.Response:
