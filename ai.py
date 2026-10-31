@@ -158,6 +158,7 @@ class Analyst:
                 "contents": contents, "tools": TOOLS,
                 "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2048}}
         last = None
+        errs = []
         for model in await self._models():
             cfg = dict(body)
             if "2.5" in model:
@@ -170,12 +171,14 @@ class Analyst:
                 continue
             if r.status_code in (404, 429, 500, 503):
                 last = f"{model}: HTTP {r.status_code}"
-                log.warning("Gemini %s -> %s", model, r.status_code)
+                errs.append(f"{model}: {r.status_code} {r.text[:160]}")
+                log.warning("Gemini %s -> %s %s", model, r.status_code, r.text[:300])
                 continue
             if r.status_code != 200:
                 raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:200]}")
             self.model = model
             return r.json()
+        self.last_errors = errs
         raise RuntimeError(f"Gemini unavailable ({last})")
 
     async def ask(self, chat_id: int, text: str) -> dict:

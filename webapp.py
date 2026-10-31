@@ -354,5 +354,6 @@ class MiniApp:
             except Exception as exc:
                 out["gemini_error"] = str(exc)[:160]
             out["gemini_model"] = ai.model
+            out["gemini_last_errors"] = getattr(ai, "last_errors", None)
         out["api_football_left"] = self.s.stats.remaining_today() if self.s.stats.enabled else None
         return web.json_response(out)
