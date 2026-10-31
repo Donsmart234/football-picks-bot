@@ -2,6 +2,7 @@
 market scanner, booking codes). Short per-chat history in SQLite. Everything it says is an estimate."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -18,8 +19,9 @@ from services import TZ, Services
 
 log = logging.getLogger(__name__)
 API = "https://generativelanguage.googleapis.com/v1beta"
-MODEL_PREFS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash-lite",
-               "gemini-2.0-flash-lite"]
+# 2.5 models are closed to new API keys (404 "no longer available to new users", checked 2026-10-31).
+MODEL_PREFS = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview", "gemini-3.5-flash-lite",
+               "gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash"]
 HISTORY_TURNS = 10
 MAX_ROUNDS = 6
 DISCLAIMER = "Estimates, not guarantees. 18+, bet responsibly."
@@ -160,24 +162,41 @@ class Analyst:
         last = None
         errs = []
         for model in await self._models():
-            cfg = dict(body)
-            if "2.5" in model:
-                cfg["generationConfig"] = {**body["generationConfig"], "thinkingConfig": {"thinkingBudget": 512}}
-            try:
-                r = await self._client.post(f"{API}/models/{model}:generateContent", json=cfg,
-                                            headers={"x-goog-api-key": self.key})
-            except httpx.HTTPError as exc:
-                last = f"network error ({exc.__class__.__name__})"
-                continue
-            if r.status_code in (404, 429, 500, 503):
-                last = f"{model}: HTTP {r.status_code}"
-                errs.append(f"{model}: {r.status_code} {r.text[:160]}")
-                log.warning("Gemini %s -> %s %s", model, r.status_code, r.text[:300])
-                continue
-            if r.status_code != 200:
-                raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:200]}")
-            self.model = model
-            return r.json()
+            variants = []
+            if "gemini-3" in model or "latest" in model:
+                variants.append({**body["generationConfig"], "thinkingConfig": {"thinkingLevel": "low"}})
+            elif "2.5" in model:
+                variants.append({**body["generationConfig"], "thinkingConfig": {"thinkingBudget": 512}})
+            variants.append(body["generationConfig"])
+            for vi, gen in enumerate(variants):
+                r = None
+                for attempt in range(2):
+                    try:
+                        r = await self._client.post(f"{API}/models/{model}:generateContent",
+                                                    json={**body, "generationConfig": gen},
+                                                    headers={"x-goog-api-key": self.key})
+                    except httpx.HTTPError as exc:
+                        last = f"network error ({exc.__class__.__name__})"
+                        r = None
+                        break
+                    if r.status_code == 503 and attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    break
+                if r is None:
+                    break
+                if r.status_code == 400 and vi < len(variants) - 1:
+                    continue   # thinking config not accepted by this model: retry without it
+                if r.status_code in (404, 429, 500, 503):
+                    last = f"{model}: HTTP {r.status_code}"
+                    errs.append(f"{model}: {r.status_code} {r.text[:160]}")
+                    log.warning("Gemini %s -> %s %s", model, r.status_code, r.text[:300])
+                    break
+                if r.status_code != 200:
+                    raise RuntimeError(f"Gemini HTTP {r.status_code}: {r.text[:200]}")
+                self.model = model
+                self.last_errors = errs
+                return r.json()
         self.last_errors = errs
         raise RuntimeError(f"Gemini unavailable ({last})")
 

@@ -33,7 +33,7 @@ every outcome:
   after booking the code is read back (`GET /api/ng/orders/share/<code>`) to confirm every leg loaded. Verified 2026-10-31
   with 1st-half, 2nd-half, team totals, handicaps, corners, bookings, 1UP, specials, player props and minute markets.
 
-**AI analyst** (`ai.py`): Google Gemini (auto-picks `gemini-2.5-flash` if listed; override with `GEMINI_MODEL`) with function
+**AI analyst** (`ai.py`): Google Gemini (auto-picks `gemini-3.5-flash` if listed; override with `GEMINI_MODEL`) with function
 calling over `list_matches`, `predict_match` (probabilities + form/H2H + strongest legs across all markets), `team_stats`,
 `scan_markets` (any tier / target / day / leagues) and `build_booking_code` (from a `slip_id`). Owner's non-command Telegram text
 goes to the AI (`/ai <question>` also works, `/reset` clears memory); the Mini App has an AI tab. Last 10 messages per chat are
@@ -104,7 +104,7 @@ the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setM
 | `DATA_DIR` | no | Where the SQLite file lives (default `./data`) |
 | `SPORTYBET_RELAY_URL` | no | Default `https://ectglmhgqfiipexvczmh.supabase.co/functions/v1/sb`. Empty string = direct SportyBet calls |
 | `GEMINI_API_KEY` | for AI | Google AI Studio key; without it the AI analyst is off |
-| `GEMINI_MODEL` | no | Force a model (default: first of gemini-2.5-flash, gemini-flash-latest, gemini-2.0-flash… that the key lists) |
+| `GEMINI_MODEL` | no | Force a model (default: first of gemini-3.5-flash, gemini-flash-latest, gemini-3-flash-preview… that the key lists; 2.5 models are closed to new keys) |
 | `ADMIN_TOKEN` | no | ≥24-char secret enabling `X-Admin-Token` server diagnostics; unset = disabled |
 | `PUBLIC_BASE_URL` | no | https base for the Mini App; defaults to `WEBHOOK_URL` / `RENDER_EXTERNAL_URL`. Without an https base the app button and menu button are skipped |
 
