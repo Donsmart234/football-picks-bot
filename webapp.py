@@ -22,7 +22,7 @@ import os
 import config
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
 from markets import valid_token
-from scanner import DAYS, TIER_ALIASES, apply_stats
+from scanner import DAYS, TIER_ALIASES, apply_stats, uid_of
 from services import TZ, Services
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,7 @@ def _odds_1x2(e) -> dict:
 def _event_json(e) -> dict:
     local = e.start.astimezone(TZ)
     return {"id": e.event_id, "home": e.home, "away": e.away, "start": e.start.isoformat(),
+            "home_uid": uid_of(e.home_id), "away_uid": uid_of(e.away_id),
             "day": local.strftime("%a %d %b"), "time": local.strftime("%H:%M"), "odds": _odds_1x2(e)}
 
 
@@ -106,7 +107,7 @@ def _prediction_json(p) -> dict:
         b = p.best
         best = {"market_id": b.market_id, "outcome_id": b.outcome_id, "specifier": b.specifier,
                 "label": b.label, "prob": round(b.prob, 4), "odds": b.odds}
-    return {"event": {**_event_json(e), "league": e.league_full}, "markets": markets, "best": best,
+    return {"event": {**_event_json(e), "league": e.league_full, "category": e.category}, "markets": markets, "best": best,
             "reasoning": p.reasoning, "source": p.source,
             "xg": [round(p.xg[0], 2), round(p.xg[1], 2)] if p.xg else None, "disclaimer": DISCLAIMER}
 
@@ -154,6 +155,12 @@ class MiniApp:
         app.router.add_post("/api/ai/reset", self.ai_reset)
         app.router.add_get("/api/match_markets", self.match_markets)
         app.router.add_get("/api/admin/diag", self.diag)
+        app.router.add_get("/api/history", self.history)
+        app.router.add_get("/api/rollover", self.rollover_get)
+        app.router.add_post("/api/history/book", self.history_book)
+        app.router.add_post("/api/rollover", self.rollover_post)
+        app.router.add_post("/api/admin/tick", self.admin_tick)
+        app.router.add_post("/api/admin/test_settle", self.admin_test_settle)
 
     async def index(self, _: web.Request) -> web.StreamResponse:
         return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
@@ -180,7 +187,8 @@ class MiniApp:
         by_t: dict[str, list] = {}
         for e in evs:
             by_t.setdefault(e.tournament_id, []).append(e)
-        leagues = [{"id": tid, "name": name, "count": n, "matches": [_event_json(e) for e in by_t[tid]]}
+        leagues = [{"id": tid, "name": name, "count": n, "category": by_t[tid][0].category,
+                    "matches": [_event_json(e) for e in by_t[tid]]}
                    for tid, name, n in self.s.leagues(evs)]
         body = json.dumps({"range": rng, "generated": datetime.now(timezone.utc).isoformat(),
                            "count": len(evs), "leagues": leagues}, separators=(",", ":")).encode()
@@ -225,7 +233,18 @@ class MiniApp:
 
     async def book(self, request: web.Request) -> web.Response:
         data = await self._json(request)
-        raw = data.get("selections")
+        ai = getattr(self.s, "ai", None)
+        meta: dict = {"tier": "custom", "label": "My slip"}
+        sid = str(data.get("slip_id") or "")
+        if sid and ai and sid in ai.slips:     # a scanner slip: book exactly the server's checked legs
+            sl = ai.slips[sid]["slip"]
+            legs_meta = list(sl["legs"])
+            raw = [{k: l[k] for k in ("event_id", "market_id", "specifier", "outcome_id")} for l in legs_meta]
+            meta = {"tier": sl.get("tier", "custom"), "label": sl.get("label", ""), "total_odds": sl.get("total_odds"),
+                    "est_prob": sl.get("est_prob"), "target": sl.get("target")}
+        else:
+            raw = data.get("selections")
+            legs_meta = data.get("legs") if isinstance(data.get("legs"), list) else None
         if not isinstance(raw, list) or not raw:
             return web.json_response({"error": "Your slip is empty."}, status=400)
         if len(raw) > MAX_SELECTIONS:
@@ -253,9 +272,119 @@ class MiniApp:
                                                "remove it from the slip and try again."}, status=502)
         log.info("Mini app booking code created (%d selections)", len(sels))
         check = await self.s.bookmaker.load_code(code)
+        legs = []
+        for i, s_ in enumerate(sels):
+            m = legs_meta[i] if legs_meta and i < len(legs_meta) and isinstance(legs_meta[i], dict) else {}
+            m = {k: v for k, v in m.items() if isinstance(v, (str, int, float)) or v is None}
+            legs.append({**m, "event_id": s_.event_id, "market_id": s_.market_id, "specifier": s_.specifier,
+                         "outcome_id": s_.outcome_id})
+        saved = None
+        tr = getattr(self.s, "tracker", None)
+        if tr:
+            if meta["tier"] == "custom" and str(data.get("tier") or "") in ("safe", "mid", "risk", "high"):
+                meta["tier"] = str(data["tier"])
+            saved = await tr.record(legs, code, "app", meta["tier"], meta.get("label", ""), meta.get("total_odds"),
+                                    meta.get("est_prob"), target=meta.get("target"))
         return web.json_response({"code": code, "url": self.s.bookmaker.load_code_url,
                                   "bookmaker": self.s.bookmaker.name, "requested": len(sels),
-                                  "loaded": check["legs"] if check else None})
+                                  "loaded": check["legs"] if check else None,
+                                  "history_id": saved["id"] if saved else None})
+
+    # ---- history / rollover ------------------------------------------------
+    async def history(self, request: web.Request) -> web.Response:
+        tr = getattr(self.s, "tracker", None)
+        if not tr:
+            return web.json_response({"error": "history unavailable"}, status=503)
+        try:
+            limit = max(1, min(int(request.query.get("limit", "40")), 100))
+            rows = await tr.history.list("slip", None, limit=limit)
+            ro = await tr.active_rollover() or next(iter(await tr.rollovers(1)), None)
+        except Exception:
+            return web.json_response({"error": "The history store didn't answer just now."}, status=502)
+        return self._gz(web.json_response({"slips": rows, "rollover": ro, "backend": tr.history.backend,
+                                           "last_tick": tr.last_tick}))
+
+    async def history_book(self, request: web.Request) -> web.Response:
+        data = await self._json(request)
+        try:
+            rec = await self.s.tracker.book_record(str(data.get("id") or ""))
+        except (BookingError, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=502)
+        return web.json_response({"code": rec["data"]["code"], "record": rec})
+
+    async def rollover_get(self, request: web.Request) -> web.Response:
+        tr = self.s.tracker
+        try:
+            act = await tr.active_rollover()
+            past = await tr.rollovers(6)
+        except Exception:
+            return web.json_response({"error": "The history store didn't answer just now."}, status=502)
+        day_slip = None
+        if act:
+            last = next((x for x in reversed(act["data"]["log"]) if x.get("slip_id")), None)
+            if last:
+                day_slip = await tr.history.get(last["slip_id"])
+        return web.json_response({"active": act, "past": past, "day_slip": day_slip,
+                                  "targets": [2, 3, 4, 5], "days": [3, 15]})
+
+    async def rollover_post(self, request: web.Request) -> web.Response:
+        data = await self._json(request)
+        tr = self.s.tracker
+        act = str(data.get("action") or "")
+        admin = bool(request["tg_user"].get("admin"))
+        try:
+            if act == "start":
+                stake = data.get("stake")
+                stake = float(stake) if stake not in (None, "") else None
+                if stake is not None and not (0 < stake < 1e9):
+                    return web.json_response({"error": "stake must be a positive number"}, status=400)
+                rec, day = await tr.create_rollover(float(data.get("target") or 0), int(data.get("days") or 0), stake,
+                                                    autobook=bool(data.get("book", True)) or not admin,
+                                                    test=bool(data.get("test")) and admin)
+                return web.json_response({"ok": True, "rollover": await tr.history.get(rec["id"]), "day": day})
+            if act == "stop":
+                return web.json_response({"ok": True, "rollover": await tr.stop_rollover()})
+            if act == "skip":
+                return web.json_response({"ok": True, "rollover": await tr.skip_day()})
+            if act == "mark":
+                return web.json_response({"ok": True, "rollover": await tr.mark_day(str(data.get("result")))})
+            if act == "now":
+                rec = await tr.active_rollover()
+                if not rec:
+                    return web.json_response({"error": "No rollover is running."}, status=400)
+                day = await tr.generate_day(rec, force=True)
+                return web.json_response({"ok": True, "day": day, "rollover": await tr.history.get(rec["id"])})
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            log.warning("rollover %s failed: %s", act, exc, exc_info=True)
+            return web.json_response({"error": "That didn't work just now (scanner or history store). Try again."},
+                                     status=502)
+        return web.json_response({"error": "unknown action"}, status=400)
+
+    async def admin_tick(self, request: web.Request) -> web.Response:
+        if not request["tg_user"].get("admin"):
+            return web.json_response({"error": "forbidden"}, status=403)
+        data = await self._json(request)
+        tr = self.s.tracker
+        busy = await tr.tick(only_id=data.get("id") or None)
+        return web.json_response({"busy": busy, "summary": tr.last_tick_summary, "backend": tr.history.backend,
+                                  "record": await tr.history.get(data["id"]) if data.get("id") else None})
+
+    async def admin_test_settle(self, request: web.Request) -> web.Response:
+        """TEST: save a slip made of already-finished legs (code 'TEST'), settle it now, ping the owner once."""
+        if not request["tg_user"].get("admin"):
+            return web.json_response({"error": "forbidden"}, status=403)
+        data = await self._json(request)
+        legs = data.get("legs") or []
+        if not legs or len(legs) > 10:
+            return web.json_response({"error": "1-10 legs"}, status=400)
+        tr = self.s.tracker
+        rec = await tr.record(legs, "TEST", "test", "test", "Test", test=True)
+        if not rec:
+            return web.json_response({"error": "history save failed", "detail": tr.history.last_error}, status=502)
+        await tr.tick(only_id=rec["id"])
+        return web.json_response({"record": await tr.history.get(rec["id"]), "backend": tr.history.backend})
 
     # ---- scanner / AI / diagnostics ------------------------------------------
     async def scan(self, request: web.Request) -> web.Response:
@@ -355,5 +484,14 @@ class MiniApp:
                 out["gemini_error"] = str(exc)[:160]
             out["gemini_model"] = ai.model
             out["gemini_last_errors"] = getattr(ai, "last_errors", None)
+        tr = getattr(self.s, "tracker", None)
+        if tr:
+            out["history_backend"] = tr.history.backend
+            out["tracker_last_tick"] = tr.last_tick
+            out["tracker_summary"] = tr.last_tick_summary
+            try:
+                out["history_slips"] = len(await tr.history.list("slip", None, limit=100))
+            except Exception as exc:
+                out["history_error"] = exc.__class__.__name__ + " " + tr.history.last_error
         out["api_football_left"] = self.s.stats.remaining_today() if self.s.stats.enabled else None
         return web.json_response(out)

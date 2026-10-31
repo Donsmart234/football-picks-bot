@@ -1,0 +1,310 @@
+"""Leg settlement from real match results.
+
+Source: the free Sportradar feed SportyBet's own widgets use (no key):
+  match_info/<id>            status (Not started / live / Ended / AET / AP / Postponed / Cancelled …), score per period
+                             (periods.p1 = half time, periods.ft = regular time; extra time and penalties excluded,
+                             exactly like bookmaker settlement)
+  match_detailsextended/<id> corners and cards (totals + "1st/2nd half" splits), only fetched for those markets
+Fallback for the score: SportyBet's results list (factsCenter/eventResultList, setScore + gameScore per half).
+
+Auto-settled: every goals market the scanner models (1X2, Double Chance, DNB, Over/Under, team totals, GG/NG, Asian
+x.5 and European handicaps, for full time / 1st half / 2nd half), odd/even goals, correct score, exact goals,
+multigoal ranges, corners (O/U, 1X2, handicap, team totals, odd/even, full time + 1st half) and bookings
+(O/U, 1X2, team totals; yellow = 1, red = 2). Anything else (player props, specials, minute markets, combos)
+becomes 'check' (look on SportyBet) once the match has ended.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+
+import httpx
+
+from markets import FAMILIES, spec_value
+
+log = logging.getLogger(__name__)
+SR = "https://stats.fn.sportradar.com/sportybet/en/Africa:Lagos/gismo"
+HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/126.0 Safari/537.36"),
+           "Referer": "https://www.sportybet.com/", "Origin": "https://www.sportybet.com"}
+ENDED = {100, 110, 120}            # Ended, AET, AP
+VOIDED = {"cancelled", "canceled", "abandoned", "walkover", "coverage canceled", "removed"}
+POSTPONED = {"postponed", "delayed", "interrupted", "suspended", "start delayed"}
+
+
+@dataclass
+class MatchResult:
+    state: str = "unknown"             # notstarted | live | ended | void | postponed | unknown
+    status_name: str = ""
+    ft: tuple[int, int] | None = None  # regular time
+    ht: tuple[int, int] | None = None
+    live: tuple[int, int] | None = None
+    corners: dict = field(default_factory=dict)   # {"ft": (h,a), "h1": (h,a)}
+    cards: dict = field(default_factory=dict)     # {"y": (h,a), "r": (h,a), "yr": (h,a), "y_h1": .., "r_h1": ..}
+
+    @property
+    def score(self) -> str:
+        s = self.ft or self.live
+        return f"{s[0]}-{s[1]}" if s else ""
+
+
+def _pair(d) -> tuple[int, int] | None:
+    try:
+        if d and d.get("home") is not None and d.get("away") is not None:
+            return int(d["home"]), int(d["away"])
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _split(v: str) -> tuple[int, int] | None:
+    try:
+        a, b = str(v).split("/")
+        return int(a), int(b)
+    except (ValueError, TypeError):
+        return None
+
+
+class ResultsClient:
+    def __init__(self, bookmaker=None):
+        self._client = httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(12.0))
+        self.bm = bookmaker
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def _doc(self, path: str) -> dict | None:
+        try:
+            r = await self._client.get(f"{SR}/{path}")
+            r.raise_for_status()
+            return (r.json().get("doc") or [{}])[0].get("data") or None
+        except (httpx.HTTPError, ValueError, IndexError, AttributeError) as exc:
+            log.info("results %s failed: %s", path, exc.__class__.__name__)
+            return None
+
+    async def result(self, event_id: str, need_stats: bool = False) -> MatchResult:
+        mid = event_id.rsplit(":", 1)[-1]
+        res = MatchResult()
+        data = await self._doc(f"match_info/{mid}")
+        m = (data or {}).get("match") or {}
+        st = m.get("status") or {}
+        if st:
+            sid, name = int(st.get("_id", -1)), str(st.get("name", ""))
+            res.status_name = name
+            periods = m.get("periods") or {}
+            low = name.lower()
+            if sid in ENDED:
+                res.state = "ended"
+                res.ft = _pair(periods.get("ft")) or (_pair(m.get("result")) if sid == 100 else None)
+                res.ht = _pair(periods.get("p1"))
+            elif low in VOIDED or sid in (70, 90):
+                res.state = "void"
+            elif low in POSTPONED or sid in (60, 61, 80):
+                res.state = "postponed"
+            elif sid == 0:
+                res.state = "notstarted"
+            else:
+                res.state = "live"
+                res.live = _pair(m.get("result"))
+                res.ht = _pair(periods.get("p1"))
+        if res.state == "ended" and res.ft is None:
+            res.state = "unknown"       # ended but no score yet: try again next tick
+        if res.state == "ended" and need_stats:
+            det = await self._doc(f"match_detailsextended/{mid}")
+            vals = (det or {}).get("values") or {}
+
+            def tot(k):
+                return _pair((vals.get(k) or {}).get("value"))
+
+            def half(k):
+                v = (vals.get(k) or {}).get("value") or {}
+                h, a = _split(v.get("home")), _split(v.get("away"))
+                return (h[0], a[0]) if h and a else None
+            if tot("124"):
+                res.corners = {"ft": tot("124"), "h1": half("1634")}
+            if tot("40") or tot("50"):
+                res.cards = {"y": tot("40") or (0, 0), "r": tot("50") or (0, 0), "yr": tot("45") or (0, 0),
+                             "y_h1": half("1627"), "r_h1": half("1628")}
+        return res
+
+
+# ------------------------------------------------------------------ evaluation
+def _cmp(i: int, j: int, o: str, ids=("1", "2", "3")) -> bool | None:
+    if o == ids[0]:
+        return i > j
+    if o == ids[1]:
+        return i == j
+    if o == ids[2]:
+        return i < j
+    return None
+
+
+def _over_under(total: float, line: float, o: str, over_ids=("12",), under_ids=("13",)) -> str:
+    if total == line:
+        return "void"
+    if o in over_ids:
+        return "won" if total > line else "lost"
+    if o in under_ids:
+        return "won" if total < line else "lost"
+    return "check"
+
+
+def _wl(b: bool | None) -> str:
+    return "check" if b is None else ("won" if b else "lost")
+
+
+def _hcp(i: float, j: float, hcp: float, o: str, home_ids=("1714",), away_ids=("1715",)) -> str:
+    d = i + hcp - j
+    if abs(hcp * 4) % 2 == 1:      # quarter lines: split stakes, leave to the user
+        return "check"
+    if d == 0:
+        return "void"
+    if o in home_ids:
+        return "won" if d > 0 else "lost"
+    if o in away_ids:
+        return "won" if d < 0 else "lost"
+    return "check"
+
+
+def _goals_family(leg: dict, i: int, j: int) -> str:
+    fam = FAMILIES[leg["market_id"]]
+    k, o, spec = fam.kind, leg["outcome_id"], leg.get("specifier") or ""
+    if k == "1x2":
+        return _wl(_cmp(i, j, o))
+    if k == "dc":
+        return _wl({"9": i >= j, "10": i != j, "11": i <= j}.get(o))
+    if k == "dnb":
+        if i == j:
+            return "void"
+        return _wl({"4": i > j, "5": i < j}.get(o))
+    if k in ("total", "team_total"):
+        line = float(spec_value(spec, "total") or "nan")
+        t = i + j if k == "total" else (i if fam.side == "home" else j)
+        return _over_under(t, line, o)
+    if k == "btts":
+        return _wl({"74": i > 0 and j > 0, "76": not (i > 0 and j > 0)}.get(o))
+    if k == "ah":
+        return _hcp(i, j, float(spec_value(spec, "hcp") or "nan"), o)
+    if k == "eh":
+        a, b = (int(x) for x in (spec_value(spec, "hcp") or "0:0").split(":"))
+        return _wl(_cmp(i + a, j + b, o, ("1711", "1712", "1713")))
+    return "check"
+
+
+_RANGE = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d+)|(\+))?\s*$")
+
+
+def _in_range(n: int, desc: str) -> bool | None:
+    m = _RANGE.match(desc or "")
+    if not m:
+        return None
+    lo = int(m.group(1))
+    if m.group(3):
+        return n >= lo
+    hi = int(m.group(2)) if m.group(2) else lo
+    return lo <= n <= hi
+
+
+CORNER = {"166": ("ft", "total"), "177": ("h1", "total"), "162": ("ft", "1x2"), "173": ("h1", "1x2"),
+          "165": ("ft", "hcp"), "176": ("h1", "hcp"), "900300": ("ft", "home"), "900301": ("ft", "away"),
+          "900302": ("h1", "home"), "900303": ("h1", "away"), "172": ("ft", "oddeven"), "183": ("h1", "oddeven")}
+BOOKING = {"139": ("ft", "total"), "152": ("h1", "total"), "136": ("ft", "1x2"), "149": ("h1", "1x2"),
+           "900304": ("ft", "home"), "900305": ("ft", "away"), "900306": ("h1", "home"), "900307": ("h1", "away"),
+           "900312": ("ft", "hcp")}
+
+
+def needs_stats(leg: dict) -> bool:
+    return leg.get("market_id") in CORNER or leg.get("market_id") in BOOKING
+
+
+def _count_market(kind: str, h: int, a: int, leg: dict) -> str:
+    o, spec = leg["outcome_id"], leg.get("specifier") or ""
+    if kind == "total":
+        return _over_under(h + a, float(spec_value(spec, "total") or "nan"), o)
+    if kind in ("home", "away"):
+        return _over_under(h if kind == "home" else a, float(spec_value(spec, "total") or "nan"), o,
+                           ("30", "12"), ("31", "13"))
+    if kind == "1x2":
+        return _wl(_cmp(h, a, o))
+    if kind == "hcp":
+        return _hcp(h, a, float(spec_value(spec, "hcp") or "nan"), o, ("1714", "1"), ("1715", "3"))
+    if kind == "oddeven":
+        return _wl({"70": (h + a) % 2 == 1, "72": (h + a) % 2 == 0}.get(o))
+    return "check"
+
+
+def settle_leg(leg: dict, r: MatchResult) -> tuple[str, str]:
+    """Returns (status, note). status: won | lost | void | check | pending | live."""
+    if r.state == "void":
+        return "void", f"match {r.status_name.lower() or 'cancelled'}"
+    if r.state in ("notstarted", "unknown", "postponed"):
+        return ("pending", r.status_name.lower()) if r.state != "postponed" else ("pending", "postponed")
+    if r.state == "live":
+        return "live", r.status_name
+    ft, ht = r.ft, r.ht
+    mid = leg.get("market_id", "")
+    try:
+        if mid in FAMILIES:
+            fam = FAMILIES[mid]
+            if fam.period == "ft":
+                return _goals_family(leg, *ft), ""
+            if ht is None:
+                return "check", "no half-time score in the feed"
+            if fam.period == "h1":
+                return _goals_family(leg, *ht), f"HT {ht[0]}-{ht[1]}"
+            return _goals_family(leg, ft[0] - ht[0], ft[1] - ht[1]), f"2H {ft[0] - ht[0]}-{ft[1] - ht[1]}"
+        market = (leg.get("market") or "").lower()
+        pick = leg.get("pick") or ""
+        half = "1st half" in market or "2nd half" in market
+        if mid == "26" or (market.startswith("odd/even") and "corner" not in market and not half):
+            return _wl({"70": sum(ft) % 2 == 1, "72": sum(ft) % 2 == 0}.get(leg["outcome_id"])), ""
+        if market == "correct score" and re.fullmatch(r"\d+:\d+", pick.strip()):
+            a, b = (int(x) for x in pick.split(":"))
+            return _wl((a, b) == tuple(ft)), ""
+        if market in ("exact goals", "multigoals", "goal range", "total goals range") and not half:
+            return _wl(_in_range(sum(ft), pick)), ""
+        if mid in CORNER:
+            per, kind = CORNER[mid]
+            c = r.corners.get(per)
+            if not c:
+                return "check", "no corner data in the feed"
+            return _count_market(kind, c[0], c[1], leg), f"corners {c[0]}-{c[1]}"
+        if mid in BOOKING:
+            per, kind = BOOKING[mid]
+            cd = r.cards
+            if not cd:
+                return "check", "no card data in the feed"
+            if per == "ft":
+                y, rd, yr = cd["y"], cd["r"], cd.get("yr") or (0, 0)
+            else:
+                y, rd, yr = cd.get("y_h1"), cd.get("r_h1"), (0, 0)
+                if y is None or rd is None:
+                    return "check", "no 1st-half card data"
+            if sum(yr):
+                return "check", "second-yellow red card: check SportyBet's settlement"
+            h, a = y[0] + 2 * rd[0], y[1] + 2 * rd[1]
+            return _count_market(kind, h, a, leg), f"bookings {h}-{a}"
+    except (TypeError, ValueError) as exc:
+        log.info("settle %s failed: %s", mid, exc)
+    return "check", "market not auto-settled: check SportyBet"
+
+
+def slip_status(legs: list[dict]) -> str:
+    """pending | won | lost | check (all decided legs won/void but some need a manual look)."""
+    st = [l.get("status") for l in legs]
+    if "lost" in st:
+        return "lost"
+    if any(s in ("pending", "live", None, "") for s in st):
+        return "pending"
+    if "check" in st:
+        return "check"
+    return "won" if any(s == "won" for s in st) else "void"
+
+
+def effective_odds(legs: list[dict]) -> float:
+    t = 1.0
+    for l in legs:
+        if l.get("status") != "void":
+            t *= l.get("odds") or 1.0
+    return round(t, 2)

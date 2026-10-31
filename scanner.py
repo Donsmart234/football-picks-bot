@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 TZ = ZoneInfo(config.LOCAL_TZ)
 
 TIERS: dict[str, dict] = {
-    "safe": {"label": "Safe", "min_p": 0.85, "odds": (1.05, 1.35), "target": 5.0, "max_legs": 25},
+    "safe": {"label": "Safe", "min_p": 0.80, "odds": (1.05, 1.35), "target": 5.0, "max_legs": 25},
     "mid": {"label": "Mid-safe", "min_p": 0.70, "odds": (1.30, 1.70), "target": 10.0, "max_legs": 14},
     "risk": {"label": "Risk", "min_p": 0.55, "odds": (1.60, 2.30), "target": 20.0, "max_legs": 10},
     "high": {"label": "High risk", "min_p": 0.30, "odds": (2.00, 8.00), "target": 50.0, "max_legs": 10},
@@ -42,6 +42,8 @@ TIER_ALIASES = {"safe": "safe", "low": "safe", "mid": "mid", "mid-safe": "mid", 
                 "grand-audit": "audit", "all": "audit"}
 DAYS = {"today", "tomorrow", "24h", "48h"}
 MAX_EVENTS = 80
+ROLLOVER_MIN_P = 0.80
+ROLLOVER_MIN_ODDS = 1.12   # 1.03-1.10 legs add bookmaker margin and leg count for almost no odds
 STATS_EVENTS = 40
 POOL_TTL = 600
 
@@ -69,6 +71,34 @@ def _prio(e: Event) -> tuple:
             return (0, i, -e.market_count)
     penalty = 2 if ("friendl" in lg or "women" in lg or "u19" in lg or "u21" in lg or "u23" in lg) else 1
     return (penalty, 0, -e.market_count)
+
+
+def uid_of(competitor_id: str) -> str:
+    s = str(competitor_id or "").rsplit(":", 1)[-1]
+    return s if s.isdigit() and len(s) <= 9 else ""
+
+
+# Rollover allowlist: well-known top-flight leagues and cups only (category, tournament name prefix).
+ROLLOVER_LEAGUES = [
+    ("England", "Premier League"), ("England", "Championship"), ("England", "FA Cup"), ("England", "EFL Cup"),
+    ("England", "League Cup"), ("Spain", "LaLiga"), ("Spain", "Copa del Rey"), ("Italy", "Serie A"),
+    ("Italy", "Coppa Italia"), ("Germany", "Bundesliga"), ("Germany", "DFB Pokal"), ("France", "Ligue 1"),
+    ("France", "Coupe de France"), ("International Clubs", "UEFA Champions League"),
+    ("International Clubs", "UEFA Europa League"), ("International Clubs", "UEFA Conference League"),
+    ("Netherlands", "Eredivisie"), ("Portugal", "Liga Portugal"), ("Portugal", "Primeira Liga"),
+    ("Scotland", "Premiership"), ("Turkiye", "Super Lig"), ("Belgium", "Pro League"), ("USA", "MLS"),
+    ("Brazil", "Brasileiro Serie A"), ("Argentina", "Liga Profesional"),
+]
+
+
+def rollover_allowed(e: Event) -> bool:
+    cat, lg = (e.category or "").lower(), (e.league or "").lower()
+    if any(x in f"{lg} {e.home} {e.away}".lower() for x in ("women", "u19", "u20", "u21", "u23", " ii", "youth",
+                                                            "srl", "simulated")):
+        return False
+    if lg.startswith("liga portugal 2") or "2. bundesliga" in lg or lg.startswith("laliga 2"):
+        return False
+    return any(cat == c.lower() and lg.startswith(l.lower()) for c, l in ROLLOVER_LEAGUES)
 
 
 def _excluded(e: Event) -> bool:
@@ -102,6 +132,9 @@ class Leg:
     side: str | None = None
     level: str = "model"            # model (Poisson+stats) | market (de-margined full book) | thin (single-price)
     group: str = ""
+    home_uid: str = ""              # Sportradar competitor uid (team crest: img.sportradar.com/ls/crest/medium/<uid>.png)
+    away_uid: str = ""
+    category: str = ""              # country / "International Clubs"
 
     @property
     def ev(self) -> float:
@@ -291,7 +324,8 @@ class Scanner:
                     kickoff=e.start.isoformat(), kickoff_local=local.strftime("%a %d %b %H:%M"),
                     market_id=m["id"], specifier=m["specifier"], outcome_id=o["id"], market=mk_name,
                     pick=pick, odds=o["odds"], p_market=pm, p_feed=pf, p_fit=pfit, base=base, est=base - 0.02,
-                    side=side_of(fam, o["id"]) if fam else None, level=level, group=m.get("group", "")))
+                    side=side_of(fam, o["id"]) if fam else None, level=level, group=m.get("group", ""),
+                    home_uid=uid_of(e.home_id), away_uid=uid_of(e.away_id), category=e.category))
         if len(legs) > keep:
             by_conf = sorted(legs, key=lambda l: -l.base)
             strong = by_conf[:keep]
@@ -385,6 +419,8 @@ class Scanner:
             legs.append(leg)
             total *= leg.odds
             remaining.remove(leg)
+        legs = [l for l in legs if l.est >= t["min_p"]]     # hard guard: never a leg below the tier's bar
+        total = math.prod(l.odds for l in legs) if legs else 1.0
         legs.sort(key=lambda l: l.kickoff)
         prob = math.prod(l.est for l in legs) if legs else 0.0
         reached = total >= target * 0.98
@@ -435,6 +471,77 @@ class Scanner:
         out["disclaimer"] = ("Estimates from prices + team stats, not guarantees. 'Safe' means lower-risk, never "
                              "certain. Combined probability assumes independent legs. 18+.")
         return out
+
+    # ---- rollover ---------------------------------------------------------
+    async def ensure_stats(self, pool: Pool, events: list[Event]) -> None:
+        todo = [e for e in events if e.event_id in pool.legs and e.event_id not in pool.forms]
+        if not todo:
+            return
+        forms = await asyncio.gather(*(self._form(e) for e in todo), return_exceptions=True)
+        for e, f in zip(todo, forms):
+            pool.forms[e.event_id] = f if isinstance(f, MatchForm) else None
+            for leg in pool.legs.get(e.event_id) or []:
+                apply_stats(leg, pool.forms[e.event_id])
+
+    async def rollover_slip(self, target: float, min_p: float = ROLLOVER_MIN_P, day: str = "today") -> dict:
+        """Fewest, strongest stats-confirmed legs from allowlisted leagues whose total odds land on the target
+        (between 0.97x and 1.20x of it). Every leg est >= min_p. Maximises the combined estimate."""
+        pool = await self.pool(day)
+        allowed = [e for e in pool.events if rollover_allowed(e)]
+        await self.ensure_stats(pool, allowed)
+        ids = {e.event_id for e in allowed}
+        lo_t, hi_t = target * 0.97, target * 1.20
+        per_match: list[Leg] = []
+        for eid in ids:
+            legs = [l for l in pool.legs.get(eid) or [] if l.verdict == "confirmed" and l.est >= min_p
+                    and ROLLOVER_MIN_ODDS <= l.odds <= hi_t]
+            # keep the strongest leg in each odds band so the search can mix short and longer prices
+            bands: dict[int, Leg] = {}
+            for l in legs:
+                b = 0 if l.odds < 1.2 else 1 if l.odds < 1.35 else 2 if l.odds < 1.55 else 3 if l.odds < 1.8 else 4
+                if b not in bands or l.est > bands[b].est:
+                    bands[b] = l
+            per_match += bands.values()
+        # shortlist by odds gained per unit of probability given up, then search strongest-first (better pruning)
+        per_match.sort(key=lambda l: -(math.log(l.odds) / -math.log(min(l.est, 0.995))))
+        cands = sorted(per_match[:80], key=lambda l: -l.est)
+        best: dict = {"p": 0.0, "legs": []}
+        nodes = [0]
+
+        def dfs(start: int, chosen: list[Leg], used: set, odds: float, p: float) -> None:
+            nodes[0] += 1
+            if nodes[0] > 300000 or p <= best["p"]:
+                return
+            if odds >= lo_t:
+                if odds <= hi_t and (p > best["p"] + 1e-9 or (abs(p - best["p"]) < 1e-9 and len(chosen) < len(best["legs"]))):
+                    best.update(p=p, legs=list(chosen))
+                return
+            if len(chosen) >= 12:
+                return
+            for k in range(start, len(cands)):
+                l = cands[k]
+                if l.event_id in used or odds * l.odds > hi_t:
+                    continue
+                chosen.append(l)
+                used.add(l.event_id)
+                dfs(k + 1, chosen, used, odds * l.odds, p * l.est)
+                chosen.pop()
+                used.discard(l.event_id)
+
+        dfs(0, [], set(), 1.0, 1.0)
+        legs = sorted(best["legs"], key=lambda l: l.kickoff)
+        total = math.prod(l.odds for l in legs) if legs else 0.0
+        note = "" if legs else (
+            f"No combination of stats-confirmed legs (each est. ≥{min_p:.0%}) from the top leagues lands on "
+            f"{target:g} odds today ({len(cands)} strong legs in {len(allowed)} top-league matches). "
+            "Suggest skipping today rather than forcing weaker picks.")
+        return {"tier": "rollover", "label": "Rollover", "target": target, "total_odds": round(total, 2),
+                "est_prob": round(best["p"], 4) if legs else 0.0, "reached": bool(legs),
+                "legs": [l.to_json() for l in legs], "candidates": len(cands), "note": note,
+                "rules": {"min_p": min_p, "leagues": "allowlist"}, "day": pool.day, "scanned": pool.scanned,
+                "with_stats": sum(1 for f in pool.forms.values() if f and f.ok), "top_league_matches": len(allowed),
+                "generated": datetime.fromtimestamp(pool.created, timezone.utc).isoformat(),
+                "disclaimer": "Estimates from prices + team stats, not guarantees. 18+."}
 
     def event_report(self, pool: Pool | None, legs: list[Leg], top: int = 12) -> list[dict]:
         ok = sorted([l for l in legs if l.odds >= 1.15], key=lambda l: -l.conf)

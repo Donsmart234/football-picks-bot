@@ -8,7 +8,7 @@
   <title>Fra · Football analytics</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="icon" href="/app/logo.png">
-  <link rel="stylesheet" href="/app/app.css?v=3">
+  <link rel="stylesheet" href="/app/app.css?v=4">
 </head>
 <body>
   <header class="topbar">
@@ -19,11 +19,13 @@
   <nav class="tabbar" role="tablist">
     <button class="tabbtn active" data-tab="home" role="tab"><svg viewBox="0 0 24 24"><path d="M3 17l5-5 4 4 8-8M15 8h5v5"/></svg><span>Scanner</span></button>
     <button class="tabbtn" data-tab="matches" role="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7l4 3-1.5 4.5h-5L8 10z"/></svg><span>Matches</span></button>
+    <button class="tabbtn" data-tab="rollover" role="tab"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 9M20 4v5h-5M20 12a8 8 0 0 1-13.7 5.6L4 15M4 20v-5h5"/></svg><span>Rollover</span></button>
+    <button class="tabbtn" data-tab="history" role="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>History</span></button>
     <button class="tabbtn" data-tab="ai" role="tab"><svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg><span>AI</span></button>
     <button class="tabbtn" data-tab="slip" role="tab"><svg viewBox="0 0 24 24"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg><span>Slip</span><em id="slipBadge" class="hidden">0</em></button>
   </nav>
   <div id="sheet" class="sheet hidden" aria-hidden="true"><div class="sheet-bg" data-act="closesheet"></div><div class="sheet-card" id="sheetCard"></div></div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/app/app.js?v=3"></script>
+  <script src="/app/app.js?v=4"></script>
 </body>
 </html>

@@ -18,6 +18,7 @@ import config
 import handlers
 from ai import Analyst
 from services import Services
+from tracker import Tracker
 from webapp import MiniApp
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
@@ -46,6 +47,7 @@ def build_app(webhook: bool) -> Application:
     app = builder.build()
     services = Services()
     services.ai = Analyst(services)
+    services.tracker = Tracker(services)
     app.bot_data["services"] = services
     handlers.register(app)
     return app
@@ -115,6 +117,9 @@ async def run() -> None:
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         log.info("Polling mode")
 
+    services.tracker.start(app.bot)   # result tracker + rollover morning job (needs the bot to ping the owner)
+    log.info("History store: %s", services.tracker.history.backend)
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -131,6 +136,7 @@ async def run() -> None:
     if runner:
         await runner.cleanup()
     await services.ai.aclose()
+    await services.tracker.aclose()
     await services.aclose()
     await app.shutdown()
 

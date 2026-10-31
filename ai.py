@@ -33,11 +33,15 @@ Rules:
 - Use tools for anything about real fixtures, odds, probabilities, team form/H2H or booking codes. Never invent
   matches, odds, stats or codes. If a tool fails or returns nothing, say so plainly.
 - "Analyze games and give me a safe 5 odds code" => call scan_markets(tier="safe", target_odds=5, day=...), then
-  build_booking_code(slip_id=...) and give the code. Tiers: safe (legs est. >=85%, odds ~1.05-1.35), mid
+  build_booking_code(slip_id=...) and give the code. Tiers: safe (EVERY leg est. >=80% after the stats check,
+  odds ~1.05-1.35; 80% is an estimate, not a promised accuracy), mid
   (>=70%, 1.30-1.70), risk (>=55%, 1.60-2.30), high (value legs 2.0+), audit (full report).
 - "Who wins X vs Y?" => predict_match. Mention the key numbers (1X2 %, best pick) and the form/H2H facts.
 - Each leg already passed a team-stats check (form, home/away record, goals, H2H); quote its short "why".
-- If a slip falls short of the target, say so honestly instead of padding it.
+- If a slip falls short of the target, say so honestly instead of padding it. Never add a weaker leg to a Safe slip
+  by hand: book Safe slips only via their slip_id (or pass tier="safe" so every leg is re-checked >=80%).
+- Booked codes are saved to the history and tracked; the owner gets a ping when a slip lands or loses.
+  recent_history shows past slips and results; rollover plans are managed with /rollover or the Rollover tab.
 - Be brief: Telegram-friendly, short lines, light **bold**, no tables, no headings. Show a slip as one line per leg:
   kickoff · match · pick @odds (est %). Then total odds, est. hit chance, booking code.
 - Never call anything a sure win, lock or guaranteed. "Safe" means lower-risk. Combined chance assumes the legs are
@@ -72,12 +76,18 @@ TOOLS = [{"functionDeclarations": [
          "leagues": {"type": "array", "items": {"type": "string"}, "description": "optional league filters"}},
          "required": ["tier"]}},
     {"name": "build_booking_code",
-     "description": "Create a SportyBet booking code from a scanned slip (slip_id) or explicit selections.",
+     "description": ("Create a SportyBet booking code from a scanned slip (slip_id) or explicit selections. The code "
+                     "is saved to the history and its result tracked."),
      "parameters": {"type": "object", "properties": {
          "slip_id": {"type": "string"},
+         "tier": {"type": "string", "enum": ["safe", "mid", "risk", "high", "custom"],
+                  "description": "for explicit selections: 'safe' re-checks every leg is est. >=80% and refuses weaker legs"},
          "selections": {"type": "array", "items": {"type": "object", "properties": {
              "event_id": {"type": "string"}, "market_id": {"type": "string"}, "specifier": {"type": "string"},
              "outcome_id": {"type": "string"}}}}}}},
+    {"name": "recent_history",
+     "description": "Recently booked codes with their tier, total odds and result (pending / won / lost per leg).",
+     "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
 ]}]
 
 
@@ -249,6 +259,31 @@ class Analyst:
             return ranked[0][1]
         return None
 
+    async def _price_selections(self, sels: list[dict], tier: str) -> tuple[list[dict], list[str]]:
+        """Attach market / pick / odds / est to explicit selections; for tier 'safe' list every leg below 80%."""
+        out, problems = [], []
+        for x in sels:
+            e = await self.s.find_event(x["event_id"])
+            leg = None
+            if e:
+                mk = await self.s.bookmaker.event_markets(e.event_id)
+                if mk:
+                    form = await self.s.match_form(e)
+                    for l in self.s.scanner.event_legs(e, mk, keep=100000):
+                        if (l.market_id, l.specifier, l.outcome_id) == (x["market_id"], x["specifier"], x["outcome_id"]):
+                            apply_stats(l, form)
+                            leg = l.to_json()
+                            break
+            if leg is None:
+                if tier == "safe":
+                    problems.append(f"{x['event_id']} market {x['market_id']}: can't price it")
+                out.append(x)
+                continue
+            if tier == "safe" and (leg["est"] < 0.80 or leg["verdict"] == "dropped"):
+                problems.append(f"{leg['match']} {leg['pick']} est {leg['est']:.0%}")
+            out.append(leg)
+        return out, problems
+
     async def run_tool(self, name: str, a: dict, turn: dict) -> dict:
         if name == "list_matches":
             day = a.get("day") or "today"
@@ -326,26 +361,50 @@ class Analyst:
                     "note": res["note"], "matches_scanned": res["scanned"], "with_stats": res["with_stats"],
                     "legs": [compact_leg(l) for l in res["legs"]]}
         if name == "build_booking_code":
-            sels = []
+            sels, legs, meta = [], [], {}
             if a.get("slip_id") and a["slip_id"] in self.slips:
                 slip = self.slips[a["slip_id"]]["slip"]
-                sels = [Selection(l["event_id"], l["market_id"], l["specifier"], l["outcome_id"])
-                        for l in slip["legs"]]
+                legs = list(slip["legs"])
+                meta = {"tier": slip.get("tier", "custom"), "label": slip.get("label", ""),
+                        "total_odds": slip.get("total_odds"), "est_prob": slip.get("est_prob"),
+                        "target": slip.get("target")}
             elif a.get("selections"):
                 for x in a["selections"][:30]:
                     vals = [str(x.get(k) or "") for k in ("event_id", "market_id", "specifier", "outcome_id")]
                     if all(valid_token(v) for v in vals) and vals[0] and vals[1] and vals[3]:
-                        sels.append(Selection(*vals))
-            if not sels:
+                        legs.append(dict(zip(("event_id", "market_id", "specifier", "outcome_id"), vals)))
+                tier = str(a.get("tier") or "custom").lower()
+                legs, problems = await self._price_selections(legs, tier)
+                if problems:
+                    return {"error": "Refused: " + "; ".join(problems[:6]) +
+                            ". Safe legs must each be est. >=80% after the stats check; I won't add weaker legs."}
+                meta = {"tier": tier, "label": tier.title()}
+            if not legs:
                 return {"error": "No selections: run scan_markets first and pass its slip_id."}
+            sels = [Selection(l["event_id"], l["market_id"], l.get("specifier") or "", l["outcome_id"]) for l in legs]
             try:
                 code = await self.s.bookmaker.book(sels)
             except BookingError as exc:
                 return {"error": str(exc)}
             turn["code"] = code
             check = await self.s.bookmaker.load_code(code)
+            tr = getattr(self.s, "tracker", None)
+            saved = None
+            if tr:
+                saved = await tr.record(legs, code, "ai", meta.get("tier", "custom"), meta.get("label", ""),
+                                        meta.get("total_odds"), meta.get("est_prob"), target=meta.get("target"))
             return {"code": code, "selections": len(sels), "verified_on_load": check,
-                    "load_at": self.s.bookmaker.load_code_url}
+                    "load_at": self.s.bookmaker.load_code_url, "saved_to_history": bool(saved)}
+        if name == "recent_history":
+            tr = getattr(self.s, "tracker", None)
+            if not tr:
+                return {"error": "history unavailable"}
+            rows = await tr.history.list("slip", None, limit=max(1, min(int(a.get("limit") or 10), 20)))
+            return {"slips": [{"code": r["data"].get("code"), "created": r["created_at"], "status": r["status"],
+                               "tier": r["data"].get("tier"), "total_odds": r["data"].get("total_odds"),
+                               "legs": [f"{l.get('home')} v {l.get('away')}: {l.get('pick')} @{l.get('odds')} "
+                                        f"-> {l.get('status')} {l.get('score', '')}" for l in r["data"].get("legs", [])]}
+                              for r in rows]}
         return {"error": f"unknown tool {name}"}
 
 
