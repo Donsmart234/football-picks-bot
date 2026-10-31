@@ -161,6 +161,7 @@ class MiniApp:
         app.router.add_post("/api/rollover", self.rollover_post)
         app.router.add_post("/api/admin/tick", self.admin_tick)
         app.router.add_post("/api/admin/test_settle", self.admin_test_settle)
+        app.router.add_post("/api/admin/delete_test", self.admin_delete_test)
 
     async def index(self, _: web.Request) -> web.StreamResponse:
         return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
@@ -340,7 +341,8 @@ class MiniApp:
                     return web.json_response({"error": "stake must be a positive number"}, status=400)
                 rec, day = await tr.create_rollover(float(data.get("target") or 0), int(data.get("days") or 0), stake,
                                                     autobook=bool(data.get("book", True)) or not admin,
-                                                    test=bool(data.get("test")) and admin)
+                                                    test=bool(data.get("test")) and admin,
+                                                    push=bool(data.get("push", True)) or not admin)
                 return web.json_response({"ok": True, "rollover": await tr.history.get(rec["id"]), "day": day})
             if act == "stop":
                 return web.json_response({"ok": True, "rollover": await tr.stop_rollover()})
@@ -370,6 +372,17 @@ class MiniApp:
         busy = await tr.tick(only_id=data.get("id") or None)
         return web.json_response({"busy": busy, "summary": tr.last_tick_summary, "backend": tr.history.backend,
                                   "record": await tr.history.get(data["id"]) if data.get("id") else None})
+
+    async def admin_delete_test(self, request: web.Request) -> web.Response:
+        """Remove a TEST record (data.test = true) after verification. Real records can't be deleted here."""
+        if not request["tg_user"].get("admin"):
+            return web.json_response({"error": "forbidden"}, status=403)
+        data = await self._json(request)
+        rec = await self.s.tracker.history.get(str(data.get("id") or ""))
+        if not rec or not rec["data"].get("test"):
+            return web.json_response({"error": "not a test record"}, status=400)
+        await self.s.tracker.history.delete(rec["id"])
+        return web.json_response({"ok": True})
 
     async def admin_test_settle(self, request: web.Request) -> web.Response:
         """TEST: save a slip made of already-finished legs (code 'TEST'), settle it now, ping the owner once."""

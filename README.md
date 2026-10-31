@@ -26,7 +26,7 @@ every outcome:
   Corners/bookings/props/specials stay **market only** (stats can't price them) and say so. Every leg carries a short *why*
   (e.g. "Chelsea W2 D1 L2 last 5, home W4 D1 L1; Man Utd W0 D2 L3 last 5, away W0 D3 L2; H2H 2-1-3, avg 2.8 goals").
 - **Tiers** (one pick per match, greedy by "odds gained per unit of hit probability lost", which maximises the slip's combined
-  chance): Safe ≥85% at 1.05–1.35 (default target 5) · Mid-safe ≥70% at 1.30–1.70 (10) · Risk ≥55% at 1.60–2.30 (20) ·
+  chance): Safe — **every leg est. ≥80% after the stats check** (an estimate, not a promised accuracy) at 1.05–1.35 (default target 5) · Mid-safe ≥70% at 1.30–1.70 (10) · Risk ≥55% at 1.60–2.30 (20) ·
   High risk value legs (est × odds ≥ 0.97, confirmed) at 2.0–8.0 (50) · **Grand audit** = best leg per match, top value bets and
   one slip per tier. If not enough legs qualify the slip says so and stops short instead of padding.
 - Pools are cached 10 min (≈20–30 s cold, instant warm). Booking uses the feed's own `marketId` / `specifier` / `outcomeId`;
@@ -44,12 +44,52 @@ kept in SQLite. Without `GEMINI_API_KEY` free text falls back to the match finde
 `sr:competitor:<uid>` ids are its team uids; cached 6 h in SQLite). API-Football is now only a fallback for single-match predictions
 when the free feed has nothing and ≥20 requests are left today, so the 100/day quota is never spent on scanning.
 
+## What's new (2026-10-31, afternoon): history, result pings, rollover, crests
+**Safe = every leg ≥80%.** The scanner only admits Safe legs whose estimate *after* the stats adjustment is ≥80% (plus a hard
+filter before the slip is returned). If those legs can't reach the target odds the slip stops short and says so. The AI's
+`build_booking_code` books Safe slips by `slip_id` (the server's checked legs); explicit selections with `tier="safe"` are re-priced
+and refused if any leg is under 80%. The Mini App books scanner slips by `slip_id` too, and flags "Below Safe bar" legs in the
+Slip tab. 80% is an estimate, never a guarantee.
+
+**History + result tracking** (`history.py`, `settle.py`, `tracker.py`). Every booked code (chat `/scan` → Book, `/book`, AI
+`build_booking_code`, Mini App Book, rollover days) is saved with code, time, tier, total odds and each leg (event id, teams +
+Sportradar crest ids, league, kickoff, market, pick, odds, est.). Storage: one table `public.fra_records` (id, kind
+`slip|rollover`, status, created_at, updated_at, data jsonb; RLS on, no policies) in the Supabase project `ectglmhgqfiipexvczmh`,
+written through PostgREST with the service key (`SUPABASE_URL` + `SUPABASE_SERVICE_KEY` on Render); SQLite fallback when unset.
+A background loop (every 5 min while anything is pending, 15 min otherwise) settles legs from the free Sportradar feed
+(`match_info/<id>`: status + regular-time and half-time score; `match_detailsextended/<id>`: corners/cards). Auto-settled: all
+modelled goals markets (1X2, DC, DNB, O/U, team totals, GG/NG, Asian x.5/European handicaps, FT/1H/2H), odd/even, correct score,
+exact goals, multigoals, corners (O/U, 1X2, handicap, team totals, odd/even) and bookings (O/U, 1X2, team totals; yellow 1, red 2).
+Player props, specials, minute markets and combos become **Check** once the match ends. Cancelled/abandoned → void (odds drop out).
+**Pings (one per slip, never repeated):** 💥 "BOOM" with code, total odds and every leg's score when the whole slip lands; a short ❌
+as soon as a leg loses; ❔ when nothing lost but a leg needs a manual look. Per-leg wins are shown in History, not pinged.
+
+**Rollover** (`/rollover`, Mini App Rollover tab). Pick a daily target (2, 3, 4 or 5) and 3–15 days, optional starting stake. Each
+morning from 09:00 Africa/Lagos (until 20:00) the day's slip is built from an allowlist of top competitions (`ROLLOVER_LEAGUES` in
+`scanner.py`: EPL, Championship, FA/EFL Cup, LaLiga, Copa del Rey, Serie A, Coppa Italia, Bundesliga, DFB Pokal, Ligue 1, Coupe de
+France, UCL/UEL/UECL, Eredivisie, Liga Portugal, Scottish Premiership, Süper Lig, Belgian Pro League, MLS, Brasileirão, Argentina
+Liga Profesional; women/youth/reserve sides excluded) using only **stats-confirmed** legs with est. ≥80% and odds ≥1.12; a
+search picks the combination with the highest combined estimate whose total lands between 0.97× and 1.20× the target (fewest legs
+on ties). It's booked, saved and pushed to the owner. A win moves to the next day (stake compounds), a loss busts the plan; when
+nothing qualifies the bot says so and suggests skipping the day (the plan stays on the same day). `/rollover now|skip|stop`,
+`/rollover won|lost` settles a day the tracker couldn't. Because every leg must be ≥80%, prices are short (≈1.12–1.25), so higher targets need more legs (31 Oct test: 4× = 10 legs, 5× = 12 legs, est. 22–28%).
+
+**Crests + tidy layout.** Team crests from `https://img.sportradar.com/ls/crest/medium/<uid>.png` (uid = SportyBet's
+`sr:competitor:<uid>`; missing crests return a 1×1 gif → coloured initials badge), country flags from `https://flagcdn.com/w40/<iso>.png`
+(emoji in Telegram). Leg cards: flag · league · kickoff, both teams with crests, odds ticker, market + pick, probability bar; lists
+grouped by kickoff day; History cards with per-leg status bars and scores. Telegram messages use one consistent block per leg.
+
+**Keep-alive.** Supabase `pg_cron` job `fra-keepalive` (`*/10 * * * *`) calls `net.http_get('https://football-picks-bot.onrender.com/health')`
+via `pg_net`, so the free instance doesn't sleep and the tracker / 09:00 rollover job keep running. Note: staying awake 24/7 uses
+~744 of Render's 750 free instance-hours a month, so keep this the only free service on the account.
+
 ## Mini App (Telegram Web App)
 Dark fintech UI (`webapp_static/`): **Scanner** (tier chips Safe / Mid-safe / Risk / High risk / Grand audit, day toggle, target
 odds with quick picks, Generate → portfolio card with total odds, est. hit chance, risk meter, legs as price tickers with
 probability bars, stats verdict chips and the *why*; one-tap **Book on SportyBet** → bottom sheet with the code, Copy and Open
 SportyBet) · **Matches** (leagues → matches → prediction, team-stats card with form pills / home-away / goals / H2H, strongest legs
-across all markets) · **AI** chat · **Slip** (portfolio of your picks in localStorage). Skeleton loaders, haptics, Telegram back
+across all markets) · **Rollover** (setup, day N/M steps, today's slip, skip/stop) · **History** (won/lost/running, hit rate,
+slip cards with leg results) · **AI** chat · **Slip** (portfolio of your picks in localStorage). Skeleton loaders, haptics, Telegram back
 button, safe-area insets.
 
 | Route (all `/api/*` need `X-Telegram-Init-Data`, else 403) | Meaning |
@@ -59,7 +99,11 @@ button, safe-area insets.
 | `POST /api/predict {"event_id"}` | Prediction + `stats` (form/H2H) |
 | `GET /api/match_markets?event_id=` | Strongest stats-checked legs across every market of one match |
 | `POST /api/scan {"tier","target","day","leagues"}` | Slip (or audit) JSON |
-| `POST /api/book {"selections":[{event_id,market_id,specifier,outcome_id}]}` | `{code, url, requested, loaded}` |
+| `POST /api/book {"slip_id"}` or `{"selections":[…], "legs":[meta…]}` | `{code, url, requested, loaded, history_id}`; saved to history |
+| `GET /api/history?limit=` | Saved slips (newest first) + current rollover |
+| `POST /api/history/book {"id"}` | Book a saved slip that has no code yet (rollover day) |
+| `GET /api/rollover` · `POST /api/rollover {"action": start\|now\|skip\|stop\|mark, target, days, stake, result}` | Rollover plan |
+| `POST /api/admin/tick {"id"?}` · `POST /api/admin/test_settle {"legs"}` · `POST /api/admin/delete_test {"id"}` | Admin only: run the tracker now, settle a TEST slip of finished matches (pings once, marked TEST), delete TEST records |
 | `POST /api/ai {"message"}` · `POST /api/ai/reset` | AI analyst |
 | `GET /api/admin/diag` | Server diagnostics (relay, Sportradar, Gemini models); **only** with `X-Admin-Token` = `ADMIN_TOKEN` |
 
@@ -86,8 +130,10 @@ It forwards to `https://www.sportybet.com<p>` with browser headers, only for pat
 | `/predict Arsenal vs Chelsea` | Classic prediction card with add-to-slip buttons |
 | `/slip`, `/book`, `/clear` | Chat slip, booking code, clear |
 | `/reset` | Clear the AI chat memory |
+| `/history` | Last 12 booked codes with results + the latest running slip |
+| `/rollover [2-5] [3-15] [stake]` · `/rollover now\|skip\|stop\|won\|lost` | Start / manage a rollover plan |
 
-Bot menu (set on start): /start, /scan, /ai, /today, /slip, /help. Profile photo, description and short description were set via
+Bot menu (set on start): /start, /scan, /ai, /today, /rollover, /history, /slip, /help. Profile photo, description and short description were set via
 the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setMyDescription`, `setMyShortDescription`).
 
 ## Environment variables
@@ -106,6 +152,8 @@ the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setM
 | `GEMINI_API_KEY` | for AI | Google AI Studio key; without it the AI analyst is off |
 | `GEMINI_MODEL` | no | Force a model (default: first of gemini-3.5-flash, gemini-flash-latest, gemini-3-flash-preview… that the key lists; 2.5 models are closed to new keys) |
 | `ADMIN_TOKEN` | no | ≥24-char secret enabling `X-Admin-Token` server diagnostics; unset = disabled |
+| `SUPABASE_URL` | for durable history | `https://ectglmhgqfiipexvczmh.supabase.co` |
+| `SUPABASE_SERVICE_KEY` | for durable history | Supabase service_role key (vault "Supabase love-diary service key (fra bot)"); without it history falls back to SQLite, which Render wipes on restart |
 | `PUBLIC_BASE_URL` | no | https base for the Mini App; defaults to `WEBHOOK_URL` / `RENDER_EXTERNAL_URL`. Without an https base the app button and menu button are skipped |
 
 Never commit secrets: `.env` and `data/` are git-ignored.
@@ -120,8 +168,9 @@ python main.py
 ## Deploy on Render (free web service)
 1. Push this folder to a GitHub repo, then in Render choose **New → Blueprint** and pick the repo (`render.yaml`).
 2. Fill in `TELEGRAM_BOT_TOKEN`, `OWNER_TELEGRAM_ID`, optionally `API_FOOTBALL_KEY`. `WEBHOOK_URL` can stay empty.
-3. Free services sleep after ~15 min idle. Add a free keep-alive ping (e.g. cron-job.org or UptimeRobot)
-   to `https://<your-service>.onrender.com/health` every 10 minutes. It answers 200 for GET and HEAD.
+3. Free services sleep after ~15 min idle. Keep-alive is the Supabase `pg_cron` job above (every 10 min → `/health`, answers
+   200 for GET and HEAD). SQL used: `create extension pg_cron; create extension pg_net; select cron.schedule('fra-keepalive',
+   '*/10 * * * *', $$select net.http_get(url:='https://football-picks-bot.onrender.com/health', timeout_milliseconds:=30000)$$);`
 
 ## How predictions work
 1. **Market:** SportyBet 1X2, O/U 2.5, GG/NG and Double Chance odds are de-vigged (proportional). Poisson home/away
@@ -153,11 +202,14 @@ python tests/test_stats_mock.py    # API-Football path with mocked HTTP (no key 
 python tests/test_webapp.py        # initData validation unit tests (fake token)
 python tests/test_webapp.py --live # + local server: /app, 403s, /api/events, /api/predict through the relay
 python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/book
+python tests/test_tracker.py       # 26 settlement cases + tracker run on real finished matches (SQLite, fake bot, 1 ping per slip)
 ```
 
 ## Files
 `main.py` (run modes, /health, webhook) · `webapp.py` (Mini App API + initData auth) · `webapp_static/` (UI, logo) ·
-`handlers.py` (Telegram UX, owner lock, /scan, AI chat) · `ai.py` (Gemini analyst + tools) · `scanner.py` (market scanner, tiers,
+`handlers.py` (Telegram UX, owner lock, /scan, /history, /rollover, AI chat) · `tracker.py` (history recording, result loop, pings,
+rollover plans) · `settle.py` (Sportradar results → won/lost/void/check) · `history.py` (Supabase PostgREST / SQLite store) ·
+`fmt.py` (Telegram formatting, flags) · `ai.py` (Gemini analyst + tools) · `scanner.py` (market scanner, tiers,
 stats check) · `markets.py` (market catalogue, de-margin, Poisson pricing per market) · `srstats.py` (free Sportradar form/H2H) ·
 `services.py` (glue) · `bookmakers.py` (`BookmakerAdapter` + `SportyBetNG`: events, full event markets, booking, load code) ·
 `stats.py` (API-Football fallback) · `predictor.py` (model) · `matching.py` · `storage.py` (SQLite: owner, cache, quota, slip,

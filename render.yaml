@@ -22,3 +22,7 @@ services:
         sync: false   # Google AI Studio key for the AI analyst
       - key: ADMIN_TOKEN
         sync: false   # optional: lets server-side diagnostics call /api/* (X-Admin-Token header)
+      - key: SUPABASE_URL
+        sync: false   # https://<ref>.supabase.co (durable history)
+      - key: SUPABASE_SERVICE_KEY
+        sync: false   # Supabase service_role key; table public.fra_records

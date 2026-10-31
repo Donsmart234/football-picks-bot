@@ -184,34 +184,36 @@ class Tracker:
         if status != "pending" and not d.get("notified"):
             d["notified"] = True
             await self.history.save(rec)            # mark first: never ping twice, even after a crash
-            await self._notify(rec)
+            d["ping_ok"] = await self._notify(rec)
+            await self.history.save(rec)
             if d.get("rollover_id"):
                 await self._rollover_result(rec)
         return changed
 
-    async def _notify(self, rec: dict) -> None:
+    async def _notify(self, rec: dict) -> bool:
         d, st = rec["data"], rec["status"]
         name = f"{d.get('label') or 'Slip'}" + (f" · Rollover day {d['rollover_day']}" if d.get("rollover_id") else "")
         if st == "won":
             title = (f"💥💥 <b>BOOM! Your {esc(name)} slip landed!</b> 🎉\n"
                      f"Every leg came in at total odds <b>{d.get('effective_odds') or d['total_odds']:.2f}</b>.")
-            await self.send(record_text(rec, title) + f"\n{RULE}\n<i>Estimates, not guarantees — enjoy this one. 18+.</i>",
-                            test=d.get("test"))
+            return await self.send(record_text(rec, title) + f"\n{RULE}\n<i>Estimates, not guarantees — enjoy this one. 18+.</i>",
+                                   test=d.get("test"))
         elif st == "lost":
             lost = [l for l in d["legs"] if l.get("status") == "lost"]
             l = lost[0] if lost else {}
             more = f" (+{len(lost) - 1} more)" if len(lost) > 1 else ""
-            await self.send(f"❌ <b>{esc(name)} slip lost</b>"
+            return await self.send(f"❌ <b>{esc(name)} slip lost</b>"
                             + (f" · <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f"\n{esc(l.get('home', ''))} v {esc(l.get('away', ''))} · {esc(l.get('pick', ''))} "
                             f"({esc(l.get('score', ''))}){more}", test=d.get("test"))
         elif st == "check":
             n = sum(1 for l in d["legs"] if l.get("status") == "check")
-            await self.send(f"❔ <b>{esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
+            return await self.send(f"❔ <b>{esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f": no leg lost, but {n} leg(s) use a market I can't settle automatically. "
                             "Check it on SportyBet.", test=d.get("test"))
         elif st == "void":
-            await self.send(f"➖ {esc(name)} slip: every match was cancelled or voided.", test=d.get("test"))
+            return await self.send(f"➖ {esc(name)} slip: every match was cancelled or voided.", test=d.get("test"))
+        return False
 
     # ---- rollover ----------------------------------------------------------------
     async def active_rollover(self) -> dict | None:
@@ -222,7 +224,8 @@ class Tracker:
         return await self.history.list("rollover", None, limit=limit)
 
     async def create_rollover(self, target: float, days: int, stake: float | None = None,
-                              autobook: bool = True, generate: bool = True, test: bool = False) -> tuple[dict, dict | None]:
+                              autobook: bool = True, generate: bool = True, test: bool = False,
+                              push: bool = True) -> tuple[dict, dict | None]:
         if target not in ROLLOVER_TARGETS:
             raise ValueError("Daily target must be 2, 3, 4 or 5.")
         if not 3 <= days <= 15:
@@ -232,11 +235,11 @@ class Tracker:
             raise ValueError("A rollover is already running. Stop it first (/rollover stop).")
         rec = {"id": new_id("ro"), "kind": "rollover", "status": "active", "data": {
             "target": target, "days": days, "stake": stake, "value": stake, "current_day": 1,
-            "log": [], "last_gen_date": "", "autobook": autobook, "test": test, "started": now_iso()}}
+            "log": [], "last_gen_date": "", "autobook": autobook, "test": test, "push": push, "started": now_iso()}}
         await self.history.save(rec)
         day = None
         if generate and datetime.now(TZ).hour < LAST_GEN_HOUR:
-            day = await self.generate_day(rec, force=True)
+            day = await self.generate_day(rec, force=True, push=push)
         return rec, day
 
     async def stop_rollover(self, reason: str = "stopped") -> dict | None:
