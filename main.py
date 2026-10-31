@@ -69,7 +69,7 @@ async def run() -> None:
                 r = await c.get(_S.BASE + "/factsCenter/pcUpcomingEvents",
                                 params={"sportId": "sr:sport:1", "marketId": "1", "pageSize": 1, "pageNum": 1,
                                         "option": 1, "timeline": 24})
-            return web.Response(text=f"sportybet {r.status_code} {r.text[:200]!r}")
+            return web.Response(text=f"sportybet {r.status_code} {dict(r.headers)} {r.text[:200]!r}")
         except Exception as e:
             return web.Response(text=f"sportybet error {type(e).__name__}: {e}")
     web_app.router.add_get("/diag", diag)
