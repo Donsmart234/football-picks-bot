@@ -10,7 +10,7 @@ from stats import MatchStats, TeamStats
 MAX_GOALS = 10
 LEAGUE_HOME_AVG = 1.50   # typical goals per game by home sides across leagues
 LEAGUE_AWAY_AVG = 1.20
-STATS_WEIGHT = 0.45      # weight of the stats model vs the de-vigged market when stats exist
+STATS_WEIGHT = 0.35      # weight of the stats model (last-10 games, small samples) vs the de-vigged market
 
 Key = tuple[str, str]  # (market_id, outcome_id)
 
@@ -163,6 +163,7 @@ class Prediction:
     best: Pick | None
     reasoning: str
     picks: list[Pick] = field(default_factory=list)
+    form: object = None              # srstats.MatchForm when the free stats feed answered
 
 
 def predict(event: Event, ms: MatchStats | None = None) -> Prediction | None:

@@ -7,25 +7,65 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new: scanner, AI analyst, fintech UI
+**Market scanner** (`scanner.py`, `markets.py`). For a window (today / tomorrow / next 24h / 48h) it picks up to 80 matches
+(major and reliable leagues first, then by market depth; SRL/virtual/eSoccer excluded), fetches **every open market** of each
+match from `GET /api/ng/factsCenter/event?eventId=<sr:match:..>&productId=3` (360–1,430 markets per match: main, goals,
+halves, minutes, combos, corners, bookings, player props, early-payout 1UP/2UP), 6 at a time, through the relay, and scores
+every outcome:
+- **Full books** (outcomes cover the event, overround ≤ 1.05 + 0.035·n): proportional de-margin; Double Chance-type books
+  normalise to 2. **Overlapping / partial / single-outcome markets** (goal bounds, multigoals, player props, …): each price on its
+  own (implied ÷ 1.06). Betradar's own outcome `probability` from the feed is blended in when present.
+- **Goals markets with a model** (1X2, DC, DNB, all O/U x.5 lines, GG/NG, team totals, Asian x.5 / European handicaps, 1st/2nd
+  half versions): + a Poisson model fitted to that match's 1X2 + O/U 2.5 prices.
+- Confidence levels: `model` (Poisson + stats) › `market` (full-book de-margin, −1.5 pts) › `thin` (single price, −3 pts).
+- **Stats check** (shortlist of the 40 strongest matches): free Sportradar feed → last-10 results per team (venue, FT/HT
+  scores), home/away records, goals for/against, O2.5/BTTS/clean-sheet rates, last 6 H2H. A stats Poisson
+  (`predictor.stats_lambdas`) prices each modelled leg: **confirmed** (stats ≥ market − 3 pts), **demoted** (−3…−10), **dropped**
+  (< −10 pts, or a form red flag such as backing a team that lost 3 of its last 5). The estimate moves by at most −8/+4 pts.
+  Corners/bookings/props/specials stay **market only** (stats can't price them) and say so. Every leg carries a short *why*
+  (e.g. "Chelsea W2 D1 L2 last 5, home W4 D1 L1; Man Utd W0 D2 L3 last 5, away W0 D3 L2; H2H 2-1-3, avg 2.8 goals").
+- **Tiers** (one pick per match, greedy by "odds gained per unit of hit probability lost", which maximises the slip's combined
+  chance): Safe ≥85% at 1.05–1.35 (default target 5) · Mid-safe ≥70% at 1.30–1.70 (10) · Risk ≥55% at 1.60–2.30 (20) ·
+  High risk value legs (est × odds ≥ 0.97, confirmed) at 2.0–8.0 (50) · **Grand audit** = best leg per match, top value bets and
+  one slip per tier. If not enough legs qualify the slip says so and stops short instead of padding.
+- Pools are cached 10 min (≈20–30 s cold, instant warm). Booking uses the feed's own `marketId` / `specifier` / `outcomeId`;
+  after booking the code is read back (`GET /api/ng/orders/share/<code>`) to confirm every leg loaded. Verified 2026-10-31
+  with 1st-half, 2nd-half, team totals, handicaps, corners, bookings, 1UP, specials, player props and minute markets.
+
+**AI analyst** (`ai.py`): Google Gemini (auto-picks `gemini-2.5-flash` if listed; override with `GEMINI_MODEL`) with function
+calling over `list_matches`, `predict_match` (probabilities + form/H2H + strongest legs across all markets), `team_stats`,
+`scan_markets` (any tier / target / day / leagues) and `build_booking_code` (from a `slip_id`). Owner's non-command Telegram text
+goes to the AI (`/ai <question>` also works, `/reset` clears memory); the Mini App has an AI tab. Last 10 messages per chat are
+kept in SQLite. Without `GEMINI_API_KEY` free text falls back to the match finder.
+
+**Stats sources.** Primary: `https://stats.fn.sportradar.com/sportybet/en/Africa:Lagos/gismo/stats_team_lastx/<uid>/10` and
+`.../stats_team_versusrecent/<homeUid>/<awayUid>` (the feed SportyBet's own widgets use; no key, no quota; SportyBet's
+`sr:competitor:<uid>` ids are its team uids; cached 6 h in SQLite). API-Football is now only a fallback for single-match predictions
+when the free feed has nothing and ≥20 requests are left today, so the 100/day quota is never spent on scanning.
+
 ## Mini App (Telegram Web App)
-`/start` shows an **Open picks app** button and the chat menu button (set in `post_init`) opens the same app at
-`<PUBLIC_BASE_URL>/app`. Screens: Today / Next 3 days tabs → searchable league list (the search box also finds teams)
-→ matches (Lagos kickoff, 1X2 odds) → match detail with the prediction (1X2, O/U 2.5, BTTS, Double Chance %, best
-pick, reasoning, "estimate, not guaranteed") and tap-to-add prices → Slip (stored in the phone's localStorage: remove,
-clear, total odds) → **Get booking code** → big code, Copy button and the SportyBet code-hub link.
+Dark fintech UI (`webapp_static/`): **Scanner** (tier chips Safe / Mid-safe / Risk / High risk / Grand audit, day toggle, target
+odds with quick picks, Generate → portfolio card with total odds, est. hit chance, risk meter, legs as price tickers with
+probability bars, stats verdict chips and the *why*; one-tap **Book on SportyBet** → bottom sheet with the code, Copy and Open
+SportyBet) · **Matches** (leagues → matches → prediction, team-stats card with form pills / home-away / goals / H2H, strongest legs
+across all markets) · **AI** chat · **Slip** (portfolio of your picks in localStorage). Skeleton loaders, haptics, Telegram back
+button, safe-area insets.
 
-The app only talks to this server (same origin):
-| Route | Meaning |
+| Route (all `/api/*` need `X-Telegram-Init-Data`, else 403) | Meaning |
 |---|---|
-| `GET /app` (+ `/app/app.js`, `/app/app.css`) | Static UI (`webapp_static/`) |
-| `GET /api/events?range=today\|upcoming` | Leagues with matches and 1X2 odds (cached 5 min, gzip) |
-| `POST /api/predict {"event_id"}` | Prediction JSON |
-| `POST /api/book {"selections":[{event_id,market_id,specifier,outcome_id}]}` | `{code, url}` |
+| `GET /app` (+ assets) | UI |
+| `GET /api/events?range=today\|upcoming` | Leagues with matches and 1X2 odds |
+| `POST /api/predict {"event_id"}` | Prediction + `stats` (form/H2H) |
+| `GET /api/match_markets?event_id=` | Strongest stats-checked legs across every market of one match |
+| `POST /api/scan {"tier","target","day","leagues"}` | Slip (or audit) JSON |
+| `POST /api/book {"selections":[{event_id,market_id,specifier,outcome_id}]}` | `{code, url, requested, loaded}` |
+| `POST /api/ai {"message"}` · `POST /api/ai/reset` | AI analyst |
+| `GET /api/admin/diag` | Server diagnostics (relay, Sportradar, Gemini models); **only** with `X-Admin-Token` = `ADMIN_TOKEN` |
 
-Every `/api/*` request needs header `X-Telegram-Init-Data` (= `Telegram.WebApp.initData`), validated server-side:
-HMAC-SHA256 with secret `HMAC_SHA256(key="WebAppData", msg=bot_token)`, `auth_date` younger than 24h, and
-`user.id` equal to the owner (`OWNER_TELEGRAM_ID`). Anything else gets **403**. Opening `/app` in a normal browser
-shows the UI shell only, with no data.
+initData is validated server-side: HMAC-SHA256 with secret `HMAC_SHA256(key="WebAppData", msg=bot_token)`, `auth_date`
+younger than 24h, `user.id` = owner. If `ADMIN_TOKEN` (≥24 chars) is set, the header `X-Admin-Token` also authorises `/api/*`
+as the owner (used for production checks); leave it unset to disable.
 
 ## SportyBet relay
 Render's egress IP gets an AWS WAF challenge from SportyBet (HTTP 202, empty body), and SportyBet's real responses
@@ -39,16 +79,16 @@ It forwards to `https://www.sportybet.com<p>` with browser headers, only for pat
 ## Commands
 | Command | What it does |
 |---|---|
-| `/start` | Help, **Open picks app** button, responsible-gambling note. The first user to send it becomes the owner if `OWNER_TELEGRAM_ID` is unset |
-| `/today` | Rest of today's matches (Africa/Lagos time): league → match browse, paged inline keyboards |
-| `/upcoming` | Same for the next 3 days |
-| `/predict Arsenal vs Chelsea` | Fuzzy-matches against SportyBet's next 3 days. You can also just type `Arsenal vs Chelsea` |
-| `/slip` | Picks with current odds and total odds; remove buttons |
-| `/book` | Creates a SportyBet booking code and gives the load link https://www.sportybet.com/ng/m/code-hub/load-code |
-| `/clear` | Empties the slip |
+| `/start`, `/help` | Help + **Open Fra app** button (first `/start` claims the bot if `OWNER_TELEGRAM_ID` is unset) |
+| `/scan [safe\|mid\|risk\|high\|audit] [target] [today\|tomorrow\|24h\|48h]` | e.g. `/scan safe 5`, `/scan high 100 tomorrow`, `/scan audit` → slip with *why* per leg + **Book on SportyBet** button |
+| `/ai <question>` or any text | AI analyst, e.g. "Analyze today's games and give me a safe 5 odds Sporty code", "Who wins Arsenal vs Chelsea?" |
+| `/today`, `/upcoming` | Browse by league (paged inline keyboards) |
+| `/predict Arsenal vs Chelsea` | Classic prediction card with add-to-slip buttons |
+| `/slip`, `/book`, `/clear` | Chat slip, booking code, clear |
+| `/reset` | Clear the AI chat memory |
 
-After a prediction, buttons let you add the best pick or any 1X2 / O/U 2.5 / GG-NG / Double Chance selection
-(one pick per match: adding another pick for the same match replaces it).
+Bot menu (set on start): /start, /scan, /ai, /today, /slip, /help. Profile photo, description and short description were set via
+the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setMyDescription`, `setMyShortDescription`).
 
 ## Environment variables
 | Name | Required | Meaning |
@@ -63,6 +103,9 @@ After a prediction, buttons let you add the best pick or any 1X2 / O/U 2.5 / GG-
 | `BOT_TIMEZONE` | no | Default `Africa/Lagos` |
 | `DATA_DIR` | no | Where the SQLite file lives (default `./data`) |
 | `SPORTYBET_RELAY_URL` | no | Default `https://ectglmhgqfiipexvczmh.supabase.co/functions/v1/sb`. Empty string = direct SportyBet calls |
+| `GEMINI_API_KEY` | for AI | Google AI Studio key; without it the AI analyst is off |
+| `GEMINI_MODEL` | no | Force a model (default: first of gemini-2.5-flash, gemini-flash-latest, gemini-2.0-flash… that the key lists) |
+| `ADMIN_TOKEN` | no | ≥24-char secret enabling `X-Admin-Token` server diagnostics; unset = disabled |
 | `PUBLIC_BASE_URL` | no | https base for the Mini App; defaults to `WEBHOOK_URL` / `RENDER_EXTERNAL_URL`. Without an https base the app button and menu button are skipped |
 
 Never commit secrets: `.env` and `data/` are git-ignored.
@@ -83,11 +126,11 @@ python main.py
 ## How predictions work
 1. **Market:** SportyBet 1X2, O/U 2.5, GG/NG and Double Chance odds are de-vigged (proportional). Poisson home/away
    expected goals are fitted to the market's 1X2 + O/U 2.5.
-2. **Stats (if API-Football is available):** the fixture is found among that day's fixtures (one request covers
+2. **Stats:** first the free Sportradar feed (last 10 games home/away goals, form, H2H; see above). Fallback, only if that has nothing and budget remains (API-Football): the fixture is found among that day's fixtures (one request covers
    the whole day), then each team's season stats (`/teams/statistics`: goals for/against per home/away game, form
    string) and the last 10 head-to-heads. Expected goals = attack × opponent defence ÷ league average, with small-sample
    shrinkage, a ±8% form multiplier (last 5 results) and a light ±10% H2H goal-total nudge.
-3. **Blend:** final probabilities = 45% stats-Poisson + 55% market (odds-only mode: Poisson fit + market).
+3. **Blend:** final probabilities = 35% stats-Poisson + 65% market (odds-only mode: Poisson fit + market).
    Double Chance is derived from the final 1X2 so all numbers are consistent.
 4. **Best pick:** among selections with ≥50% and odds ≥1.25, the highest expected value (prob × odds); if none
    qualify, the most likely priced selection.
@@ -113,6 +156,9 @@ python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/
 ```
 
 ## Files
-`main.py` (run modes, /health, webhook) · `webapp.py` (Mini App API + initData auth) · `webapp_static/` (Mini App UI) · `handlers.py` (Telegram UX, owner lock) · `services.py` (glue) ·
-`bookmakers.py` (`BookmakerAdapter` ABC + `SportyBetNG`) · `stats.py` (API-Football client) ·
-`predictor.py` (model) · `matching.py` (fuzzy names) · `storage.py` (SQLite: owner, cache, quota, slip) · `config.py`
+`main.py` (run modes, /health, webhook) · `webapp.py` (Mini App API + initData auth) · `webapp_static/` (UI, logo) ·
+`handlers.py` (Telegram UX, owner lock, /scan, AI chat) · `ai.py` (Gemini analyst + tools) · `scanner.py` (market scanner, tiers,
+stats check) · `markets.py` (market catalogue, de-margin, Poisson pricing per market) · `srstats.py` (free Sportradar form/H2H) ·
+`services.py` (glue) · `bookmakers.py` (`BookmakerAdapter` + `SportyBetNG`: events, full event markets, booking, load code) ·
+`stats.py` (API-Football fallback) · `predictor.py` (model) · `matching.py` · `storage.py` (SQLite: owner, cache, quota, slip,
+AI history) · `config.py`

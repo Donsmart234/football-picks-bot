@@ -18,3 +18,7 @@ services:
         sync: false
       - key: WEBHOOK_URL
         sync: false   # optional on Render: RENDER_EXTERNAL_URL is used automatically when this is empty
+      - key: GEMINI_API_KEY
+        sync: false   # Google AI Studio key for the AI analyst
+      - key: ADMIN_TOKEN
+        sync: false   # optional: lets server-side diagnostics call /api/* (X-Admin-Token header)

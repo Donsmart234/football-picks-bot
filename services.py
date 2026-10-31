@@ -10,7 +10,9 @@ import config
 from bookmakers import BookmakerAdapter, Event, SportyBetNG
 from matching import rank_events
 from predictor import Prediction, predict
-from stats import ApiFootball
+from scanner import Scanner
+from srstats import MatchForm, SportradarStats
+from stats import ApiFootball, QuotaExceeded
 from storage import Storage
 
 log = logging.getLogger(__name__)
@@ -31,11 +33,15 @@ class Services:
         self.storage = storage or Storage()
         self.bookmaker = bookmaker or SportyBetNG()
         self.stats = stats or ApiFootball(self.storage)
+        self.sr = SportradarStats(self.storage)
+        self.scanner = Scanner(self.bookmaker, self.sr, self.stats)
         self._pred_cache: dict[str, tuple[float, Prediction]] = {}
+        self._form_cache: dict[str, MatchForm | None] = {}
 
     async def aclose(self) -> None:
         await self.bookmaker.aclose()
         await self.stats.aclose()
+        await self.sr.aclose()
 
     # ---- events -----------------------------------------------------------
     async def events(self, scope: str) -> list[Event]:
@@ -74,17 +80,30 @@ class Services:
         return rank_events(query, [e for e in events if e.start > now], limit)
 
     # ---- predictions -------------------------------------------------------
+    async def match_form(self, event: Event) -> MatchForm | None:
+        """Free team stats (form, home/away, goals, H2H) from the Sportradar feed. Cached in SQLite."""
+        try:
+            return await self.scanner.match_form(event)
+        except Exception as exc:
+            log.warning("form lookup failed for %s: %s", event.name, exc)
+            return None
+
     async def predict(self, event: Event) -> Prediction | None:
         hit = self._pred_cache.get(event.event_id)
         if hit and time.time() - hit[0] < 600:
             return hit[1]
-        ms = None
-        if self.stats.enabled:
+        form = await self.match_form(event)
+        ms = form.to_match_stats() if form else None
+        # API-Football only as a fallback when the free feed has nothing, and only with budget to spare.
+        if ms is None and self.stats.enabled and self.stats.remaining_today() >= 20:
             try:
                 ms = await self.stats.match_stats(event.home, event.away, event.start)
+            except QuotaExceeded:
+                ms = None
             except Exception as exc:  # stats are optional: never let them break a prediction
                 log.warning("stats lookup failed for %s: %s", event.name, exc)
         pred = predict(event, ms)
         if pred:
+            pred.form = form
             self._pred_cache[event.event_id] = (time.time(), pred)
         return pred

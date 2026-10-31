@@ -55,6 +55,9 @@ class Event:
     category: str
     tournament_id: str
     markets: dict[tuple[str, str], dict[str, Outcome]] = field(default_factory=dict)
+    home_id: str = ""          # sr:competitor:<uid>
+    away_id: str = ""
+    market_count: int = 0
 
     @property
     def name(self) -> str:
@@ -130,6 +133,8 @@ class SportyBetNG(BookmakerAdapter):
         self._cache: dict[int, tuple[float, list[Event]]] = {}
         self._cache_seconds = cache_seconds
         self._locks: dict[int, asyncio.Lock] = {}
+        self._mk_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._mk_sem = asyncio.Semaphore(6)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -198,6 +203,9 @@ class SportyBetNG(BookmakerAdapter):
             category=cat.get("name", ""),
             tournament_id=tournament.get("id", ""),
             markets=markets,
+            home_id=str(raw.get("homeTeamId") or ""),
+            away_id=str(raw.get("awayTeamId") or ""),
+            market_count=int(raw.get("totalMarketSize") or 0),
         )
 
     def _extract(self, data: dict, seen: set[str], out: list[Event]) -> int:
@@ -247,6 +255,64 @@ class SportyBetNG(BookmakerAdapter):
             log.info("SportyBet: %d events (totalNum=%d, %d pages, %dh)", len(events), total, pages, hours)
             self._cache[hours] = (time.time(), events)
             return events
+
+    async def event_markets(self, event_id: str, families: dict | None = None,
+                            ttl: int = 600, cache: bool = True) -> list[dict] | None:
+        """Full market list of one event (GET /factsCenter/event?eventId=..&productId=3), filtered to Betradar
+        markets in `families`. Each item: {id, specifier, desc, outcomes:[{id, desc, odds, active, prob}]}.
+        Cached `ttl` seconds. Returns None when SportyBet didn't answer or the event isn't open for betting."""
+        hit = self._mk_cache.get(event_id)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+        async with self._mk_sem:
+            try:
+                url, q = self._url("/factsCenter/event", {"eventId": event_id, "productId": 3})
+                r = await self._client.get(url, params=q)
+                self._check(r)
+                data = (r.json() or {}).get("data") or {}
+            except (httpx.HTTPError, ValueError) as exc:
+                log.warning("event markets %s failed: %s", event_id, exc.__class__.__name__)
+                return None
+        if not data or data.get("status", 0) != 0:
+            return []
+        out = []
+        for m in data.get("markets") or []:
+            mid = str(m.get("id"))
+            if families is not None and mid not in families:
+                continue
+            if m.get("status", 0) != 0:
+                continue
+            outs = []
+            for o in m.get("outcomes") or []:
+                try:
+                    odds = float(o.get("odds"))
+                except (TypeError, ValueError):
+                    odds = None
+                try:
+                    prob = float(o.get("probability")) if o.get("probability") is not None else None
+                except (TypeError, ValueError):
+                    prob = None
+                outs.append({"id": str(o.get("id")), "desc": o.get("desc", ""), "odds": odds,
+                             "active": bool(o.get("isActive", 1)), "prob": prob})
+            out.append({"id": mid, "specifier": m.get("specifier") or "", "desc": m.get("desc") or m.get("name", ""),
+                        "group": m.get("group", ""), "source": m.get("sourceType", ""), "outcomes": outs})
+        if cache:   # big matches carry 1,000+ markets: keep only a few raw books in memory
+            self._mk_cache[event_id] = (time.time(), out)
+            if len(self._mk_cache) > 12:
+                for k, _ in sorted(self._mk_cache.items(), key=lambda kv: kv[1][0])[:6]:
+                    self._mk_cache.pop(k, None)
+        return out
+
+    async def load_code(self, code: str) -> dict | None:
+        """Read a booking code back (GET /orders/share/<code>): {legs, unavailable}. None on failure."""
+        try:
+            url, q = self._url(f"/orders/share/{code}")
+            r = await self._client.get(url, params=q)
+            self._check(r)
+            data = (r.json() or {}).get("data") or {}
+        except (httpx.HTTPError, ValueError):
+            return None
+        return {"legs": len(data.get("outcomes") or []), "unavailable": len(data.get("unavailableOutcomes") or [])}
 
     async def book(self, selections: list[Selection]) -> str:
         if not selections:

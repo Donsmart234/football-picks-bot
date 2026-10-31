@@ -16,6 +16,7 @@ from telegram.request import HTTPXRequest
 
 import config
 import handlers
+from ai import Analyst
 from services import Services
 from webapp import MiniApp
 
@@ -43,7 +44,9 @@ def build_app(webhook: bool) -> Application:
     if webhook:
         builder = builder.updater(None)
     app = builder.build()
-    app.bot_data["services"] = Services()
+    services = Services()
+    services.ai = Analyst(services)
+    app.bot_data["services"] = services
     handlers.register(app)
     return app
 
@@ -54,7 +57,8 @@ async def run() -> None:
     webhook = bool(config.WEBHOOK_URL)
     app = build_app(webhook)
     services: Services = app.bot_data["services"]
-    log.info("Stats source: %s", "API-Football" if services.stats.enabled else "none (odds-only model)")
+    log.info("Stats: Sportradar feed (free) + %s", "API-Football fallback" if services.stats.enabled else "no fallback")
+    log.info("AI analyst: %s", "Gemini" if services.ai.enabled else "disabled (GEMINI_API_KEY unset)")
     log.info("Owner: %s", "fixed by OWNER_TELEGRAM_ID" if config.OWNER_TELEGRAM_ID else
              ("claimed" if services.storage.get_owner() else "unclaimed – first /start becomes owner"))
 
@@ -126,6 +130,7 @@ async def run() -> None:
     await app.stop()
     if runner:
         await runner.cleanup()
+    await services.ai.aclose()
     await services.aclose()
     await app.shutdown()
 

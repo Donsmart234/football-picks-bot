@@ -13,7 +13,9 @@ from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHand
 
 import config
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
+from ai import md_to_html
 from predictor import Prediction
+from scanner import TIER_ALIASES
 from services import TZ, Services
 
 log = logging.getLogger(__name__)
@@ -23,12 +25,13 @@ RG_NOTE = ("⚠️ <i>Predictions are statistical estimates, never guarantees. B
            "to lose, 18+ only. If gambling stops being fun, take a break.</i>")
 HELP = (
     "<b>Commands</b>\n"
+    "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit)\n"
+    "/ai question – ask the AI analyst (or just type any message)\n"
     "/today – today's matches by league\n"
-    "/upcoming – next 3 days by league\n"
+    "/upcoming – next 3 days\n"
     "/predict Team A vs Team B – analyse a match\n"
-    "/slip – your picks and total odds\n"
-    "/book – get a SportyBet booking code\n"
-    "/clear – empty the slip"
+    "/slip – your picks · /book – booking code · /clear – empty slip\n"
+    "/reset – clear the AI chat memory"
 )
 
 
@@ -65,11 +68,12 @@ def app_url() -> str | None:
 # ---------------------------------------------------------------- commands
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     url = app_url()
-    kb = Kb([[Btn("⚽ Open picks app", web_app=WebAppInfo(url))]]) if url else None
+    kb = Kb([[Btn("📈 Open Fra app", web_app=WebAppInfo(url))]]) if url else None
     await update.effective_message.reply_text(
-        "👋 <b>Private football picks bot</b>\nOdds and fixtures from SportyBet NG, estimates from a "
-        "Poisson goals model blended with the market.\n\n"
-        + ("Tap <b>Open picks app</b> (or the menu button) for the full app.\n\n" if url else "")
+        "👋 <b>Fra Prediction</b> – private football analytics desk\nScans SportyBet markets, checks team form, "
+        "home/away records and H2H, and builds Safe / Mid-safe / Risk / High-risk slips to your target odds. "
+        "Type any question to ask the AI analyst.\n\n"
+        + ("Tap <b>Open Fra app</b> (or the menu button) for the full app.\n\n" if url else "")
         + HELP + "\n\n" + RG_NOTE,
         parse_mode=ParseMode.HTML, reply_markup=kb)
 
@@ -92,10 +96,140 @@ async def predict_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.effective_message.text or "").strip()
-    if " vs " in text.lower() or " v " in text.lower():
+    ai = getattr(svc(ctx), "ai", None)
+    if ai and ai.enabled:
+        await _ask_ai(update, ctx, text)
+    elif " vs " in text.lower() or " v " in text.lower():
         await _predict_query(update, ctx, text)
     else:
-        await update.effective_message.reply_text("Try /predict Team A vs Team B, or /today.")
+        await update.effective_message.reply_text("Try /scan safe 5, /predict Team A vs Team B, or /today.")
+
+
+async def ai_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(ctx.args or []).strip()
+    if not text:
+        await update.effective_message.reply_text(
+            "Ask me anything, e.g. <i>Analyze today's games and give me a safe 5 odds Sporty code</i> or "
+            "<i>Who wins Arsenal vs Chelsea?</i>. You can also just type without /ai.", parse_mode=ParseMode.HTML)
+        return
+    await _ask_ai(update, ctx, text)
+
+
+async def reset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    ai = getattr(svc(ctx), "ai", None)
+    if ai:
+        ai.reset(update.effective_chat.id)
+    await update.effective_message.reply_text("🧹 AI chat memory cleared.")
+
+
+async def _typing_loop(chat, stop):
+    import asyncio
+    while not stop.is_set():
+        try:
+            await chat.send_action("typing")
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=4.5)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _ask_ai(update: Update, ctx, text: str) -> None:
+    import asyncio
+    s = svc(ctx)
+    stop = asyncio.Event()
+    typer = asyncio.create_task(_typing_loop(update.effective_chat, stop))
+    try:
+        res = await s.ai.ask(update.effective_chat.id, text)
+    except Exception as exc:
+        log.warning("AI failed: %s", exc)
+        res = {"reply": f"The AI analyst is unavailable right now ({esc(str(exc)[:120])}). /scan still works.",
+               "slip": None, "code": None}
+    finally:
+        stop.set()
+        await typer
+    kb = None
+    rows = []
+    if res.get("code"):
+        rows.append([Btn("Open SportyBet code hub", url=s.bookmaker.load_code_url)])
+    elif res.get("slip") and res["slip"].get("slip_id") and res["slip"].get("legs"):
+        rows.append([Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{res['slip']['slip_id']}")])
+    if rows:
+        kb = Kb(rows)
+    html_text = md_to_html(res["reply"])
+    for i in range(0, len(html_text), 3900):
+        await update.effective_message.reply_text(html_text[i:i + 3900], parse_mode=ParseMode.HTML,
+                                                  disable_web_page_preview=True,
+                                                  reply_markup=kb if i + 3900 >= len(html_text) else None)
+
+
+def format_slip(sl: dict, why: bool = True) -> str:
+    lines = [f"🧮 <b>{esc(sl['label'])} slip</b> · target {sl['target']:g} · {sl['day']}"]
+    for i, l in enumerate(sl["legs"], 1):
+        mark = {"confirmed": "✅", "demoted": "🟡", "odds only": "▫️"}.get(l["verdict"], "")
+        lines.append(f"{i}. {esc(l['kickoff_local'][4:])} · {esc(l['match'])}\n"
+                     f"   {esc(l['market'])}: <b>{esc(l['pick'])}</b> @ {l['odds']:.2f} · est {l['est']:.0%} {mark}"
+                     + (f"\n   <i>{esc(l['why'])}</i>" if why else ""))
+    if sl["legs"]:
+        lines.append(f"\n<b>Total odds {sl['total_odds']:.2f}</b> · est. hit chance {sl['est_prob']:.0%} "
+                     f"({len(sl['legs'])} legs, {sl['candidates']} qualified, {sl['with_stats']} matches stats-checked)")
+    if sl.get("note"):
+        lines.append("⚠️ " + esc(sl["note"]))
+    lines.append("<i>Estimates from prices + team stats, not guarantees. 'Safe' = lower-risk, never certain. 18+.</i>")
+    return "\n".join(lines)
+
+
+async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    args = [a.lower() for a in (ctx.args or [])]
+    tier, target, day = "safe", None, "today"
+    for a in args:
+        if a in TIER_ALIASES:
+            tier = TIER_ALIASES[a]
+        elif a in ("today", "tomorrow", "24h", "48h"):
+            day = a
+        else:
+            try:
+                target = float(a.replace("odds", "").replace("x", ""))
+            except ValueError:
+                pass
+    s = svc(ctx)
+    note = await update.effective_message.reply_text(
+        f"🔎 Scanning up to 80 matches ({day}), every market, then checking form/H2H… ~30 s")
+    try:
+        res = await s.scanner.scan(tier, target, day)
+    except Exception as exc:
+        log.warning("scan failed: %s", exc, exc_info=True)
+        await note.edit_text("The market scan failed (SportyBet didn't answer). Try again in a minute.")
+        return
+    ai = getattr(s, "ai", None)
+    if tier == "audit":
+        parts = [f"📊 <b>Grand audit</b> · {res['scanned']} matches scanned, {res['with_stats']} stats-checked, "
+                 f"{res['dropped_by_stats']} legs dropped by stats"]
+        parts.append("\n<b>Best leg per match</b>")
+        for l in res["best_per_match"][:10]:
+            parts.append(f"• {esc(l['kickoff_local'][4:])} {esc(l['match'])}: <b>{esc(l['pick'])}</b> "
+                         f"({esc(l['market'])}) @ {l['odds']:.2f} · {l['est']:.0%}")
+        parts.append("\n<b>Top value</b>")
+        for l in res["top_value"][:6]:
+            parts.append(f"• {esc(l['match'])}: <b>{esc(l['pick'])}</b> @ {l['odds']:.2f} · est {l['est']:.0%} "
+                         f"(EV {l['ev']:.2f})")
+        rows = []
+        for k, sl in res["slips"].items():
+            sid = ai.remember_slip(sl) if ai else None
+            parts.append(f"\n<b>{esc(sl['label'])}</b>: {len(sl['legs'])} legs, total {sl['total_odds']:.2f}, "
+                         f"est {sl['est_prob']:.0%}" + (f" – {esc(sl['note'])}" if sl["note"] else ""))
+            if sid and sl["legs"]:
+                rows.append([Btn(f"📒 Book {sl['label']} ({sl['total_odds']:.2f})", callback_data=f"SB|{sid}")])
+        parts.append("\n<i>Estimates, not guarantees. 18+.</i>")
+        await note.edit_text("\n".join(parts)[:4000], parse_mode=ParseMode.HTML, reply_markup=Kb(rows) if rows else None)
+        return
+    sid = ai.remember_slip(res) if ai else None
+    kb = Kb([[Btn("📒 Book on SportyBet", callback_data=f"SB|{sid}")]]) if sid and res["legs"] else None
+    text = format_slip(res)
+    if len(text) > 4000:
+        text = format_slip(res, why=False)
+    await note.edit_text(text[:4096], parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
 async def slip_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -348,6 +482,25 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     elif kind == "BOOK":
         await q.answer("Booking…")
         await q.message.reply_text(**await _book(uid, ctx))
+    elif kind == "SB":
+        ai = getattr(s, "ai", None)
+        entry = ai.slips.get(parts[1]) if ai else None
+        if not entry:
+            await q.answer("That slip expired. Run /scan again.", show_alert=True)
+            return
+        await q.answer("Booking…")
+        legs = entry["slip"]["legs"]
+        sels = [Selection(l["event_id"], l["market_id"], l["specifier"], l["outcome_id"]) for l in legs]
+        try:
+            code = await s.bookmaker.book(sels)
+        except BookingError as exc:
+            await q.message.reply_text(f"Couldn't create a booking code: {esc(str(exc))}", parse_mode=ParseMode.HTML)
+            return
+        url = s.bookmaker.load_code_url
+        await q.message.reply_text(
+            f"📒 <b>Booking code: <code>{esc(code)}</code></b>\n{len(sels)} legs · total odds "
+            f"{entry['slip']['total_odds']:.2f} · est. hit chance {entry['slip']['est_prob']:.0%}\n\n{RG_NOTE}",
+            parse_mode=ParseMode.HTML, reply_markup=Kb([[Btn("Open SportyBet code hub", url=url)]]))
     elif kind == "CLR":
         s.storage.slip_clear(uid)
         await q.answer("Slip cleared")
@@ -367,14 +520,13 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
-        BotCommand("today", "Today's matches by league"), BotCommand("upcoming", "Next 3 days"),
-        BotCommand("predict", "Predict: Team A vs Team B"), BotCommand("slip", "Show bet slip"),
-        BotCommand("book", "Get SportyBet booking code"), BotCommand("clear", "Clear slip"),
-        BotCommand("start", "Help + open the picks app"),
+        BotCommand("start", "Open the app + help"), BotCommand("scan", "Scan markets: /scan safe 5"),
+        BotCommand("ai", "Ask the AI analyst"), BotCommand("today", "Today's matches by league"),
+        BotCommand("slip", "Your slip and total odds"), BotCommand("help", "How it works"),
     ])
     url = app_url()
     if url:
-        button = MenuButtonWebApp(text="Picks", web_app=WebAppInfo(url))
+        button = MenuButtonWebApp(text="Open", web_app=WebAppInfo(url))
         try:
             await app.bot.set_chat_menu_button(menu_button=button)  # default for all private chats
             owner = config.OWNER_TELEGRAM_ID or app.bot_data["services"].storage.get_owner()
@@ -394,6 +546,9 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("slip", slip_cmd))
     app.add_handler(CommandHandler("book", book_cmd))
     app.add_handler(CommandHandler("clear", clear_cmd))
+    app.add_handler(CommandHandler("scan", scan_cmd))
+    app.add_handler(CommandHandler("ai", ai_cmd))
+    app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text))
     app.add_error_handler(on_error)
