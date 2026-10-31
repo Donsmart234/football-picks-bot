@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: football-picks-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: OWNER_TELEGRAM_ID
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false   # optional on Render: RENDER_EXTERNAL_URL is used automatically when this is empty
