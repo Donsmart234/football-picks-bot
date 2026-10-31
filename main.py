@@ -1,5 +1,6 @@
 """Entry point. Webhook mode when WEBHOOK_URL (or RENDER_EXTERNAL_URL) is set, else long polling.
-A tiny aiohttp server serves GET/HEAD /health (200) for keep-alive pings in both modes when PORT is set."""
+A tiny aiohttp server serves GET/HEAD /health (200) for keep-alive pings, plus the Telegram Mini App
+(/app UI and /api/* JSON), in both modes when PORT is set."""
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +17,7 @@ from telegram.request import HTTPXRequest
 import config
 import handlers
 from services import Services
+from webapp import MiniApp
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # httpx logs full URLs, which include the bot token
@@ -60,19 +62,7 @@ async def run() -> None:
     web_app.router.add_get("/health", health)
     web_app.router.add_get("/", health)
 
-    async def diag(_: web.Request) -> web.Response:
-        sb = services.bookmaker if hasattr(services, "bookmaker") else None
-        import httpx as _h
-        from bookmakers import SportyBetNG as _S
-        try:
-            async with _h.AsyncClient(headers=_S.HEADERS, timeout=30) as c:
-                r = await c.get(_S.BASE + "/factsCenter/pcUpcomingEvents",
-                                params={"sportId": "sr:sport:1", "marketId": "1", "pageSize": 1, "pageNum": 1,
-                                        "option": 1, "timeline": 24})
-            return web.Response(text=f"sportybet {r.status_code} {dict(r.headers)} {r.text[:200]!r}")
-        except Exception as e:
-            return web.Response(text=f"sportybet error {type(e).__name__}: {e}")
-    web_app.router.add_get("/diag", diag)
+    MiniApp(services).register(web_app)  # /app (UI) + /api/* (initData-protected)
     secret = _secret_token()
 
     async def telegram_webhook(request: web.Request) -> web.Response:
@@ -94,7 +84,7 @@ async def run() -> None:
         runner = web.AppRunner(web_app)
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", port).start()
-        log.info("HTTP server on :%s (/health%s)", port, ", " + WEBHOOK_PATH if webhook else "")
+        log.info("HTTP server on :%s (/health, /app, /api%s)", port, ", " + WEBHOOK_PATH if webhook else "")
     for attempt in range(1, 9):
         try:
             await app.initialize()

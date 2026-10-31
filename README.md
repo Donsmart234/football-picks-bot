@@ -7,10 +7,39 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## Mini App (Telegram Web App)
+`/start` shows an **Open picks app** button and the chat menu button (set in `post_init`) opens the same app at
+`<PUBLIC_BASE_URL>/app`. Screens: Today / Next 3 days tabs → searchable league list (the search box also finds teams)
+→ matches (Lagos kickoff, 1X2 odds) → match detail with the prediction (1X2, O/U 2.5, BTTS, Double Chance %, best
+pick, reasoning, "estimate, not guaranteed") and tap-to-add prices → Slip (stored in the phone's localStorage: remove,
+clear, total odds) → **Get booking code** → big code, Copy button and the SportyBet code-hub link.
+
+The app only talks to this server (same origin):
+| Route | Meaning |
+|---|---|
+| `GET /app` (+ `/app/app.js`, `/app/app.css`) | Static UI (`webapp_static/`) |
+| `GET /api/events?range=today\|upcoming` | Leagues with matches and 1X2 odds (cached 5 min, gzip) |
+| `POST /api/predict {"event_id"}` | Prediction JSON |
+| `POST /api/book {"selections":[{event_id,market_id,specifier,outcome_id}]}` | `{code, url}` |
+
+Every `/api/*` request needs header `X-Telegram-Init-Data` (= `Telegram.WebApp.initData`), validated server-side:
+HMAC-SHA256 with secret `HMAC_SHA256(key="WebAppData", msg=bot_token)`, `auth_date` younger than 24h, and
+`user.id` equal to the owner (`OWNER_TELEGRAM_ID`). Anything else gets **403**. Opening `/app` in a normal browser
+shows the UI shell only, with no data.
+
+## SportyBet relay
+Render's egress IP gets an AWS WAF challenge from SportyBet (HTTP 202, empty body), and SportyBet's real responses
+carry no CORS headers, so neither the server nor the phone can call SportyBet directly. All server-side SportyBet
+calls therefore go through a tiny **Supabase Edge Function** (JWT verification off):
+`GET {relay}?p=/api/ng/factsCenter/pcUpcomingEvents&<params>` and `POST {relay}?p=/api/ng/orders/share`.
+It forwards to `https://www.sportybet.com<p>` with browser headers, only for paths starting `/api/ng/`, and returns
+`x-upstream-status` / `x-upstream-waf` headers. Set `SPORTYBET_RELAY_URL=` (empty) to call SportyBet directly
+(e.g. when running on a Nigerian home connection).
+
 ## Commands
 | Command | What it does |
 |---|---|
-| `/start` | Help + responsible-gambling note. The first user to send it becomes the owner if `OWNER_TELEGRAM_ID` is unset |
+| `/start` | Help, **Open picks app** button, responsible-gambling note. The first user to send it becomes the owner if `OWNER_TELEGRAM_ID` is unset |
 | `/today` | Rest of today's matches (Africa/Lagos time): league → match browse, paged inline keyboards |
 | `/upcoming` | Same for the next 3 days |
 | `/predict Arsenal vs Chelsea` | Fuzzy-matches against SportyBet's next 3 days. You can also just type `Arsenal vs Chelsea` |
@@ -33,6 +62,8 @@ After a prediction, buttons let you add the best pick or any 1X2 / O/U 2.5 / GG-
 | `API_FOOTBALL_DAILY_LIMIT` | no | Self-imposed daily request cap (default 90) |
 | `BOT_TIMEZONE` | no | Default `Africa/Lagos` |
 | `DATA_DIR` | no | Where the SQLite file lives (default `./data`) |
+| `SPORTYBET_RELAY_URL` | no | Default `https://ectglmhgqfiipexvczmh.supabase.co/functions/v1/sb`. Empty string = direct SportyBet calls |
+| `PUBLIC_BASE_URL` | no | https base for the Mini App; defaults to `WEBHOOK_URL` / `RENDER_EXTERNAL_URL`. Without an https base the app button and menu button are skipped |
 
 Never commit secrets: `.env` and `data/` are git-ignored.
 
@@ -64,7 +95,7 @@ python main.py
 API-Football cost: up to 4 requests the first time a match is analysed (1 shared by every match that day), 0 after
 (cached 24h in SQLite). A daily counter (synced with the API's rate-limit headers) stops at 90.
 
-## Data sources (unofficial endpoints, may change without notice)
+## Data sources (unofficial endpoints, may change without notice; called via the relay above)
 - Fixtures/odds: `GET https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents?sportId=sr:sport:1&marketId=1,18,10,29&pageSize=100&pageNum=N&option=1&timeline=<hours>`.
   Needs browser headers (Chrome User-Agent, Referer/Origin sportybet.com); a plain UA gets a CloudFront 403. Cached 5 min.
 - Booking: `POST https://www.sportybet.com/api/ng/orders/share` with `{"selections":[{"eventId","marketId","specifier","outcomeId"}]}` → `data.shareCode`.
@@ -76,9 +107,12 @@ API-Football cost: up to 4 requests the first time a match is analysed (1 shared
 python tests/live_test.py          # live SportyBet fetch, id verification, 3 predictions, offline checks
 python tests/live_test.py --book   # + creates ONE real (anonymous, free) booking code with 2 selections
 python tests/test_stats_mock.py    # API-Football path with mocked HTTP (no key or quota used)
+python tests/test_webapp.py        # initData validation unit tests (fake token)
+python tests/test_webapp.py --live # + local server: /app, 403s, /api/events, /api/predict through the relay
+python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/book
 ```
 
 ## Files
-`main.py` (run modes, /health, webhook) · `handlers.py` (Telegram UX, owner lock) · `services.py` (glue) ·
+`main.py` (run modes, /health, webhook) · `webapp.py` (Mini App API + initData auth) · `webapp_static/` (Mini App UI) · `handlers.py` (Telegram UX, owner lock) · `services.py` (glue) ·
 `bookmakers.py` (`BookmakerAdapter` ABC + `SportyBetNG`) · `stats.py` (API-Football client) ·
 `predictor.py` (model) · `matching.py` (fuzzy names) · `storage.py` (SQLite: owner, cache, quota, slip) · `config.py`

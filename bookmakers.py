@@ -122,14 +122,32 @@ class SportyBetNG(BookmakerAdapter):
     PAGE_SIZE = 100
     MAX_PAGES = 60
 
-    def __init__(self, cache_seconds: int = config.SPORTYBET_CACHE_SECONDS):
-        self._client = httpx.AsyncClient(headers=self.HEADERS, timeout=httpx.Timeout(20.0), http2=False)
+    def __init__(self, cache_seconds: int = config.SPORTYBET_CACHE_SECONDS, relay_url: str | None = None):
+        # Relay mode (default): every call goes through a small proxy (Supabase Edge Function) whose egress
+        # IP isn't challenged by SportyBet's AWS WAF, unlike Render's. Direct mode when the relay is unset.
+        self.relay = (config.SPORTYBET_RELAY_URL if relay_url is None else relay_url).strip().rstrip("/")
+        self._client = httpx.AsyncClient(headers=self.HEADERS, timeout=httpx.Timeout(15.0), http2=False)
         self._cache: dict[int, tuple[float, list[Event]]] = {}
         self._cache_seconds = cache_seconds
         self._locks: dict[int, asyncio.Lock] = {}
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def _url(self, path: str, params: dict | None = None) -> tuple[str, dict]:
+        """path is relative to /api/ng (e.g. '/orders/share'). Returns (url, params) for relay or direct mode."""
+        params = dict(params or {})
+        if self.relay:
+            return self.relay, {"p": "/api/ng" + path, **params}
+        return self.BASE + path, params
+
+    @staticmethod
+    def _check(r: httpx.Response) -> None:
+        upstream = r.headers.get("x-upstream-status")
+        waf = r.headers.get("x-upstream-waf") or r.headers.get("x-amzn-waf-action")
+        if waf or r.status_code == 202 or (upstream and upstream == "202"):
+            raise httpx.HTTPStatusError(f"SportyBet WAF challenge ({waf or 202})", request=r.request, response=r)
+        r.raise_for_status()
 
     async def _get_page(self, hours: int, page: int) -> dict:
         params = {
@@ -142,8 +160,9 @@ class SportyBetNG(BookmakerAdapter):
         }
         for attempt in range(2):  # at most one retry
             try:
-                r = await self._client.get(f"{self.BASE}/factsCenter/pcUpcomingEvents", params=params)
-                r.raise_for_status()
+                url, q = self._url("/factsCenter/pcUpcomingEvents", params)
+                r = await self._client.get(url, params=q)
+                self._check(r)
                 body = r.json()
                 return body.get("data") or {}
             except (httpx.HTTPError, ValueError) as exc:
@@ -236,9 +255,13 @@ class SportyBetNG(BookmakerAdapter):
             {"eventId": s.event_id, "marketId": s.market_id, "specifier": s.specifier or "",
              "outcomeId": s.outcome_id} for s in selections]}
         try:
-            r = await self._client.post(f"{self.BASE}/orders/share", json=body,
-                                        headers={"Content-Type": "application/json"})
+            url, q = self._url("/orders/share")
+            r = await self._client.post(url, params=q, json=body, headers={"Content-Type": "application/json"})
+            if r.headers.get("x-upstream-waf") or r.status_code == 202:
+                raise BookingError("SportyBet's firewall blocked the request. Try again in a minute.")
             payload = r.json()
+        except httpx.TimeoutException as exc:
+            raise BookingError("SportyBet took too long to answer. Try again in a minute.") from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise BookingError(f"SportyBet did not answer the booking request ({exc.__class__.__name__}).") from exc
         code = (payload.get("data") or {}).get("shareCode") if isinstance(payload, dict) else None

@@ -5,11 +5,13 @@ import html
 import logging
 import math
 
-from telegram import BotCommand, InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb, Update
+from telegram import (BotCommand, InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb, MenuButtonWebApp, Update,
+                      WebAppInfo)
 from telegram.constants import ParseMode
 from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, TypeHandler, filters)
 
+import config
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
 from predictor import Prediction
 from services import TZ, Services
@@ -55,12 +57,21 @@ async def owner_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         raise ApplicationHandlerStop  # silently ignore everyone else
 
 
+def app_url() -> str | None:
+    base = config.PUBLIC_BASE_URL
+    return f"{base}/app" if base.startswith("https://") else None
+
+
 # ---------------------------------------------------------------- commands
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    url = app_url()
+    kb = Kb([[Btn("⚽ Open picks app", web_app=WebAppInfo(url))]]) if url else None
     await update.effective_message.reply_text(
         "👋 <b>Private football picks bot</b>\nOdds and fixtures from SportyBet NG, estimates from a "
-        "Poisson goals model blended with the market.\n\n" + HELP + "\n\n" + RG_NOTE,
-        parse_mode=ParseMode.HTML)
+        "Poisson goals model blended with the market.\n\n"
+        + ("Tap <b>Open picks app</b> (or the menu button) for the full app.\n\n" if url else "")
+        + HELP + "\n\n" + RG_NOTE,
+        parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
 async def today(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -359,8 +370,19 @@ async def post_init(app: Application) -> None:
         BotCommand("today", "Today's matches by league"), BotCommand("upcoming", "Next 3 days"),
         BotCommand("predict", "Predict: Team A vs Team B"), BotCommand("slip", "Show bet slip"),
         BotCommand("book", "Get SportyBet booking code"), BotCommand("clear", "Clear slip"),
-        BotCommand("start", "Help"),
+        BotCommand("start", "Help + open the picks app"),
     ])
+    url = app_url()
+    if url:
+        button = MenuButtonWebApp(text="Picks", web_app=WebAppInfo(url))
+        try:
+            await app.bot.set_chat_menu_button(menu_button=button)  # default for all private chats
+            owner = config.OWNER_TELEGRAM_ID or app.bot_data["services"].storage.get_owner()
+            if owner:
+                await app.bot.set_chat_menu_button(chat_id=owner, menu_button=button)
+            log.info("Chat menu button set to the Mini App")
+        except Exception as exc:
+            log.warning("Could not set chat menu button: %s", exc)
 
 
 def register(app: Application) -> None:
