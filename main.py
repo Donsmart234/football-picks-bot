@@ -11,6 +11,7 @@ import signal
 from aiohttp import web
 from telegram import Update
 from telegram.ext import Application
+from telegram.request import HTTPXRequest
 
 import config
 import handlers
@@ -34,7 +35,9 @@ async def health(_: web.Request) -> web.Response:
 
 
 def build_app(webhook: bool) -> Application:
-    builder = Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(handlers.post_init)
+    req = HTTPXRequest(connect_timeout=20, read_timeout=30, write_timeout=30, pool_timeout=10)
+    builder = (Application.builder().token(config.TELEGRAM_BOT_TOKEN).post_init(handlers.post_init)
+               .request(req).get_updates_request(HTTPXRequest(connect_timeout=20, read_timeout=40)))
     if webhook:
         builder = builder.updater(None)
     app = builder.build()
@@ -73,13 +76,22 @@ async def run() -> None:
 
     runner = None
     port = config.PORT or (8080 if webhook else None)
-    await app.initialize()
-    await app.start()
-    if port:
+    if port:  # bind the port first so the host's health check passes while Telegram warms up
         runner = web.AppRunner(web_app)
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", port).start()
         log.info("HTTP server on :%s (/health%s)", port, ", " + WEBHOOK_PATH if webhook else "")
+    for attempt in range(1, 9):
+        try:
+            await app.initialize()
+            break
+        except Exception as e:  # network blips (TimedOut/NetworkError) on cold start
+            wait = min(60, 5 * attempt)
+            log.warning("Telegram init failed (attempt %s): %s; retrying in %ss", attempt, type(e).__name__, wait)
+            await asyncio.sleep(wait)
+    else:
+        raise SystemExit("Could not reach Telegram after retries.")
+    await app.start()
     if webhook:
         await app.bot.set_webhook(config.WEBHOOK_URL + WEBHOOK_PATH, secret_token=secret,
                                   allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
