@@ -22,6 +22,7 @@ import os
 import config
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
 from markets import valid_token
+from constraints import Constraints, norm_market
 from scanner import DAYS, TIER_ALIASES, apply_stats, uid_of
 from services import TZ, Services
 
@@ -342,7 +343,8 @@ class MiniApp:
                 rec, day = await tr.create_rollover(float(data.get("target") or 0), int(data.get("days") or 0), stake,
                                                     autobook=bool(data.get("book", True)) or not admin,
                                                     test=bool(data.get("test")) and admin,
-                                                    push=bool(data.get("push", True)) or not admin)
+                                                    push=bool(data.get("push", True)) or not admin,
+                                                    allow_unders=bool(data.get("allow_unders")))
                 return web.json_response({"ok": True, "rollover": await tr.history.get(rec["id"]), "day": day})
             if act == "stop":
                 return web.json_response({"ok": True, "rollover": await tr.stop_rollover()})
@@ -412,8 +414,18 @@ class MiniApp:
         if target is not None and not (1.1 <= target <= 100000):
             return web.json_response({"error": "target odds must be between 1.1 and 100000"}, status=400)
         leagues = [str(x)[:40] for x in (data.get("leagues") or [])][:10] or None
+        # structured rules (see constraints.py): {"constraints": {...}} and/or the Mini App toggles
+        raw = data.get("constraints") if isinstance(data.get("constraints"), dict) else {}
+        raw = {k: v for k, v in raw.items() if k not in ("tier", "target_odds", "day")}
+        c = Constraints.from_dict(raw)
+        for m in data.get("exclude_markets") or []:
+            nm = norm_market(str(m))
+            if nm and nm not in c.exclude_markets:
+                c.exclude_markets.append(nm)
+        if data.get("no_unders") and "under" not in c.exclude_markets:
+            c.exclude_markets.append("under")
         try:
-            res = await self.s.scanner.scan(tier, target, day, leagues)
+            res = await self.s.scanner.scan(tier, target, day, leagues, c if not c.empty() else None)
         except Exception as exc:
             log.warning("scan failed: %s", exc, exc_info=True)
             return web.json_response({"error": "The market scan failed (SportyBet didn't answer). Try again shortly."},

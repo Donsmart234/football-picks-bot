@@ -225,7 +225,7 @@ class Tracker:
 
     async def create_rollover(self, target: float, days: int, stake: float | None = None,
                               autobook: bool = True, generate: bool = True, test: bool = False,
-                              push: bool = True) -> tuple[dict, dict | None]:
+                              push: bool = True, allow_unders: bool = False) -> tuple[dict, dict | None]:
         if target not in ROLLOVER_TARGETS:
             raise ValueError("Daily target must be 2, 3, 4 or 5.")
         if not 3 <= days <= 15:
@@ -235,7 +235,8 @@ class Tracker:
             raise ValueError("A rollover is already running. Stop it first (/rollover stop).")
         rec = {"id": new_id("ro"), "kind": "rollover", "status": "active", "data": {
             "target": target, "days": days, "stake": stake, "value": stake, "current_day": 1,
-            "log": [], "last_gen_date": "", "autobook": autobook, "test": test, "push": push, "started": now_iso()}}
+            "log": [], "last_gen_date": "", "autobook": autobook, "test": test, "push": push, "started": now_iso(),
+            "allow_unders": bool(allow_unders)}}
         await self.history.save(rec)
         day = None
         if generate and datetime.now(TZ).hour < LAST_GEN_HOUR:
@@ -262,7 +263,7 @@ class Tracker:
         pend = [x for x in d["log"] if x.get("status") in ("pending", "check")]
         if pend:
             return {"status": "waiting", "note": "Yesterday's slip is still running; I'll build the next day after it settles."}
-        res = await self.s.scanner.rollover_slip(float(d["target"]))
+        res = await self.s.scanner.rollover_slip(float(d["target"]), allow_unders=bool(d.get("allow_unders")))
         n, m = d["current_day"], d["days"]
         entry = {"day": n, "date": today, "status": "no_slip", "note": res.get("note", ""), "slip_id": "", "code": "",
                  "total_odds": res["total_odds"], "est_prob": res["est_prob"], "legs": len(res["legs"])}
@@ -298,7 +299,9 @@ class Tracker:
                 lines.append(leg_lines(l, i, why=True))
             lines += [RULE, f"<b>Total odds <code>{res['total_odds']:.2f}</code></b> · est. hit chance "
                       f"<b>{res['est_prob']:.0%}</b>{stake}",
-                      "<i>Top leagues only, stats-confirmed legs ≥80% est. Estimates, not guarantees. 18+.</i>"]
+                      "<i>Top leagues only, stats-confirmed legs ≥80% est."
+                      + ("" if d.get("allow_unders") else " No under selections.")
+                      + " Estimates, not guarantees. 18+.</i>"]
             markup = None
             if not code:
                 from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb

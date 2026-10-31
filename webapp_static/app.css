@@ -280,3 +280,6 @@ h2 { font-size: 19px; margin: 0; letter-spacing: -.2px; }
 .crest img { opacity: 0; transition: opacity .2s; }
 .leg .mkt { flex-wrap: wrap; row-gap: 2px; } .leg .mkt .pick { max-width: 100%; white-space: normal; }
 .hleg .mkt { flex-wrap: wrap; row-gap: 2px; } .hleg .pick { white-space: normal; }
+
+.fchips { flex-wrap: wrap; overflow: visible; margin-top: 6px; }
+.fchips .chip { padding: 6px 11px; font-size: 12.5px; }

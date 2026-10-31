@@ -25,8 +25,10 @@
     tab: "home", tier: "safe", target: 5, day: "today", scan: null, scanning: false, scanErr: "",
     mRange: "today", mData: {}, mStack: [], mQuery: "", pred: null, markets: null,
     chat: [], aiBusy: false,
-    hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "" },
+    hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false },
+    ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
   };
+  const EXCL = [["under", "No unders"], ["corners", "No corners"], ["cards", "No cards"], ["player_props", "No player props"], ["handicap", "No handicaps"], ["combo", "No combos"]];
 
   // ---------------------------------------------------------------- helpers
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -165,6 +167,7 @@
         <div class="kpi"><b>${s.target ? Number(s.target).toFixed(s.target % 1 ? 2 : 0) : "–"}</b><span>Target</span></div>
         <div class="kpi"><b>${s.with_stats}/${s.scanned}</b><span>Stats-checked</span></div></div>
       ${meter(s.est_prob)}
+      ${s.constraints_text ? `<div class="rules">🎛 ${esc(s.constraints_text)}${s.constraint_check && s.constraint_check.ok && s.legs.length ? " · ✓ every leg re-checked" : ""}</div>` : ""}
       ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
       ${s.legs.length ? `<div class="btnrow"><button class="btn" data-act="bookslip" data-k="${esc(key)}">Book on SportyBet</button>
         <button class="btn secondary" style="flex:.7" data-act="slipall" data-k="${esc(key)}">Add to slip</button></div>` : ""}
@@ -183,6 +186,7 @@
       html += `<div class="target"><div class="field"><span>Target odds</span><input id="target" inputmode="decimal" value="${state.target}" autocomplete="off"></div></div>
         <div class="quick">${t.quick.map((q) => `<button data-act="quick" data-q="${q}" class="${Number(state.target) === q ? "on" : ""}">${q}×</button>`).join("")}</div>`;
     }
+    html += `<div class="label" style="margin-top:12px">Filters</div><div class="chips fchips">${EXCL.map(([k, v]) => `<button class="chip${state.ex.includes(k) ? " on" : ""}" data-act="excl" data-k="${k}" aria-pressed="${state.ex.includes(k)}">${state.ex.includes(k) ? "✓ " : ""}${v}</button>`).join("")}</div>`;
     html += `<div class="rules">${esc(t.rule)}</div>
         <button class="btn" data-act="scan" ${state.scanning ? "disabled" : ""}>${state.scanning ? "Scanning…" : state.tier === "audit" ? "Run grand audit" : "Generate slip"}</button></div>`;
     html += `<div id="scanOut">${scanOut()}</div>
@@ -234,7 +238,7 @@
     if (inp) state.target = parseFloat(inp.value.replace(",", ".")) || TIERS[state.tier].target;
     state.scanning = true; state.scanErr = ""; state.scan = null; state.viewSlip = null; hap("medium"); renderHome();
     try {
-      state.scan = await api("/api/scan", { tier: state.tier, target: state.tier === "audit" ? null : state.target, day: state.day });
+      state.scan = await api("/api/scan", { tier: state.tier, target: state.tier === "audit" ? null : state.target, day: state.day, exclude_markets: state.ex });
       hapN("success");
     } catch (e) { state.scanErr = e.message; hapN("error"); }
     state.scanning = false;
@@ -488,7 +492,7 @@
     if (state.roBusy) h += `<div class="card"><div class="scanning"><div class="radar"></div>Scanning today's top-league matches…<div class="steps">every market → stats check → fewest strong legs to the target</div></div></div>`;
     if (act) {
       const d = act.data, n = Math.min(d.current_day, d.days);
-      h += `<div class="card port t-safe"><div class="head"><span class="label">Day ${n} of ${d.days}</span><span class="pill">${d.target}× a day</span></div>
+      h += `<div class="card port t-safe"><div class="head"><span class="label">Day ${n} of ${d.days}</span><span class="pill">${d.target}× a day${d.allow_unders ? "" : " · no unders"}</span></div>
         <div class="big num">${d.value ? Number(d.value).toLocaleString("en-GB", { maximumFractionDigits: 0 }) : f2(Math.pow(d.target, Math.max(0, d.current_day - 1)))}<small>${d.value ? "stake value" : "odds compounded"}</small></div>
         ${roSteps(d)}
         <div class="kpis"><div class="kpi"><b>${d.stake ? Number(d.stake).toLocaleString("en-GB") : "–"}</b><span>Start stake</span></div><div class="kpi"><b>${d.stake ? Math.round(d.stake * Math.pow(d.target, d.days)).toLocaleString("en-GB") : f2(Math.pow(d.target, d.days))}</b><span>If all ${d.days} land</span></div><div class="kpi"><b>${(d.log || []).filter((x) => x.status === "won").length}</b><span>Days won</span></div></div>
@@ -510,7 +514,8 @@
         <div class="label" style="margin-top:14px">Days</div>
         <div class="stepper"><button data-act="rodays" data-v="-1" aria-label="Fewer days">−</button><b class="num">${f.days}</b><button data-act="rodays" data-v="1" aria-label="More days">+</button><span class="sub">3–15 days</span></div>
         <div class="target"><div class="field"><span>Starting stake (optional)</span><input id="rostake" inputmode="decimal" value="${esc(f.stake)}" placeholder="₦" autocomplete="off"></div></div>
-        <div class="rules">Each morning (~09:00 WAT) I build that day's slip from the top leagues (EPL, LaLiga, Serie A, Bundesliga, Ligue 1, UEFA cups, Eredivisie, Primeira Liga, Championship, Scottish Prem, Süper Lig, Pro League, MLS, Brasileirão, Argentina…) using only stats-confirmed legs at ≥80% est., as close to ${f.target}× as possible. A win moves you to the next day, a loss ends the plan. If nothing qualifies I'll suggest skipping the day. All ${f.days} days at ${f.target}× = ${f2(Math.pow(f.target, f.days))}× overall.</div>
+        <div class="chips fchips" style="margin-top:12px"><button class="chip${f.allowUnders ? " on" : ""}" data-act="rounders" aria-pressed="${f.allowUnders}">${f.allowUnders ? "✓ Unders allowed" : "No unders (tap to allow)"}</button></div>
+        <div class="rules">Each morning (~09:00 WAT) I build that day's slip from the top leagues (EPL, LaLiga, Serie A, Bundesliga, Ligue 1, UEFA cups, Eredivisie, Primeira Liga, Championship, Scottish Prem, Süper Lig, Pro League, MLS, Brasileirão, Argentina…) using only stats-confirmed legs at ≥80% est.${f.allowUnders ? "" : ", no under selections"}, as close to ${f.target}× as possible. A win moves you to the next day, a loss ends the plan. If nothing qualifies I'll suggest skipping the day. All ${f.days} days at ${f.target}× = ${f2(Math.pow(f.target, f.days))}× overall.</div>
         <button class="btn" data-act="rostart" ${state.roBusy ? "disabled" : ""}>Start rollover</button></div>`;
     }
     const past = (state.ro.past || []).filter((r) => !act || r.id !== act.id);
@@ -557,6 +562,8 @@
     else if (a === "day") { state.day = t.dataset.d; hapSel(); renderHome(); }
     else if (a === "quick") { state.target = Number(t.dataset.q); hapSel(); renderHome(); }
     else if (a === "scan") runScan();
+    else if (a === "excl") { const k = t.dataset.k; state.ex = state.ex.includes(k) ? state.ex.filter((x) => x !== k) : state.ex.concat([k]); try { localStorage.setItem("fra_ex", JSON.stringify(state.ex)); } catch (e) {} hapSel(); renderHome(); }
+    else if (a === "rounders") { const si = document.getElementById("rostake"); if (si) state.roForm.stake = si.value; state.roForm.allowUnders = !state.roForm.allowUnders; hapSel(); renderRollover(); }
     else if (a === "viewslip") { state.viewSlip = t.dataset.k; renderHome(); window.scrollTo(0, 0); }
     else if (a === "auditback") { state.viewSlip = null; renderHome(); }
     else if (a === "bookslip") {
@@ -591,7 +598,7 @@
     else if (a === "rorefresh") { state.ro = null; renderRollover(); }
     else if (a === "rotarget") { state.roForm.target = Number(t.dataset.v); hapSel(); renderRollover(); }
     else if (a === "rodays") { const inp = document.getElementById("rostake"); if (inp) state.roForm.stake = inp.value; state.roForm.days = Math.max(3, Math.min(15, state.roForm.days + Number(t.dataset.v))); hapSel(); renderRollover(); }
-    else if (a === "rostart") { const inp = document.getElementById("rostake"); const st = inp ? parseFloat(inp.value.replace(/[,₦\s]/g, "")) : NaN; roAction({ action: "start", target: state.roForm.target, days: state.roForm.days, stake: isNaN(st) ? null : st }, true); }
+    else if (a === "rostart") { const inp = document.getElementById("rostake"); const st = inp ? parseFloat(inp.value.replace(/[,₦\s]/g, "")) : NaN; roAction({ action: "start", target: state.roForm.target, days: state.roForm.days, stake: isNaN(st) ? null : st, allow_unders: !!state.roForm.allowUnders }, true); }
     else if (a === "ronow") roAction({ action: "now" }, true);
     else if (a === "roskip") roAction({ action: "skip" });
     else if (a === "rostop") { const doIt = () => roAction({ action: "stop" }); if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast("6.2")) tg.showConfirm("Stop this rollover plan?", (ok) => ok && doIt()); else if (confirm("Stop this rollover plan?")) doIt(); }

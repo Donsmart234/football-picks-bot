@@ -14,6 +14,7 @@ import httpx
 
 from bookmakers import BookingError, Selection
 from markets import valid_token
+from constraints import MARKET_TYPES, Constraints, parse_text, verify
 from scanner import TIER_ALIASES, apply_stats
 from services import TZ, Services
 
@@ -36,6 +37,20 @@ Rules:
   build_booking_code(slip_id=...) and give the code. Tiers: safe (EVERY leg est. >=80% after the stats check,
   odds ~1.05-1.35; 80% is an estimate, not a promised accuracy), mid
   (>=70%, 1.30-1.70), risk (>=55%, 1.60-2.30), high (value legs 2.0+), audit (full report).
+- FOLLOW THE USER'S INSTRUCTIONS EXACTLY. Translate every rule in the request into scan_markets arguments:
+  target_odds, tier, min_leg_prob, min_legs/max_legs, min_leg_odds/max_leg_odds, include_markets/exclude_markets
+  (market types: under, over, totals, team_totals, 1x2, double_chance, dnb, handicap, btts, corners, cards,
+  player_props, halves, combo, correct_score, exact_goals, odd_even, minutes, specials), include/exclude leagues,
+  countries, teams, day, kickoff_after/kickoff_before (local HH:MM). "Sure", "safe", "banker", "low risk" = tier
+  safe (every leg est. >=80%). "Without unders / no under selections" => exclude_markets=["under"] (this removes
+  every Under line: match, team, half, corners, cards, Asian, and combos containing an Under). "Only overs" =>
+  include_markets=["over"]. Example: "give me sure 5 odds without under selections" => scan_markets(tier="safe",
+  target_odds=5, exclude_markets=["under"]).
+- The scanner enforces those rules and returns constraint_check (ok, violations, target_reached). Before you reply
+  or book, read it: only present/book a slip whose constraint_check.ok is true, and state the rules you applied in
+  one short line. If target_reached is false or no legs qualify, say plainly that the rules can't be met at the
+  safety bar right now (give what it reached) and offer options (lower target, relax a rule, another day). Never
+  break or quietly drop a rule the user gave, and never swap in weaker legs to hit the odds.
 - "Who wins X vs Y?" => predict_match. Mention the key numbers (1X2 %, best pick) and the form/H2H facts.
 - Each leg already passed a team-stats check (form, home/away record, goals, H2H); quote its short "why".
 - If a slip falls short of the target, say so honestly instead of padding it. Never add a weaker leg to a Safe slip
@@ -67,13 +82,32 @@ TOOLS = [{"functionDeclarations": [
      "parameters": {"type": "object", "properties": {"match": {"type": "string"}}, "required": ["match"]}},
     {"name": "scan_markets",
      "description": ("Scan every bookable market of up to 80 matches, check shortlisted matches against team stats, and "
-                     "build an accumulator for a risk tier to a target total odds (one pick per match). Returns a "
-                     "slip_id for booking. tier=audit returns best leg per match, top value bets and a slip per tier."),
+                     "build an accumulator for a risk tier to a target total odds (one pick per match) that obeys "
+                     "every constraint given. Returns a slip_id for booking and constraint_check. tier=audit returns "
+                     "best leg per match, top value bets and a slip per tier."),
      "parameters": {"type": "object", "properties": {
-         "tier": {"type": "string", "enum": ["safe", "mid", "risk", "high", "audit"]},
+         "tier": {"type": "string", "enum": ["safe", "mid", "risk", "high", "audit"],
+                  "description": "safe = every leg est. >=80% ('sure', 'safe', 'banker'); mid >=70%; risk >=55%; high = value"},
          "target_odds": {"type": "number", "description": "total odds target (defaults: safe 5, mid 10, risk 20, high 50)"},
          "day": {"type": "string", "enum": ["today", "tomorrow", "24h", "48h"], "description": "default today"},
-         "leagues": {"type": "array", "items": {"type": "string"}, "description": "optional league filters"}},
+         "leagues": {"type": "array", "items": {"type": "string"}, "description": "legacy: league text filters for which matches to scan"},
+         "min_leg_prob": {"type": "number", "description": "minimum estimated probability per leg, 0-1 (e.g. 0.85)"},
+         "min_legs": {"type": "integer"}, "max_legs": {"type": "integer"},
+         "min_leg_odds": {"type": "number"}, "max_leg_odds": {"type": "number"},
+         "include_markets": {"type": "array", "items": {"type": "string", "enum": MARKET_TYPES},
+                             "description": "only legs of these market types"},
+         "exclude_markets": {"type": "array", "items": {"type": "string", "enum": MARKET_TYPES},
+                             "description": "never legs of these market types; 'under' removes every Under selection"},
+         "include_leagues": {"type": "array", "items": {"type": "string"},
+                             "description": "e.g. 'Premier League', 'LaLiga', 'Champions League', or 'top leagues'"},
+         "exclude_leagues": {"type": "array", "items": {"type": "string"}},
+         "include_countries": {"type": "array", "items": {"type": "string"}, "description": "e.g. 'England', 'Spain'"},
+         "exclude_countries": {"type": "array", "items": {"type": "string"}},
+         "include_teams": {"type": "array", "items": {"type": "string"}, "description": "only matches involving these teams"},
+         "exclude_teams": {"type": "array", "items": {"type": "string"}},
+         "kickoff_after": {"type": "string", "description": "local time HH:MM (Africa/Lagos), or 'YYYY-MM-DD HH:MM'"},
+         "kickoff_before": {"type": "string", "description": "local time HH:MM (Africa/Lagos), or 'YYYY-MM-DD HH:MM'"},
+         "stats_confirmed_only": {"type": "boolean", "description": "only legs confirmed by the team-stats check"}},
          "required": ["tier"]}},
     {"name": "build_booking_code",
      "description": ("Create a SportyBet booking code from a scanned slip (slip_id) or explicit selections. The code "
@@ -82,6 +116,8 @@ TOOLS = [{"functionDeclarations": [
          "slip_id": {"type": "string"},
          "tier": {"type": "string", "enum": ["safe", "mid", "risk", "high", "custom"],
                   "description": "for explicit selections: 'safe' re-checks every leg is est. >=80% and refuses weaker legs"},
+         "accept_short": {"type": "boolean",
+                          "description": "true only if the user agreed to book a slip that fell short of its target"},
          "selections": {"type": "array", "items": {"type": "object", "properties": {
              "event_id": {"type": "string"}, "market_id": {"type": "string"}, "specifier": {"type": "string"},
              "outcome_id": {"type": "string"}}}}}}},
@@ -215,7 +251,7 @@ class Analyst:
         if not self.enabled:
             return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
         contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]
-        turn = {"slip": None, "code": None, "tools": []}
+        turn = {"slip": None, "code": None, "tools": [], "hard": parse_text(text)}
         reply = ""
         for _ in range(MAX_ROUNDS):
             data = await self._generate(contents)
@@ -240,6 +276,7 @@ class Analyst:
             contents.append({"role": "user", "parts": responses})
         if not reply:
             reply = "I couldn't finish that analysis. Try a simpler question."
+        reply += self._rules_footer(turn)
         if turn["code"] and turn["code"] not in reply:
             reply += f"\n\nBooking code: `{turn['code']}`"
         if "estimate" not in reply.lower() and "guarantee" not in reply.lower():
@@ -248,6 +285,21 @@ class Analyst:
         self._save(chat_id, "model", reply)
         return {"reply": reply, "slip": turn["slip"], "code": turn["code"], "tools": turn["tools"],
                 "model": self.model}
+
+    @staticmethod
+    def _rules_footer(turn: dict) -> str:
+        """Server-side check line appended when the user stated rules and a slip came back."""
+        sl = turn.get("slip")
+        if not sl or sl.get("tier") == "audit" or not sl.get("constraints"):
+            return ""
+        chk = sl.get("constraint_check") or {}
+        if not chk.get("ok"):
+            return ("\n\n⚠️ Rules check failed on this slip: " + "; ".join(chk.get("violations", [])[:3]) +
+                    ". Don't use it; ask me to rebuild.")
+        if not sl.get("legs"):
+            return ""
+        return (f"\n\n✅ Rules check: {sl.get('constraints_text') or 'ok'} · {len(sl['legs'])} legs · total "
+                f"{sl['total_odds']:.2f}" + ("" if chk.get("target_reached") else " (short of target)"))
 
     # ---- tools ------------------------------------------------------------
     async def _find(self, match: str):
@@ -339,10 +391,15 @@ class Analyst:
                                           "stats_check": l.verdict} for l in strong]
             return out
         if name == "scan_markets":
-            tier = TIER_ALIASES.get(str(a.get("tier") or "safe").lower(), "safe")
-            target = a.get("target_odds")
-            res = await self.s.scanner.scan(tier, float(target) if target else None, a.get("day") or "today",
-                                            a.get("leagues") or None)
+            c = Constraints.from_dict(a)
+            hard = turn.get("hard")
+            if hard is not None:
+                c.merge_hard(hard)      # rules stated in the user's own words are always enforced
+            tier = c.tier or TIER_ALIASES.get(str(a.get("tier") or "safe").lower(), "safe")
+            c.tier = tier
+            day = c.day or (a.get("day") if a.get("day") in ("today", "tomorrow", "24h", "48h") else "today")
+            c.day = day
+            res = await self.s.scanner.scan(tier, c.target_odds, day, a.get("leagues") or None, c)
             if tier == "audit":
                 for sl in res["slips"].values():
                     self.remember_slip(sl)
@@ -359,12 +416,31 @@ class Analyst:
             return {"slip_id": sid, "tier": res["label"], "target": res["target"], "total_odds": res["total_odds"],
                     "est_hit_chance": _pct(res["est_prob"]), "reached_target": res["reached"],
                     "note": res["note"], "matches_scanned": res["scanned"], "with_stats": res["with_stats"],
+                    "applied_constraints": res.get("constraints"), "rules_text": res.get("constraints_text"),
+                    "constraint_check": res.get("constraint_check"),
+                    "unmapped_market_words": c.unknown or None,
                     "legs": [compact_leg(l) for l in res["legs"]]}
         if name == "build_booking_code":
             sels, legs, meta = [], [], {}
             if a.get("slip_id") and a["slip_id"] in self.slips:
                 slip = self.slips[a["slip_id"]]["slip"]
                 legs = list(slip["legs"])
+                chk = slip.get("constraint_check")
+                if chk and not chk.get("ok"):
+                    return {"error": "Refused: this slip breaks the requested rules (" +
+                            "; ".join(chk["violations"][:4]) + ")."}
+                hard = turn.get("hard")
+                if hard is not None and not hard.empty():
+                    hv = verify(slip, Constraints.from_dict({k: v for k, v in hard.to_dict().items()
+                                                             if k not in ("target_odds", "day", "tier")}),
+                                0.80 if slip.get("tier") == "safe" else None)
+                    if not hv["ok"]:
+                        return {"error": "Refused: this slip breaks the rules in your request (" +
+                                "; ".join(hv["violations"][:4]) + "). Run scan_markets with those rules."}
+                if slip.get("legs") and not slip.get("reached", True) and not a.get("accept_short"):
+                    return {"error": f"Not booked: the slip reaches {slip.get('total_odds')} odds, short of the "
+                            f"{slip.get('target')} target. Tell the user and book only if they accept "
+                            "(accept_short=true)."}
                 meta = {"tier": slip.get("tier", "custom"), "label": slip.get("label", ""),
                         "total_odds": slip.get("total_odds"), "est_prob": slip.get("est_prob"),
                         "target": slip.get("target")}
@@ -375,9 +451,17 @@ class Analyst:
                         legs.append(dict(zip(("event_id", "market_id", "specifier", "outcome_id"), vals)))
                 tier = str(a.get("tier") or "custom").lower()
                 legs, problems = await self._price_selections(legs, tier)
+                hard = turn.get("hard")
+                if hard is not None and not hard.empty() and not problems:
+                    priced = [l for l in legs if "est" in l]
+                    rules = Constraints.from_dict({k: v for k, v in hard.to_dict().items()
+                                                   if k not in ("target_odds", "day", "tier", "min_legs", "max_legs")})
+                    problems += [f"{l['match']} {l['pick']}: {rules.leg_problem(l)}" for l in priced
+                                 if rules.leg_problem(l)]
                 if problems:
                     return {"error": "Refused: " + "; ".join(problems[:6]) +
-                            ". Safe legs must each be est. >=80% after the stats check; I won't add weaker legs."}
+                            ". Every leg must clear the tier's bar (Safe = est. >=80% after the stats check) and the user's rules; "
+                            "I won't add legs that break them."}
                 meta = {"tier": tier, "label": tier.title()}
             if not legs:
                 return {"error": "No selections: run scan_markets first and pass its slip_id."}

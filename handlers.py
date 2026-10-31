@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import logging
 import math
+import re
 
 from telegram import (BotCommand, InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb, MenuButtonWebApp, Update,
                       WebAppInfo)
@@ -16,6 +17,7 @@ from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS
 from ai import md_to_html
 from fmt import RULE, STATUS_ICON, record_text, slip_text
 from predictor import Prediction
+from constraints import parse_text
 from scanner import TIER_ALIASES
 from services import TZ, Services
 
@@ -26,7 +28,8 @@ RG_NOTE = ("⚠️ <i>Predictions are statistical estimates, never guarantees. B
            "to lose, 18+ only. If gambling stops being fun, take a break.</i>")
 HELP = (
     "<b>Commands</b>\n"
-    "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit)\n"
+    "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit). Filters: nounders, -corners, "
+    "-cards, -props, only:1x2,dc, legs:4-8, minodds:1.2, league:epl, after:18:00\n"
     "/ai question – ask the AI analyst (or just type any message)\n"
     "/today – today's matches by league\n"
     "/upcoming – next 3 days\n"
@@ -171,6 +174,10 @@ def format_slip(sl: dict, why: bool = True) -> str:
     rule = f"Each leg est. ≥{sl['rules']['min_p']:.0%} after the stats check" if sl.get("rules", {}).get("min_p") else ""
     title = (f"🧮 <b>{esc(sl['label']).upper()} SLIP</b> · target {sl['target']:g} · {esc(sl['day'])}"
              + (f"\n<i>{rule} · {sl['candidates']} qualified · {sl['with_stats']} matches stats-checked</i>" if rule else ""))
+    if sl.get("constraints_text"):
+        chk = sl.get("constraint_check") or {}
+        title += (f"\n🎛 Your rules: {esc(sl['constraints_text'])}"
+                  + (" · ✅ every leg re-checked" if chk.get("ok") and sl.get("legs") else ""))
     return slip_text(sl, title, why=why)
 
 
@@ -188,16 +195,22 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             tier = TIER_ALIASES[a]
         elif a in ("today", "tomorrow", "24h", "48h"):
             day = a
-        else:
-            try:
-                target = float(a.replace("odds", "").replace("x", ""))
-            except ValueError:
-                pass
+        elif re.fullmatch(r"\d+(\.\d+)?(odds|x)?", a) and target is None:
+            target = float(a.replace("odds", "").replace("x", ""))
+    # filters: nounders / -corners / only:1x2,dc / legs:4-8 / minodds:1.2 / maxodds:1.5 / league:epl /
+    # country:england / team:arsenal / after:18:00 / before:21:00 / minp:85 (or plain words: "no unders")
+    c = parse_text(" ".join(args))
+    c.tier, c.target_odds = None, None
+    if c.day:
+        day = c.day
+    c = c if not c.empty() else None
     s = svc(ctx)
+    rules = f" · {esc(c.describe())}" if c else ""
     note = await update.effective_message.reply_text(
-        f"🔎 Scanning up to 80 matches ({day}), every market, then checking form/H2H… ~30 s")
+        f"🔎 Scanning up to 80 matches ({day}){rules}, every market, then checking form/H2H… ~30 s",
+        parse_mode=ParseMode.HTML)
     try:
-        res = await s.scanner.scan(tier, target, day)
+        res = await s.scanner.scan(tier, target, day, None, c)
     except Exception as exc:
         log.warning("scan failed: %s", exc, exc_info=True)
         await note.edit_text("The market scan failed (SportyBet didn't answer). Try again in a minute.")
@@ -490,12 +503,14 @@ def _ro_text(rec: dict | None) -> str:
         return ("🔁 <b>Rollover</b>\nNo plan running. Pick a daily target (2, 3, 4 or 5 odds) and 3–15 days, e.g.\n"
                 "<code>/rollover 2 7</code> or with a starting stake <code>/rollover 3 5 1000</code>.\n"
                 "Each morning (~09:00) I build that day's slip from top leagues only, stats-confirmed legs ≥80% est., "
+                "no under selections (add <code>unders</code> to allow them, e.g. <code>/rollover 3 7 unders</code>), "
                 "as close to the target as possible. A win moves the plan to the next day; a loss ends it. "
                 "If nothing qualifies, I'll say so and suggest skipping the day.\n<i>Estimates, not guarantees. 18+.</i>")
     d = rec["data"]
     icon = {"active": "▶️", "completed": "🏆", "busted": "💔", "stopped": "⏹"}.get(rec["status"], "")
     lines = [f"🔁 <b>Rollover</b> {icon} {esc(rec['status'])} · target <b>{d['target']:g}</b>/day · "
-             f"day <b>{min(d['current_day'], d['days'])}/{d['days']}</b>"]
+             f"day <b>{min(d['current_day'], d['days'])}/{d['days']}</b>"
+             + (" · unders allowed" if d.get("allow_unders") else " · no unders")]
     if d.get("stake"):
         lines.append(f"Stake {d['stake']:,.0f} → now <b>{(d.get('value') or 0):,.0f}</b>")
     lines.append(RULE)
@@ -531,20 +546,23 @@ async def rollover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if args[0] in ("stop", "skip", "now", "won", "lost"):
             await _ro_action(msg, ctx, args[0])
             return
+        allow_unders = any(a in ("unders", "allow-unders", "+unders", "with-unders") for a in args)
+        args = [a for a in args if a not in ("unders", "allow-unders", "+unders", "with-unders", "nounders",
+                                             "no-unders", "-unders")]
         target, days = float(args[0].rstrip("x×")), int(args[1]) if len(args) > 1 else 5
         stake = float(args[2].replace(",", "")) if len(args) > 2 else None
     except (ValueError, IndexError):
-        await msg.reply_text("Usage: /rollover <target 2|3|4|5> <days 3–15> [stake] · /rollover stop|skip|now")
+        await msg.reply_text("Usage: /rollover <target 2|3|4|5> <days 3–15> [stake] [unders] · /rollover stop|skip|now")
         return
-    await _ro_start(msg, ctx, target, days, stake)
+    await _ro_start(msg, ctx, target, days, stake, allow_unders)
 
 
-async def _ro_start(msg, ctx, target: float, days: int, stake: float | None) -> None:
+async def _ro_start(msg, ctx, target: float, days: int, stake: float | None, allow_unders: bool = False) -> None:
     tr = svc(ctx).tracker
     note = await msg.reply_text(f"🔁 Starting a {target:g}× · {days}-day rollover and scanning today's top-league "
                                 "matches… ~30–60 s")
     try:
-        rec, day = await tr.create_rollover(target, days, stake)
+        rec, day = await tr.create_rollover(target, days, stake, allow_unders=allow_unders)
     except ValueError as exc:
         await note.edit_text(f"⚠️ {esc(str(exc))}", parse_mode=ParseMode.HTML)
         return
