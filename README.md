@@ -44,6 +44,36 @@ kept in SQLite. Without `GEMINI_API_KEY` free text falls back to the match finde
 `sr:competitor:<uid>` ids are its team uids; cached 6 h in SQLite). API-Football is now only a fallback for single-match predictions
 when the free feed has nothing and ≥20 requests are left today, so the 100/day quota is never spent on scanning.
 
+## What's new (2026-10-31, night): rules the AI and scanner obey exactly
+**Constraint layer** (`constraints.py`). One structured object, `Constraints`, used by the AI tools, `/scan`, the Mini App and
+rollover: `tier`, `target_odds`, `min_leg_prob`, `min_legs`/`max_legs`, `min_leg_odds`/`max_leg_odds`, `include_markets`/`exclude_markets`,
+`include/exclude_leagues`, `include/exclude_countries`, `include/exclude_teams`, `day`, `kickoff_after`/`kickoff_before` (local HH:MM or
+`YYYY-MM-DD HH:MM`, Africa/Lagos), `stats_confirmed_only`. The scanner drops rule-breaking legs **at the candidate stage** (so the slip is
+built from the best remaining legs), match-level rules also choose which 80 matches are scanned, and `verify()` re-checks the finished slip:
+`constraint_check = {ok, violations, target_reached, warnings}`. Rules that can't be met at the safety bar give a short slip with an
+honest note, never a broken rule. A slip now "hits" a target when total odds land in 0.97–1.25× it; Safe/Mid/Risk slips use a
+combination search (highest combined estimate inside 0.97–1.20×, one leg per match) and fall back to the greedy builder.
+
+**Market types** (every leg carries `tags`): `under, over, totals, team_totals, 1x2, double_chance, dnb, handicap, btts, corners, cards,
+player_props, halves, combo, correct_score, exact_goals, odd_even, minutes, specials`. **Under** = any pick labelled Under (match, team,
+1st/2nd half, minutes, corners, bookings/booking points, shots, Asian totals, "Home & Under 2.5"-type combos), "Yes" on a market named
+"… Under …" (Both Halves Under 1.5, Home Team or Under 2.5), "No" on a yes/no "… Over …" market, and upper-bound picks (goal / corner /
+booking ranges or bounds starting at 0, exact 0, "No Goal"). GG/NG No, clean sheets and win-to-nil are not counted as unders.
+
+**AI** (`ai.py`). `scan_markets` takes all constraint fields as function args; the system prompt tells Gemini to translate every rule
+("sure"/"safe"/"banker" = Safe ≥80% per leg; "without unders" = `exclude_markets=["under"]`), read `constraint_check` before replying
+or booking, and say plainly when rules can't be met. Server-side safety net: the user's own message is parsed deterministically
+(`parse_text`) and merged into the model's args (exclusions unioned, stated numbers win), so a rule the model forgets is still enforced.
+`build_booking_code` refuses a slip whose check failed or that breaks the rules in the current message, and won't book a slip that fell
+short of its target unless `accept_short=true` (user agreed). Replies with a constrained slip end with a server line
+"✅ Rules check: … · N legs · total X". Wording stays "estimates, not guarantees".
+
+**/scan filters**: `/scan safe 5 nounders -corners -cards only:1x2,dc legs:4-8 minodds:1.15 maxodds:1.4 league:epl country:spain
+team:arsenal notteam:chelsea after:18:00 before:22:00 minp:85` (plain words like "no unders" work too). **Mini App**: Filters chips under
+the target (No unders / corners / cards / player props / handicaps / combos; remembered on the phone; `POST /api/scan` accepts
+`exclude_markets`, `no_unders` or a full `constraints` object). **Rollover excludes unders by default** (every kind, at the candidate stage);
+allow them with `/rollover 3 7 unders` or the "No unders (tap to allow)" chip; stored per plan as `allow_unders`.
+
 ## What's new (2026-10-31, afternoon): history, result pings, rollover, crests
 **Safe = every leg ≥80%.** The scanner only admits Safe legs whose estimate *after* the stats adjustment is ≥80% (plus a hard
 filter before the slip is returned). If those legs can't reach the target odds the slip stops short and says so. The AI's
@@ -98,7 +128,7 @@ button, safe-area insets.
 | `GET /api/events?range=today\|upcoming` | Leagues with matches and 1X2 odds |
 | `POST /api/predict {"event_id"}` | Prediction + `stats` (form/H2H) |
 | `GET /api/match_markets?event_id=` | Strongest stats-checked legs across every market of one match |
-| `POST /api/scan {"tier","target","day","leagues"}` | Slip (or audit) JSON |
+| `POST /api/scan {"tier","target","day","leagues","exclude_markets"?,"no_unders"?,"constraints"?}` | Slip (or audit) JSON with `constraint_check` |
 | `POST /api/book {"slip_id"}` or `{"selections":[…], "legs":[meta…]}` | `{code, url, requested, loaded, history_id}`; saved to history |
 | `GET /api/history?limit=` | Saved slips (newest first) + current rollover |
 | `POST /api/history/book {"id"}` | Book a saved slip that has no code yet (rollover day) |
@@ -124,14 +154,14 @@ It forwards to `https://www.sportybet.com<p>` with browser headers, only for pat
 | Command | What it does |
 |---|---|
 | `/start`, `/help` | Help + **Open Fra app** button (first `/start` claims the bot if `OWNER_TELEGRAM_ID` is unset) |
-| `/scan [safe\|mid\|risk\|high\|audit] [target] [today\|tomorrow\|24h\|48h]` | e.g. `/scan safe 5`, `/scan high 100 tomorrow`, `/scan audit` → slip with *why* per leg + **Book on SportyBet** button |
+| `/scan [safe\|mid\|risk\|high\|audit] [target] [today\|tomorrow\|24h\|48h] [filters]` | e.g. `/scan safe 5`, `/scan safe 5 nounders`, `/scan high 100 tomorrow`, `/scan audit` → slip with *why* per leg + **Book on SportyBet** button |
 | `/ai <question>` or any text | AI analyst, e.g. "Analyze today's games and give me a safe 5 odds Sporty code", "Who wins Arsenal vs Chelsea?" |
 | `/today`, `/upcoming` | Browse by league (paged inline keyboards) |
 | `/predict Arsenal vs Chelsea` | Classic prediction card with add-to-slip buttons |
 | `/slip`, `/book`, `/clear` | Chat slip, booking code, clear |
 | `/reset` | Clear the AI chat memory |
 | `/history` | Last 12 booked codes with results + the latest running slip |
-| `/rollover [2-5] [3-15] [stake]` · `/rollover now\|skip\|stop\|won\|lost` | Start / manage a rollover plan |
+| `/rollover [2-5] [3-15] [stake] [unders]` · `/rollover now\|skip\|stop\|won\|lost` | Start / manage a rollover plan (no unders unless `unders`) |
 
 Bot menu (set on start): /start, /scan, /ai, /today, /rollover, /history, /slip, /help. Profile photo, description and short description were set via
 the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setMyDescription`, `setMyShortDescription`).
@@ -202,6 +232,7 @@ python tests/test_stats_mock.py    # API-Football path with mocked HTTP (no key 
 python tests/test_webapp.py        # initData validation unit tests (fake token)
 python tests/test_webapp.py --live # + local server: /app, 403s, /api/events, /api/predict through the relay
 python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/book
+python tests/test_constraints.py   # offline: Under tagging, rule parsing, scanner/rollover enforcement, AI rule merge + booking refusals
 python tests/test_tracker.py       # 26 settlement cases + tracker run on real finished matches (SQLite, fake bot, 1 ping per slip)
 ```
 
@@ -209,7 +240,7 @@ python tests/test_tracker.py       # 26 settlement cases + tracker run on real f
 `main.py` (run modes, /health, webhook) · `webapp.py` (Mini App API + initData auth) · `webapp_static/` (UI, logo) ·
 `handlers.py` (Telegram UX, owner lock, /scan, /history, /rollover, AI chat) · `tracker.py` (history recording, result loop, pings,
 rollover plans) · `settle.py` (Sportradar results → won/lost/void/check) · `history.py` (Supabase PostgREST / SQLite store) ·
-`fmt.py` (Telegram formatting, flags) · `ai.py` (Gemini analyst + tools) · `scanner.py` (market scanner, tiers,
+`fmt.py` (Telegram formatting, flags) · `constraints.py` (slip rules, market-type tags, parsing, verification) · `ai.py` (Gemini analyst + tools) · `scanner.py` (market scanner, tiers,
 stats check) · `markets.py` (market catalogue, de-margin, Poisson pricing per market) · `srstats.py` (free Sportradar form/H2H) ·
 `services.py` (glue) · `bookmakers.py` (`BookmakerAdapter` + `SportyBetNG`: events, full event markets, booking, load code) ·
 `stats.py` (API-Football fallback) · `predictor.py` (model) · `matching.py` · `storage.py` (SQLite: owner, cache, quota, slip,
