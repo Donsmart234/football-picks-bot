@@ -95,6 +95,12 @@ async def run() -> None:
             await asyncio.sleep(wait)
     else:
         raise SystemExit("Could not reach Telegram after retries.")
+    # post_init only runs automatically inside run_polling/run_webhook; this manual lifecycle must call it.
+    if app.post_init:
+        try:
+            await app.post_init(app)
+        except Exception as e:
+            log.warning("post_init failed: %s", type(e).__name__)
     await app.start()
     if webhook:
         await app.bot.set_webhook(config.WEBHOOK_URL + WEBHOOK_PATH, secret_token=secret,
