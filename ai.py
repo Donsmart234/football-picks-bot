@@ -318,9 +318,13 @@ class Analyst:
                   "Plain text, no headings, no lists, at most 90 words. Call the numbers estimates; never promise a "
                   "win.")
         data = await self._generate([{"role": "user", "parts": [{"text": _json.dumps(facts, ensure_ascii=False)}]}],
-                                    system=system, tools=False, max_tokens=400)
-        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-        return "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+                                    system=system, tools=False, max_tokens=2048)
+        cand = (data.get("candidates") or [{}])[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+        if cand.get("finishReason") not in (None, "STOP") or not text.endswith((".", "!", ")", "”", '"')):
+            return ""          # cut off: the caller falls back to the rule-based summary
+        return text
 
     @staticmethod
     def _rules_footer(turn: dict) -> str:
