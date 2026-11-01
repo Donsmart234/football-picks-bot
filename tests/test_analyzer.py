@@ -204,7 +204,7 @@ def test_history():
                 "ok": False, "kind": "invalid", "error": "The code is invalid (wrong, expired or never booked)."}
 
         async def event_detail(self, eid):
-            raise AssertionError("finished legs must not be re-priced")
+            return None, [], {}      # header only for finished legs; never re-priced
 
     class S:
         bookmaker = BM()

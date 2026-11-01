@@ -183,7 +183,8 @@ def total_odds(legs: list[dict]) -> float:
     for l in legs:
         if l.get("result") == "void" or l.get("state") == "unavailable":
             continue
-        o = l.get("booked_odds") or l.get("odds")
+        # pre-match legs load at today's price; finished ones count at the price they were booked at (when known)
+        o = l.get("odds") if l.get("state") == "upcoming" else (l.get("booked_odds") or l.get("odds"))
         if o and o > 1:
             t *= o
     return t
@@ -523,14 +524,18 @@ class Analyzer:
                 l["odds"] = None
 
         todo = [l for l in legs if l["state"] == "upcoming" and l["sport"] == "sr:sport:1"]
-        ev_ids = list(dict.fromkeys(l["event_id"] for l in todo))
+        # started / finished legs: header only (team ids for crests), never re-priced
+        ev_ids = list(dict.fromkeys(l["event_id"] for l in legs if l["sport"] == "sr:sport:1" and l["event_id"]
+                                    and l["state"] != "unavailable"))
         details = await asyncio.gather(*(bm.event_detail(e) for e in ev_ids), return_exceptions=True)
         detail = {e: (d if not isinstance(d, Exception) else (None, None, {})) for e, d in zip(ev_ids, details)}
         events = {e: d[0] for e, d in detail.items() if d[0] is not None}
-        forms_l = await asyncio.gather(*(self._form(ev) for ev in events.values()), return_exceptions=True)
-        forms = {e: (f if not isinstance(f, Exception) else None) for e, f in zip(events, forms_l)}
-        news_l = await asyncio.gather(*(self._news(ev) for ev in events.values()), return_exceptions=True)
-        news = {e: (n if not isinstance(n, Exception) else None) for e, n in zip(events, news_l)}
+        pre = {l["event_id"] for l in todo}
+        up = {e: ev for e, ev in events.items() if e in pre}
+        forms_l = await asyncio.gather(*(self._form(ev) for ev in up.values()), return_exceptions=True)
+        forms = {e: (f if not isinstance(f, Exception) else None) for e, f in zip(up, forms_l)}
+        news_l = await asyncio.gather(*(self._news(ev) for ev in up.values()), return_exceptions=True)
+        news = {e: (n if not isinstance(n, Exception) else None) for e, n in zip(up, news_l)}
 
         for l in legs:
             l.update(rated=False, est=None, fair_odds=None, value=None, rating=NOT_RATED, verdict="",
