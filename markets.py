@@ -99,12 +99,27 @@ def _pmf(lam: float) -> list[float]:
     return p
 
 
-class Grid:
-    """Joint score distribution for one period (independent Poisson)."""
+def dc_tau(i: int, j: int, lh: float, la: float, rho: float) -> float:
+    """Dixon-Coles low-score correction (rho < 0 lifts 0-0 / 1-1 and trims 1-0 / 0-1)."""
+    if i == 0 and j == 0:
+        return max(0.0, 1 - lh * la * rho)
+    if i == 0 and j == 1:
+        return max(0.0, 1 + lh * rho)
+    if i == 1 and j == 0:
+        return max(0.0, 1 + la * rho)
+    if i == 1 and j == 1:
+        return max(0.0, 1 - rho)
+    return 1.0
 
-    def __init__(self, lh: float, la: float):
-        ph, pa = _pmf(max(lh, 0.02)), _pmf(max(la, 0.02))
-        self.cells = [(i, j, x * y) for i, x in enumerate(ph) for j, y in enumerate(pa)]
+
+class Grid:
+    """Joint score distribution for one period (Poisson, optional Dixon-Coles correction)."""
+
+    def __init__(self, lh: float, la: float, rho: float = 0.0):
+        lh, la = max(lh, 0.02), max(la, 0.02)
+        ph, pa = _pmf(lh), _pmf(la)
+        self.cells = [(i, j, x * y * (dc_tau(i, j, lh, la, rho) if rho and i < 2 and j < 2 else 1.0))
+                      for i, x in enumerate(ph) for j, y in enumerate(pa)]
         s = sum(c[2] for c in self.cells)
         self.cells = [(i, j, p / s) for i, j, p in self.cells]
 
@@ -113,13 +128,13 @@ class Grid:
 
 
 def model_prob(fam: Family, spec: str, outcome_id: str, lh: float, la: float,
-               grid_cache: dict | None = None) -> float | None:
-    """Poisson probability of one outcome given full-time expected goals (lh, la)."""
+               grid_cache: dict | None = None, rho: float = 0.0) -> float | None:
+    """Poisson probability of one outcome given full-time expected goals (lh, la); rho = Dixon-Coles."""
     share = PERIOD_SHARE[fam.period]
-    key = (fam.period, round(lh, 3), round(la, 3))
+    key = (fam.period, round(lh, 3), round(la, 3), round(rho, 4))
     g = grid_cache.get(key) if grid_cache is not None else None
     if g is None:
-        g = Grid(lh * share, la * share)
+        g = Grid(lh * share, la * share, rho)
         if grid_cache is not None:
             grid_cache[key] = g
     k, o = fam.kind, outcome_id

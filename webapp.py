@@ -6,10 +6,13 @@ than 24h, and its user.id must be the bot owner. Anything else gets 403.
 """
 from __future__ import annotations
 
+import asyncio
+import gzip
 import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,13 +26,20 @@ import config
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
 from markets import valid_token
 from constraints import Constraints, norm_market
+import model
+from live import Live
+from youtube import YouTubeFinder
 from scanner import DAYS, TIER_ALIASES, apply_stats, uid_of
 from services import TZ, Services
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "webapp_static"
 MAX_AGE = 24 * 3600
-EVENTS_CACHE_SECONDS = 300
+EVENTS_CACHE_SECONDS = 300          # fresh window; older bodies are still served instantly while a refresh runs
+EVENTS_STALE_MAX = 1800             # never serve an events list older than this
+WARM_EVERY = 600                    # background warm-up of today's list (07:00-24:00 WAT) so the first open is instant
+ASSET_TYPES = {".js": "application/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml",
+               ".jpg": "image/jpeg"}
 MAX_SELECTIONS = 30
 DISCLAIMER = "Estimate, not guaranteed. 18+. Bet only what you can afford to lose."
 
@@ -82,6 +92,14 @@ def _odds_1x2(e) -> dict:
     return {"1": e.odds(MARKET_1X2, "1"), "X": e.odds(MARKET_1X2, "2"), "2": e.odds(MARKET_1X2, "3")}
 
 
+def _event_row(e) -> list:
+    """Compact match row for /api/events: [id, home, away, start_epoch, home_uid, away_uid, odds1, oddsX, odds2].
+    The app formats day/time itself (about half the bytes of the old object form)."""
+    o = _odds_1x2(e)
+    return [e.event_id, e.home, e.away, int(e.start.timestamp()), uid_of(e.home_id), uid_of(e.away_id),
+            o["1"], o["X"], o["2"]]
+
+
 def _event_json(e) -> dict:
     local = e.start.astimezone(TZ)
     return {"id": e.event_id, "home": e.home, "away": e.away, "start": e.start.isoformat(),
@@ -119,7 +137,13 @@ class MiniApp:
         self.s = services
         self.bot_token = bot_token if bot_token is not None else config.TELEGRAM_BOT_TOKEN
         self._owner_id = owner_id
-        self._events_cache: dict[str, tuple[float, bytes]] = {}
+        self._events_cache: dict[str, tuple[float, bytes, str]] = {}
+        self._events_busy: dict[str, asyncio.Task] = {}
+        self.live = Live(services.bookmaker)
+        self.yt = YouTubeFinder()
+        self._assets: dict[str, tuple[bytes, bytes, str]] = {}
+        self._index: bytes | None = None
+        self._warm_task: asyncio.Task | None = None
 
     def owner_id(self) -> int | None:
         return self._owner_id or config.OWNER_TELEGRAM_ID or self.s.storage.get_owner()
@@ -163,39 +187,143 @@ class MiniApp:
         app.router.add_post("/api/admin/tick", self.admin_tick)
         app.router.add_post("/api/admin/test_settle", self.admin_test_settle)
         app.router.add_post("/api/admin/delete_test", self.admin_delete_test)
+        app.router.add_get("/api/live", self.live_list)
+        app.router.add_get("/api/live/match", self.live_match)
+        app.on_startup.append(self._on_startup)
+        app.on_cleanup.append(self._on_cleanup)
 
-    async def index(self, _: web.Request) -> web.StreamResponse:
-        return web.FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    # ---- background warm-up ---------------------------------------------------
+    async def _on_startup(self, _app) -> None:
+        if os.environ.get("FRA_WARMER", "1") != "0":
+            self._warm_task = asyncio.create_task(self._warm_loop())
+
+    async def _on_cleanup(self, _app) -> None:
+        if self._warm_task:
+            self._warm_task.cancel()
+        await self.live.aclose()
+        await self.yt.aclose()
+
+    async def _warm_loop(self) -> None:
+        await asyncio.sleep(5)
+        while True:
+            try:
+                hour = datetime.now(TZ).hour
+                if hour >= 7:   # SportyBet relay calls are metered: skip the small hours
+                    await self._build_events("today")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("events warm-up failed: %s", exc)
+            await asyncio.sleep(WARM_EVERY)
+
+    # ---- static -----------------------------------------------------------------
+    def _version(self) -> str:
+        h = hashlib.sha1()
+        for n in ("app.js", "app.css"):
+            p = STATIC_DIR / n
+            if p.is_file():
+                h.update(p.read_bytes())
+        return h.hexdigest()[:10]
+
+    async def index(self, request: web.Request) -> web.StreamResponse:
+        """index.html with content-hashed asset URLs (so the assets themselves can be cached for a year)."""
+        if self._index is None:
+            html = (STATIC_DIR / "index.html").read_text()
+            self._index = re.sub(r"\?v=[A-Za-z0-9_]+", "?v=" + self._version(), html).encode()
+        resp = web.Response(body=self._index, content_type="text/html", headers={"Cache-Control": "no-cache"})
+        resp.enable_compression()
+        return resp
 
     async def asset(self, request: web.Request) -> web.StreamResponse:
-        path = STATIC_DIR / request.match_info["name"]
-        if not path.is_file():
-            raise web.HTTPNotFound()
-        return web.FileResponse(path, headers={"Cache-Control": "no-cache"})
+        name = request.match_info["name"]
+        hit = self._assets.get(name)
+        if hit is None:
+            path = STATIC_DIR / name
+            if not path.is_file():
+                raise web.HTTPNotFound()
+            raw = path.read_bytes()
+            etag = '"' + hashlib.sha1(raw).hexdigest()[:16] + '"'
+            hit = (raw, gzip.compress(raw, 9) if path.suffix in (".js", ".css", ".svg") else b"", etag)
+            self._assets[name] = hit
+        raw, gz, etag = hit
+        versioned = bool(request.query.get("v"))
+        headers = {"ETag": etag, "Vary": "Accept-Encoding",
+                   "Cache-Control": "public, max-age=31536000, immutable" if versioned else "public, max-age=3600"}
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        ctype = ASSET_TYPES.get(Path(name).suffix, "application/octet-stream")
+        if gz and "gzip" in request.headers.get("Accept-Encoding", ""):
+            headers["Content-Encoding"] = "gzip"
+            return web.Response(body=gz, headers={**headers, "Content-Type": ctype})
+        return web.Response(body=raw, headers={**headers, "Content-Type": ctype})
 
-    async def events(self, request: web.Request) -> web.Response:
-        rng = request.query.get("range", "today")
-        if rng not in ("today", "upcoming"):
-            return web.json_response({"error": "range must be today or upcoming"}, status=400)
-        hit = self._events_cache.get(rng)
-        if hit and time.time() - hit[0] < EVENTS_CACHE_SECONDS:
-            return self._gz(web.Response(body=hit[1], content_type="application/json"))
-        try:
-            evs = await self.s.events("t" if rng == "today" else "u")
-        except Exception as exc:
-            log.warning("mini app events failed: %s", exc)
-            return web.json_response({"error": "SportyBet didn't answer just now. Try again in a minute."},
-                                     status=502)
+    async def _build_events(self, rng: str) -> tuple[float, bytes, str]:
+        evs = await self.s.events("t" if rng == "today" else "u")
         by_t: dict[str, list] = {}
         for e in evs:
             by_t.setdefault(e.tournament_id, []).append(e)
         leagues = [{"id": tid, "name": name, "count": n, "category": by_t[tid][0].category,
-                    "matches": [_event_json(e) for e in by_t[tid]]}
+                    "matches": [_event_row(e) for e in by_t[tid]]}
                    for tid, name, n in self.s.leagues(evs)]
-        body = json.dumps({"range": rng, "generated": datetime.now(timezone.utc).isoformat(),
-                           "count": len(evs), "leagues": leagues}, separators=(",", ":")).encode()
-        self._events_cache[rng] = (time.time(), body)
-        return self._gz(web.Response(body=body, content_type="application/json"))
+        body = json.dumps({"range": rng, "v": 2, "generated": datetime.now(timezone.utc).isoformat(),
+                           "count": len(evs), "leagues": leagues}, separators=(",", ":"),
+                          ensure_ascii=False).encode()
+        hit = (time.time(), body, '"' + hashlib.sha1(body).hexdigest()[:16] + '"')
+        self._events_cache[rng] = hit
+        return hit
+
+    def _refresh_events(self, rng: str) -> None:
+        t = self._events_busy.get(rng)
+        if t and not t.done():
+            return
+        self._events_busy[rng] = asyncio.create_task(self._build_events(rng))
+
+    async def events(self, request: web.Request) -> web.Response:
+        """Stale-while-revalidate: a cached list (<= 30 min) is answered at once; when older than 5 min a refresh
+        runs in the background. ETag/If-None-Match -> 304 so the phone re-uses its own copy."""
+        rng = request.query.get("range", "today")
+        if rng not in ("today", "upcoming"):
+            return web.json_response({"error": "range must be today or upcoming"}, status=400)
+        hit = self._events_cache.get(rng)
+        age = time.time() - hit[0] if hit else None
+        if hit is None or age > EVENTS_STALE_MAX:
+            try:
+                busy = self._events_busy.get(rng)
+                hit = await busy if busy and not busy.done() else await self._build_events(rng)
+            except Exception as exc:
+                log.warning("mini app events failed: %s", exc)
+                if not hit:
+                    return web.json_response({"error": "SportyBet didn't answer just now. Try again in a minute."},
+                                             status=502)
+        elif age > EVENTS_CACHE_SECONDS:
+            self._refresh_events(rng)
+        ts, body, etag = hit
+        headers = {"ETag": etag, "Cache-Control": "private, no-cache", "X-Data-Age": str(int(time.time() - ts))}
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=headers)
+        return self._gz(web.Response(body=body, content_type="application/json", headers=headers))
+
+    # ---- live --------------------------------------------------------------
+    async def live_list(self, request: web.Request) -> web.Response:
+        try:
+            rows = await self.live.list()
+        except Exception as exc:
+            log.warning("live list failed: %s", exc)
+            return web.json_response({"error": "SportyBet's live list didn't answer just now."}, status=502)
+        return self._gz(web.json_response({"count": len(rows), "matches": rows, "updated": int(time.time())},
+                                          headers={"Cache-Control": "no-store"}))
+
+    async def live_match(self, request: web.Request) -> web.Response:
+        eid = request.query.get("event_id", "")
+        if not eid.startswith("sr:match:") or not valid_token(eid):
+            return web.json_response({"error": "event_id required"}, status=400)
+        data = await self.live.match(eid)
+        if not data:
+            return web.json_response({"error": "No live data for this match right now."}, status=404)
+        h = data.get("head") or {}
+        if request.query.get("video", "1") != "0" and h.get("live") and h.get("home"):
+            data["video"] = await self.yt.find(eid, h["home"], h["away"], h.get("league", ""))
+        return self._gz(web.json_response(data, headers={"Cache-Control": "no-store"}))
 
     @staticmethod
     def _gz(resp: web.Response) -> web.Response:
@@ -519,4 +647,6 @@ class MiniApp:
             except Exception as exc:
                 out["history_error"] = exc.__class__.__name__ + " " + tr.history.last_error
         out["api_football_left"] = self.s.stats.remaining_today() if self.s.stats.enabled else None
+        out["model"] = model.info()
+        out["events_cache_age_s"] = {k: int(time.time() - v[0]) for k, v in self._events_cache.items()}
         return web.json_response(out)

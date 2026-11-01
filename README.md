@@ -1,11 +1,53 @@
 # Private Football Picks Bot (Telegram)
 
 A single-owner Telegram bot that lists football matches and odds from **SportyBet Nigeria** (all leagues),
-estimates outcomes with a **Poisson goals model blended with the de-vigged SportyBet prices**, keeps a bet
+estimates outcomes from **de-margined SportyBet prices plus a backtested, calibrated goals model (model v2)**, keeps a bet
 slip, and turns the slip into a **SportyBet booking code**. No money is ever placed by the bot. A booking
 code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
+
+## What's new (2026-11-01): smooth Mini App, Live view, model v2 (backtested)
+**Model v2** (`model.py`, `model_params.json`, `backtest/`). Leg estimate = `calibrate_g(logit-blend_g(market, stats))`:
+the stats model is now a time-decayed (half-life 90 days) Poisson from both teams' last 10 games with league-specific
+home/away goal averages (15 leagues) and a Dixon-Coles low-score correction (rho −0.12); the blend weight per market group and
+a per-group calibration map (Platt / isotonic / none, chosen by 5-fold CV; at most ±3 pts) are tuned by `backtest/backtest.py`
+on 9,761 matches (24/25 + 25/26, 15 European leagues: Sportradar-feed results + football-data.co.uk market-average prices,
+11,012 joined matches) and tested out-of-sample on 1,251 matches of 26/27 (to 29 Oct). **The Safe ≥80% bar now applies to the
+calibrated estimate.** Honest findings (`backtest/REPORT.md`): the old stats nudge (−8/+4 pts) and the −2 pt shrink made every
+market *worse* than the de-margined prices alone (e.g. 1X2 log loss 0.9962 vs 0.9921, O/U 2.5 0.6700 vs 0.6655); team stats add
+almost nothing over the prices (tuned weight 0 for every group except BTTS 0.10, also with a league-ratings model tried), so v2 is
+essentially "market + calibration". v2 beats the old estimate on every market tested (1X2 0.9914, O/U 2.5 0.6655, DNB 0.5831 vs
+0.5897, team totals, DC) and is level with the plain market (small gains on 1X2/DNB/team totals, tiny losses on away O/U 1.5).
+At the Safe bar (legs 1.05–1.35, est ≥80%): old 2,351 legs, est 84.5%, hit 84.5%; v2 2,840 legs, est 84.4%, hit 84.1%:
+both well calibrated, v2 qualifies ~20% more legs at about the same hit rate, so it is not "safer", just as honest with more
+choice. Lines without a historical price (O/U 0.5/1.5/3.5/4.5, BTTS, team totals, halves, DC) were tested against the Poisson
+fit to 1X2 + O/U 2.5, corners/cards/props aren't backtested and keep their market estimate. Estimates, not guarantees.
+Re-run: `python backtest/fetch.py` (in a data dir) then `python backtest/backtest.py <data dir>`.
+
+**Live view** (`live.py`, Matches → Live). In-play list from SportyBet `factsCenter/liveOrPrematchEvents` (score, minute, live
+1X2, LIVE badges, "N matches in play" banner), per match: live odds from `factsCenter/event?productId=1` (1X2, next goal, O/U
+lines nearest 50/50, rest of match, DC, GG/NG, DNB, with de-margined %), our own animated tracker drawn from the free Sportradar
+feed (`match_timeline` ball position + attack/dangerous situations, momentum per minute, `match_detailsextended` stats),
+timeline (goals, cards, corners, subs, shots). Auto-refresh 8 s (list 20 s), paused when the app is hidden; score change flashes
++ haptic. **No unlicensed video, ever.** The Sportradar Live Match Tracker widget is licensed per client and domain-locked
+(`widgets.sir.sportradar.com/sportybet/widgetloader` → 403), so it isn't embedded. Video: `youtube.py` searches YouTube's
+public results page (Live filter, no API key) and embeds a stream only when it is live, from a **verified** channel whose
+name is one of the two clubs, the competition or a known official free broadcaster, the title names both teams (no
+"live score"/simulation/watch-along words) and oEmbed allows embedding (`youtube-nocookie` iframe, muted autoplay). On
+2026-11-01 every "LIVE" result for the J1/K-League games checked was a score ticker or re-stream (one from a verified
+but unrelated channel), so none were shown. Otherwise the view shows **Where to watch** (or **Watch on SportyBet** when
+SportyBet's event JSON flags a stream; none seen today) linking to the official `sportybet.com/ng/sport/football/live/...` page.
+
+**Smooth Mini App.** Server: today's events list warmed every 10 min (07:00–24:00 WAT), stale-while-revalidate (≤30 min copy
+answered at once, refresh in background), ETag/304, compact rows (`[id, home, away, start, home_uid, away_uid, 1, X, 2]`:
+today 216 KB → 113 KB raw, 44 → 38 KB gzip), content-hashed asset URLs with `immutable` caching + gzip (JS 60 → 25 KB, CSS
+26 → 7 KB; relaunch transfer 157 → 60 KB). App: last copies of events / history / rollover in localStorage (instant views,
+quiet refresh), background prefetch of the other tabs, skeleton markup in the HTML, deferred scripts, cached `Intl` formatters,
+`content-visibility` on long lists, small crests (4 KB vs 7 KB), search filters in place (keeps focus), per-view scroll memory,
+one throttled haptic tick per tap, Telegram viewport/safe-area/content-safe-area events → CSS vars. Measured (headless Chromium,
+4× CPU throttle, 150 ms / 1.6 Mbps): relaunch Matches tap → list 460–640 ms → 19–35 ms; first paint 0.84–1.15 s → 0.67–0.88 s;
+cold server first Matches load is still ~7 s (SportyBet pages via the relay), which the warm-up loop hides in production.
 
 ## What's new: scanner, AI analyst, fintech UI
 **Market scanner** (`scanner.py`, `markets.py`). For a window (today / tomorrow / next 24h / 48h) it picks up to 80 matches
@@ -125,7 +167,9 @@ button, safe-area insets.
 | Route (all `/api/*` need `X-Telegram-Init-Data`, else 403) | Meaning |
 |---|---|
 | `GET /app` (+ assets) | UI |
-| `GET /api/events?range=today\|upcoming` | Leagues with matches and 1X2 odds |
+| `GET /api/events?range=today\|upcoming` | Leagues with compact match rows `[id, home, away, start, home_uid, away_uid, 1, X, 2]`; ETag / 304 |
+| `GET /api/live` | In-play matches (score, minute, live 1X2, official SportyBet link, stream flag) |
+| `GET /api/live/match?event_id=[&video=0]` | Live odds, tracker feed (ball, momentum, stats, timeline) and `video` (official YouTube stream or null) |
 | `POST /api/predict {"event_id"}` | Prediction + `stats` (form/H2H) |
 | `GET /api/match_markets?event_id=` | Strongest stats-checked legs across every market of one match |
 | `POST /api/scan {"tier","target","day","leagues","exclude_markets"?,"no_unders"?,"constraints"?}` | Slip (or audit) JSON with `constraint_check` |
@@ -184,6 +228,7 @@ the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setM
 | `ADMIN_TOKEN` | no | ≥24-char secret enabling `X-Admin-Token` server diagnostics; unset = disabled |
 | `SUPABASE_URL` | for durable history | `https://ectglmhgqfiipexvczmh.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | for durable history | Supabase service_role key (vault "Supabase love-diary service key (fra bot)"); without it history falls back to SQLite, which Render wipes on restart |
+| `FRA_WARMER` | no | `0` disables the background warm-up of today's events list (tests) |
 | `PUBLIC_BASE_URL` | no | https base for the Mini App; defaults to `WEBHOOK_URL` / `RENDER_EXTERNAL_URL`. Without an https base the app button and menu button are skipped |
 
 Never commit secrets: `.env` and `data/` are git-ignored.

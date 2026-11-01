@@ -6,6 +6,20 @@
     tg.ready(); tg.expand();
     try { tg.setHeaderColor("#070B14"); tg.setBackgroundColor("#070B14"); if (tg.setBottomBarColor) tg.setBottomBarColor("#090E19"); } catch (e) {}
     try { if (tg.disableVerticalSwipes) tg.disableVerticalSwipes(); } catch (e) {}
+    // keep CSS in sync with Telegram's viewport + safe areas (keyboard, fullscreen, notches)
+    const root = document.documentElement.style;
+    const syncVp = () => {
+      try {
+        if (tg.viewportStableHeight) root.setProperty("--vh-stable", tg.viewportStableHeight + "px");
+        const sa = tg.safeAreaInset || {}, ca = tg.contentSafeAreaInset || {};
+        ["top", "bottom", "left", "right"].forEach((k) => {
+          if (sa[k] != null) root.setProperty(`--tg-safe-area-inset-${k}`, sa[k] + "px");
+          if (ca[k] != null) root.setProperty(`--tg-content-safe-area-inset-${k}`, ca[k] + "px");
+        });
+      } catch (e) {}
+    };
+    syncVp();
+    try { ["viewportChanged", "safeAreaChanged", "contentSafeAreaChanged", "fullscreenChanged"].forEach((ev) => tg.onEvent(ev, syncVp)); } catch (e) {}
   }
   const LOAD_URL = "https://www.sportybet.com/ng/m/code-hub/load-code";
   const SLIP_KEY = "fra_slip_v2";
@@ -24,6 +38,7 @@
   const state = {
     tab: "home", tier: "safe", target: 5, day: "today", scan: null, scanning: false, scanErr: "",
     mRange: "today", mData: {}, mStack: [], mQuery: "", pred: null, markets: null,
+    live: null, liveAt: 0, liveErr: "", lm: null, lmErr: "", scroll: {},
     chat: [], aiBusy: false,
     hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false },
     ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
@@ -34,12 +49,16 @@
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const f2 = (o) => (o ? Number(o).toFixed(2) : "–");
   const pct = (p, d = 0) => (p == null ? "–" : (p * 100).toFixed(d) + "%");
-  const hap = (t) => { try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(t || "light"); } catch (e) {} };
-  const hapN = (t) => { try { tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(t || "success"); } catch (e) {} };
-  const hapSel = () => { try { tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged(); } catch (e) {} };
+  let hapAt = 0;   // throttle: one buzz per tap even when a handler also asks for one
+  const buzz = (fn) => { const n = Date.now(); if (n - hapAt < 70) return; hapAt = n; try { tg && tg.HapticFeedback && fn(tg.HapticFeedback); } catch (e) {} };
+  const hap = (t) => buzz((h) => h.impactOccurred(t || "light"));
+  const hapN = (t) => { hapAt = 0; buzz((h) => h.notificationOccurred(t || "success")); };
+  const hapSel = () => buzz((h) => h.selectionChanged());
+  const fmtCache = {};
+  const fmt = (k, o) => fmtCache[k] || (fmtCache[k] = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Lagos", ...o }));
   let toastT;
   function toast(m) { $toast.textContent = m; $toast.classList.remove("hidden"); clearTimeout(toastT); toastT = setTimeout(() => $toast.classList.add("hidden"), 2300); }
-  function clock() { try { document.getElementById("clock").textContent = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Lagos" }); } catch (e) {} }
+  function clock() { try { document.getElementById("clock").textContent = fmt("hm", { hour: "2-digit", minute: "2-digit" }).format(new Date()); } catch (e) {} }
   clock(); setInterval(clock, 20000);
 
   async function api(path, body) {
@@ -52,23 +71,43 @@
     if (!r.ok) throw new Error((j && j.error) || `Server error (${r.status}). Try again in a minute.`);
     return j;
   }
+  // ---------------------------------------------------------------- local cache (instant views, background refresh)
+  const store = {
+    get(k) { try { return JSON.parse(localStorage.getItem("fra_c_" + k) || "null"); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem("fra_c_" + k, JSON.stringify(v)); } catch (e) { try { localStorage.removeItem("fra_c_" + k); } catch (e2) {} } },
+  };
+  // GET with ETag: 304 -> our stored copy. Returns {json, fresh}
+  async function apiCached(key, path) {
+    const c = store.get(key);
+    const opts = { headers: { "X-Telegram-Init-Data": initData } };
+    if (c && c.etag) opts.headers["If-None-Match"] = c.etag;
+    let r;
+    try { r = await fetch(path, opts); } catch (e) { throw new Error("Network error. Check your connection and try again."); }
+    if (r.status === 304 && c) { c.at = Date.now(); store.set(key, c); return c.json; }
+    let j = null; try { j = await r.json(); } catch (e) {}
+    if (r.status === 403) throw new Error("Access denied. Open this app from @FraPredictbot in Telegram.");
+    if (!r.ok) throw new Error((j && j.error) || `Server error (${r.status}). Try again in a minute.`);
+    store.set(key, { at: Date.now(), etag: r.headers.get("ETag"), json: j });
+    return j;
+  }
+  const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 300));
   async function copy(text) {
     try { await navigator.clipboard.writeText(text); return true; } catch (e) {}
     try { const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select(); const ok = document.execCommand("copy"); ta.remove(); return ok; } catch (e) { return false; }
   }
   const openLink = (u) => (tg && tg.openLink ? tg.openLink(u) : window.open(u, "_blank"));
   // ---------------------------------------------------------------- crests & flags
-  const CREST = (uid) => (uid && /^\d{1,9}$/.test(String(uid)) ? `https://img.sportradar.com/ls/crest/medium/${uid}.png` : "");
+  const CREST = (uid, big) => (uid && /^\d{1,9}$/.test(String(uid)) ? `https://img.sportradar.com/ls/crest/${big ? "medium" : "small"}/${uid}.png` : "");
   function initials(n) {
     const w = String(n || "?").replace(/\b(FC|CF|SC|AC|AFC|CD|SV|FK|SK|BK|IF|the)\b/gi, "").trim().split(/[\s\-]+/).filter(Boolean);
     return (w.length > 1 ? w[0][0] + w[1][0] : (w[0] || "?").slice(0, 3)).toUpperCase();
   }
   function hue(n) { let h = 0; for (const c of String(n || "")) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
   function crest(uid, name, cls = "") {
-    const u = CREST(uid);
+    const u = CREST(uid, cls === "xl");
     return `<span class="crest ${cls}" style="--h:${hue(name)}" aria-hidden="true"><b>${esc(initials(name))}</b>${u ? `<img src="${u}" alt="" loading="lazy" decoding="async" onload="if(this.naturalWidth<8)this.remove();else this.style.opacity=1" onerror="this.remove()">` : ""}</span>`;
   }
-  const ISO = { england: "gb-eng", scotland: "gb-sct", wales: "gb-wls", "northern ireland": "gb-nir", spain: "es", italy: "it", germany: "de", france: "fr", netherlands: "nl", portugal: "pt", belgium: "be", turkiye: "tr", turkey: "tr", usa: "us", brazil: "br", argentina: "ar", nigeria: "ng", austria: "at", switzerland: "ch", denmark: "dk", norway: "no", sweden: "se", greece: "gr", "saudi arabia": "sa", poland: "pl", czechia: "cz", japan: "jp", mexico: "mx", croatia: "hr", serbia: "rs", romania: "ro", ukraine: "ua", russia: "ru", ireland: "ie", australia: "au", china: "cn", "korea republic": "kr", egypt: "eg", "south africa": "za", morocco: "ma", ghana: "gh", colombia: "co", chile: "cl", uruguay: "uy", israel: "il", finland: "fi", iceland: "is", hungary: "hu", slovakia: "sk", slovenia: "si", bulgaria: "bg", cyprus: "cy", qatar: "qa", "united arab emirates": "ae", uae: "ae", canada: "ca", peru: "pe", ecuador: "ec", paraguay: "py", bolivia: "bo", venezuela: "ve", kenya: "ke", tunisia: "tn", algeria: "dz", iran: "ir", india: "in", indonesia: "id", thailand: "th", vietnam: "vn", estonia: "ee", latvia: "lv", lithuania: "lt", belarus: "by", georgia: "ge", armenia: "am", azerbaijan: "az", kazakhstan: "kz", bosnia: "ba", "bosnia & herzegovina": "ba", albania: "al", "north macedonia": "mk", montenegro: "me", luxembourg: "lu", malta: "mt", "faroe islands": "fo", "costa rica": "cr", honduras: "hn", guatemala: "gt", "el salvador": "sv", jamaica: "jm", "new zealand": "nz", singapore: "sg", malaysia: "my", "hong kong": "hk", jordan: "jo", kuwait: "kw", bahrain: "bh", oman: "om", iraq: "iq", uzbekistan: "uz", "cote d'ivoire": "ci", senegal: "sn", cameroon: "cm", zambia: "zm", tanzania: "tz", uganda: "ug", ethiopia: "et", rwanda: "rw" };
+  const ISO = { england: "gb-eng", scotland: "gb-sct", wales: "gb-wls", "northern ireland": "gb-nir", spain: "es", italy: "it", germany: "de", france: "fr", netherlands: "nl", portugal: "pt", belgium: "be", turkiye: "tr", turkey: "tr", usa: "us", brazil: "br", argentina: "ar", nigeria: "ng", austria: "at", switzerland: "ch", denmark: "dk", norway: "no", sweden: "se", greece: "gr", "saudi arabia": "sa", poland: "pl", czechia: "cz", japan: "jp", mexico: "mx", croatia: "hr", serbia: "rs", romania: "ro", ukraine: "ua", russia: "ru", ireland: "ie", australia: "au", china: "cn", "korea republic": "kr", "republic of korea": "kr", "korea": "kr", egypt: "eg", "south africa": "za", morocco: "ma", ghana: "gh", colombia: "co", chile: "cl", uruguay: "uy", israel: "il", finland: "fi", iceland: "is", hungary: "hu", slovakia: "sk", slovenia: "si", bulgaria: "bg", cyprus: "cy", qatar: "qa", "united arab emirates": "ae", uae: "ae", canada: "ca", peru: "pe", ecuador: "ec", paraguay: "py", bolivia: "bo", venezuela: "ve", kenya: "ke", tunisia: "tn", algeria: "dz", iran: "ir", india: "in", indonesia: "id", thailand: "th", vietnam: "vn", estonia: "ee", latvia: "lv", lithuania: "lt", belarus: "by", georgia: "ge", armenia: "am", azerbaijan: "az", kazakhstan: "kz", bosnia: "ba", "bosnia & herzegovina": "ba", albania: "al", "north macedonia": "mk", montenegro: "me", luxembourg: "lu", malta: "mt", "faroe islands": "fo", "costa rica": "cr", honduras: "hn", guatemala: "gt", "el salvador": "sv", jamaica: "jm", "new zealand": "nz", singapore: "sg", malaysia: "my", "hong kong": "hk", jordan: "jo", kuwait: "kw", bahrain: "bh", oman: "om", iraq: "iq", uzbekistan: "uz", "cote d'ivoire": "ci", senegal: "sn", cameroon: "cm", zambia: "zm", tanzania: "tz", uganda: "ug", ethiopia: "et", rwanda: "rw" };
   function catOf(x) { return (x.category || (String(x.league || x.name || "").includes("·") ? String(x.league || x.name).split("·")[0].trim() : "")).toLowerCase(); }
   function flag(x) {
     const c = catOf(x), iso = ISO[c];
@@ -77,8 +116,8 @@
   }
   const leagueShort = (lg) => (String(lg || "").includes("·") ? String(lg).split("·").slice(1).join("·").trim() : String(lg || ""));
   const splitMatch = (l) => (l.home && l.away ? [l.home, l.away] : String(l.match || "").split(" vs "));
-  function kickDay(iso) { try { return new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", timeZone: "Africa/Lagos" }); } catch (e) { return ""; } }
-  function kickTime(iso) { try { return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Lagos" }); } catch (e) { return ""; } }
+  function kickDay(iso) { try { return fmt("day", { weekday: "short", day: "2-digit", month: "short" }).format(new Date(iso)); } catch (e) { return ""; } }
+  function kickTime(iso) { try { return fmt("hm", { hour: "2-digit", minute: "2-digit" }).format(new Date(iso)); } catch (e) { return ""; } }
   function teamsBlock(l, cls = "") {
     const [h, a] = splitMatch(l);
     return `<div class="tb ${cls}"><div class="tm">${crest(l.home_uid, h)}<span class="ellip">${esc(h)}</span></div><div class="tm">${crest(l.away_uid, a)}<span class="ellip">${esc(a)}</span></div></div>`;
@@ -115,13 +154,19 @@
   }
 
   // ---------------------------------------------------------------- navigation
+  const viewKey = () => state.tab + (state.tab === "matches" ? ":" + state.mRange + ":" + state.mStack.map((x) => x.name + x.arg).join("/") : "");
+  function saveScroll() { state.scroll[viewKey()] = window.scrollY; }
+  function restoreScroll() { const y = state.scroll[viewKey()] || 0; requestAnimationFrame(() => window.scrollTo(0, y)); }
   function setTab(t) {
+    if (t === state.tab) { window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+    saveScroll(); stopLive();
     state.tab = t; hapSel();
     document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
-    render(); window.scrollTo(0, 0);
+    render(); restoreScroll();
   }
   function backVisible() { return state.tab === "matches" && state.mStack.length > 0; }
-  if (tg && tg.BackButton) tg.BackButton.onClick(() => { if (!$sheet.classList.contains("hidden")) return closeSheet(); if (backVisible()) { state.mStack.pop(); render(); } });
+  function goBack() { stopLive(); state.mStack.pop(); render(); restoreScroll(); }
+  if (tg && tg.BackButton) tg.BackButton.onClick(() => { if (!$sheet.classList.contains("hidden")) return closeSheet(); if (backVisible()) goBack(); });
   function render() {
     if (tg && tg.BackButton) (backVisible() ? tg.BackButton.show() : tg.BackButton.hide());
     badge();
@@ -252,7 +297,7 @@
     try {
       const meta = legs.map((l) => ({ pick: l.pick || l.label, market: l.market || "", odds: l.odds, est: l.est, match: l.match, home: l.home, away: l.away, home_uid: l.home_uid, away_uid: l.away_uid, league: l.league, category: l.category, kickoff: l.kickoff || l.start, verdict: l.verdict }));
       const r = await api("/api/book", slipId ? { slip_id: slipId } : { selections: legs.map(sel), legs: meta });
-      state.hist = null;
+      state.hist = null; store.set("hist", null);
       hapN("success");
       openSheet(`<div class="label" style="text-align:center">SportyBet booking code</div>
         <div class="code" id="codeText">${esc(r.code)}</div>
@@ -269,14 +314,36 @@
   function closeSheet() { $sheet.classList.add("hidden"); if (tg && tg.BackButton) (backVisible() ? tg.BackButton.show() : tg.BackButton.hide()); }
 
   // ---------------------------------------------------------------- MATCHES
-  async function loadEvents(range) {
-    const d = state.mData[range];
-    if (d && Date.now() - d.at < 5 * 60 * 1000) return d.json;
-    const json = await api(`/api/events?range=${range}`);
-    state.mData[range] = { at: Date.now(), json }; return json;
+  // compact rows [id, home, away, start, hu, au, o1, oX, o2] -> objects (day/time formatted once, cached formatters)
+  function expandEvents(j) {
+    if (!j || j.v !== 2) return j;
+    const leagues = j.leagues.map((l) => ({ ...l, matches: l.matches.map((r) => {
+      const d = new Date(r[3] * 1000);
+      return { id: r[0], home: r[1], away: r[2], start: d.toISOString(), home_uid: r[4], away_uid: r[5],
+        day: fmt("dayl", { weekday: "short", day: "2-digit", month: "short" }).format(d), time: fmt("hm", { hour: "2-digit", minute: "2-digit" }).format(d),
+        odds: { "1": r[6], X: r[7], "2": r[8] } };
+    }) }));
+    return { ...j, leagues };
+  }
+  const EV_FRESH = 4 * 60 * 1000;
+  function cachedEvents(range) {
+    if (state.mData[range]) return state.mData[range];
+    const c = store.get("ev_" + range);
+    if (c && c.json && Date.now() - c.at < 6 * 3600 * 1000) { state.mData[range] = { at: c.at, json: expandEvents(c.json), stale: true }; return state.mData[range]; }
+    return null;
+  }
+  const evInflight = {};
+  function loadEvents(range, force) {
+    const d = cachedEvents(range);
+    if (d && !force && !d.stale && Date.now() - d.at < EV_FRESH) return Promise.resolve(d.json);
+    if (evInflight[range]) return evInflight[range];
+    evInflight[range] = apiCached("ev_" + range, `/api/events?range=${range}`).then((j) => {
+      const json = expandEvents(j); state.mData[range] = { at: Date.now(), json }; return json;
+    }).finally(() => { delete evInflight[range]; });
+    return evInflight[range];
   }
   function findMatch(eid) {
-    for (const r of ["today", "upcoming"]) { const d = state.mData[r]; if (!d) continue; for (const l of d.json.leagues) for (const m of l.matches) if (m.id === eid) return { m, league: l }; }
+    for (const r of ["today", "upcoming"]) { const d = cachedEvents(r); if (!d) continue; for (const l of d.json.leagues) for (const m of l.matches) if (m.id === eid) return { m, league: l }; }
     return null;
   }
   function renderMatches() {
@@ -284,23 +351,25 @@
     if (!cur) return renderLeagues();
     if (cur.name === "league") return renderLeague(cur.arg);
     if (cur.name === "match") return renderMatch(cur.arg);
+    if (cur.name === "live") return renderLiveMatch(cur.arg);
   }
   function mrow(m, showDay, sub) {
     return `<button class="row mrow" data-act="match" data-id="${esc(m.id)}"><div class="time">${showDay ? esc(m.day.slice(0, 3)) + "<br>" : ""}${esc(m.time)}</div>
       <div class="grow">${teamsBlock(m, "sm")}${sub ? `<div class="sub ellip" style="margin-top:3px">${esc(sub)}</div>` : ""}</div>
       <div class="odds3"><span>${f2(m.odds["1"])}</span><span>${f2(m.odds.X)}</span><span>${f2(m.odds["2"])}</span></div></button>`;
   }
-  async function renderLeagues() {
-    const range = state.mRange;
-    const head = `<div style="margin:4px 2px 10px"><div class="label">Fixtures</div><h1>Matches</h1></div>
-      <div class="seg"><button data-act="mrange" data-r="today" class="${range === "today" ? "on" : ""}">Today</button><button data-act="mrange" data-r="upcoming" class="${range === "upcoming" ? "on" : ""}">Next 3 days</button></div>
-      <input id="msearch" class="search" type="search" placeholder="Search league or team" value="${esc(state.mQuery)}" autocomplete="off">`;
-    if (!state.mData[range]) $view.innerHTML = head + `<div class="card flush" style="margin-top:12px">${[0, 1, 2, 3, 4, 5].map(() => `<div class="row"><div class="grow"><div class="sk sk-line" style="width:60%"></div></div><div class="sk" style="width:28px;height:18px"></div></div>`).join("")}</div>`;
-    let data;
-    try { data = await loadEvents(range); } catch (e) { $view.innerHTML = head + `<div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="mretry">Try again</button>`; bindSearch(); return; }
-    if (state.tab !== "matches" || state.mStack.length || state.mRange !== range) return;
+  function leaguesHead(range) {
+    const n = state.live ? state.live.matches.length : 0;
+    return `<div style="margin:4px 2px 10px"><div class="label">Fixtures</div><h1>Matches</h1></div>
+      <div class="seg"><button data-act="mrange" data-r="today" class="${range === "today" ? "on" : ""}">Today</button><button data-act="mrange" data-r="upcoming" class="${range === "upcoming" ? "on" : ""}">Next 3 days</button><button data-act="mrange" data-r="live" class="${range === "live" ? "on" : ""}"><span class="livedot"></span>Live${n ? ` <b class="cnt">${n}</b>` : ""}</button></div>
+      ${range === "live" ? "" : `<input id="msearch" class="search" type="search" placeholder="Search league or team" value="${esc(state.mQuery)}" autocomplete="off" enterkeyhint="search">`}`;
+  }
+  const skRows = (n) => `<div class="card flush" style="margin-top:12px">${Array.from({ length: n }, () => `<div class="row"><div class="sk" style="width:16px;height:11px"></div><div class="grow"><div class="sk sk-line" style="width:60%"></div></div><div class="sk" style="width:28px;height:18px"></div></div>`).join("")}</div>`;
+  function leaguesBody(data, range) {
     const q = state.mQuery.trim().toLowerCase();
-    let html = head;
+    let html = "";
+    const live = state.live && state.live.matches.length && !q ? state.live.matches.length : 0;
+    if (live && range === "today") html += `<button class="card livebanner" data-act="mrange" data-r="live"><span class="lbadge">LIVE</span><b>${live} match${live > 1 ? "es" : ""} in play now</b><span class="sub">scores · tracker · live odds</span><span class="chev">›</span></button>`;
     if (q.length >= 2) {
       const hits = [];
       for (const l of data.leagues) for (const m of l.matches) if (m.home.toLowerCase().includes(q) || m.away.toLowerCase().includes(q)) hits.push([m, l]);
@@ -308,16 +377,33 @@
     }
     const leagues = q ? data.leagues.filter((l) => l.name.toLowerCase().includes(q)) : data.leagues;
     html += `<div class="section"><span class="label">${q ? "Leagues" : `${data.count} matches · ${data.leagues.length} leagues`}</span></div>`;
-    html += leagues.length ? `<div class="card flush">${leagues.slice(0, 150).map((l) => `<button class="row" data-act="league" data-id="${esc(l.id)}">${flag(l)}<div class="grow ellip">${esc(l.name)}</div><span class="badge">${l.count}</span><span class="chev">›</span></button>`).join("")}</div>` : `<div class="empty">Nothing matches “${esc(state.mQuery)}”.</div>`;
-    $view.innerHTML = html; bindSearch();
+    html += leagues.length ? `<div class="card flush lgl">${leagues.slice(0, 150).map((l) => `<button class="row" data-act="league" data-id="${esc(l.id)}">${flag(l)}<div class="grow ellip">${esc(l.name)}</div><span class="badge">${l.count}</span><span class="chev">›</span></button>`).join("")}</div>` : `<div class="empty">Nothing matches “${esc(state.mQuery)}”.</div>`;
+    return html;
+  }
+  async function renderLeagues() {
+    const range = state.mRange;
+    if (range === "live") return renderLiveList();
+    const d = cachedEvents(range);
+    $view.innerHTML = leaguesHead(range) + `<div id="mbody">${d ? leaguesBody(d.json, range) : skRows(8)}</div>`;
+    bindSearch();
+    if (!state.live || Date.now() - state.liveAt > 60000) loadLive().then(() => { if (state.tab === "matches" && !state.mStack.length && state.mRange === range) { const b = document.querySelector(".seg"); if (b) b.outerHTML = leaguesHead(range).match(/<div class="seg">[\s\S]*?<\/div>/)[0]; const mb = document.getElementById("mbody"); if (mb && state.mData[range]) mb.innerHTML = leaguesBody(state.mData[range].json, range); } }).catch(() => {});
+    if (d && !d.stale && Date.now() - d.at < EV_FRESH) return;
+    let data;
+    try { data = await loadEvents(range, !!d); } catch (e) {
+      if (!d) { const mb = document.getElementById("mbody"); if (mb && state.mRange === range) mb.innerHTML = `<div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="mretry">Try again</button>`; }
+      return;
+    }
+    if (state.tab !== "matches" || state.mStack.length || state.mRange !== range) return;
+    const mb = document.getElementById("mbody");
+    if (mb) mb.innerHTML = leaguesBody(data, range);   // in place: keeps scroll position and the search box focus
   }
   let searchT;
   function bindSearch() {
     const s = document.getElementById("msearch"); if (!s) return;
-    s.addEventListener("input", () => { clearTimeout(searchT); searchT = setTimeout(() => { state.mQuery = s.value; renderLeagues().then(() => { const n = document.getElementById("msearch"); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }); }, 220); });
+    s.addEventListener("input", () => { clearTimeout(searchT); searchT = setTimeout(() => { state.mQuery = s.value; const d = state.mData[state.mRange]; const mb = document.getElementById("mbody"); if (d && mb) mb.innerHTML = leaguesBody(d.json, state.mRange); }, 200); });
   }
   function renderLeague(id) {
-    const d = state.mData[state.mRange]; const l = d && d.json.leagues.find((x) => x.id === id);
+    const d = cachedEvents(state.mRange); const l = d && d.json.leagues.find((x) => x.id === id);
     if (!l) { $view.innerHTML = `${backLink()}<div class="empty">League not found.</div>`; return; }
     $view.innerHTML = `${backLink()}<div style="margin:4px 2px 10px"><div class="label">${l.count} matches</div><h2 class="lgh">${flag(l)}${esc(l.name)}</h2></div><div class="card flush">${l.matches.map((m) => mrow(m, state.mRange === "upcoming")).join("")}</div>`;
   }
@@ -382,6 +468,117 @@
     const rep = slip.add({ event_id: e.id, market_id: mid, outcome_id: oid, specifier: o.specifier || "", label: o.label, market: mk0(mid), odds: o.odds, est: o.prob, match: `${e.home} vs ${e.away}`, when: `${e.day.slice(0, 3)} ${e.time}`, start: e.start, kickoff: e.start, home: e.home, away: e.away, home_uid: e.home_uid, away_uid: e.away_uid, league: e.league, category: e.category });
     hap("medium"); toast(`${rep ? "Replaced" : "Added"}: ${o.label} @ ${f2(o.odds)}`); drawMatch();
   }
+
+
+  // ---------------------------------------------------------------- LIVE (in-play: score, tracker, live odds, official video)
+  let liveTimer = null;
+  function stopLive() { if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; } }
+  async function loadLive() {
+    const j = await api("/api/live");
+    state.live = j; state.liveAt = Date.now(); state.liveErr = "";
+    return j;
+  }
+  function liveRow(m) {
+    return `<button class="row mrow lrow" data-act="livematch" data-id="${esc(m.id)}"><div class="time"><span class="lbadge">LIVE</span><b class="lmin">${esc(m.minute || "")}</b></div>
+      <div class="grow">${teamsBlock(m, "sm")}<div class="sub ellip" style="margin-top:3px">${flag(m)} ${esc(leagueShort(m.league))}${m.stream ? " · 📺 stream on SportyBet" : ""}</div></div>
+      <div class="lscore num">${esc((m.score || "0–0").split("–")[0])}<br>${esc((m.score || "0–0").split("–")[1] || "0")}</div>
+      <div class="odds3 v">${[0, 1, 2].map((i) => `<span>${f2(m.odds[i])}</span>`).join("")}</div></button>`;
+  }
+  async function renderLiveList() {
+    stopLive();
+    const draw = () => {
+      if (state.tab !== "matches" || state.mStack.length || state.mRange !== "live") return false;
+      const L = state.live;
+      let h = leaguesHead("live");
+      if (!L && !state.liveErr) h += skRows(6);
+      else if (!L) h += `<div class="error">${esc(state.liveErr)}</div><button class="btn secondary" data-act="mrange" data-r="live">Try again</button>`;
+      else if (!L.matches.length) h += `<div class="empty">No football in play right now. Live matches show up here with a LIVE badge.</div>`;
+      else {
+        const groups = {}; L.matches.forEach((m) => (groups[m.league] = groups[m.league] || []).push(m));
+        h += `<div class="section"><span class="label">${L.matches.length} in play</span><span class="sub">updates every 20 s</span></div>`;
+        h += `<div class="card flush">${L.matches.map(liveRow).join("")}</div>`;
+      }
+      h += `<div class="disc">Live scores, tracker and odds from SportyBet and the Sportradar feed. No unofficial streams: video only from official free channels or SportyBet's own page. 18+.</div>`;
+      $view.innerHTML = h; return true;
+    };
+    draw();
+    const tick = async () => {
+      try { await loadLive(); } catch (e) { state.liveErr = e.message; }
+      if (draw() && !document.hidden) liveTimer = setTimeout(tick, 20000);
+    };
+    if (!state.live || Date.now() - state.liveAt > 15000) tick(); else liveTimer = setTimeout(tick, 20000);
+  }
+  // pitch: home attacks to the right (Sportradar coordinates 0-100)
+  function pitchSvg(ball, head) {
+    const b = ball || {}, x = b.x == null ? 50 : b.x, y = b.y == null ? 50 : b.y;
+    const sit = { attack: "Attack", dangerous: "Dangerous attack", safe: "In possession" }[b.situation] || "Waiting for play";
+    const side = b.team === "away" ? (head && head.away) || "Away" : b.team === "home" ? (head && head.home) || "Home" : "";
+    const zone = b.situation === "dangerous" ? (b.team === "home" ? "M75 0h25v60H75z" : "M0 0h25v60H0z") : b.situation === "attack" ? (b.team === "home" ? "M50 0h50v60H50z" : "M0 0h50v60H0z") : "";
+    return `<div class="pitchwrap"><svg class="pitch" viewBox="0 0 100 60" preserveAspectRatio="none">
+      <rect x="0" y="0" width="100" height="60" class="grass"/>${zone ? `<path d="${zone}" class="zone ${b.team === "away" ? "za" : "zh"}"/>` : ""}
+      <g class="lines"><rect x="1" y="1" width="98" height="58"/><line x1="50" y1="1" x2="50" y2="59"/><circle cx="50" cy="30" r="8"/>
+      <rect x="1" y="16" width="14" height="28"/><rect x="85" y="16" width="14" height="28"/><rect x="1" y="24" width="5" height="12"/><rect x="94" y="24" width="5" height="12"/></g>
+      </svg><i class="ball ${b.team === "away" ? "ba" : "bh"}" style="left:${x}%;top:${y}%"></i>
+      <div class="sit ${b.team === "away" ? "sa" : "sh"}">${side ? `<b>${esc(side)}</b> · ` : ""}${esc(sit)}</div>
+      <div class="dirs"><span>${esc(head ? head.home : "Home")} →</span><span>← ${esc(head ? head.away : "Away")}</span></div></div>`;
+  }
+  function momentumSvg(mom) {
+    if (!mom || !mom.length) return `<div class="sub">Momentum appears once play is tracked.</div>`;
+    const n = Math.max(mom.length, 46), w = 100 / n, mx = Math.max(4, ...mom.map((v) => Math.abs(v)));
+    const sm = mom.map((v, i) => (v + (mom[i - 1] || 0) * 0.6 + (mom[i + 1] || 0) * 0.6) / 2.2);
+    const bars = sm.map((v, i) => { const hgt = Math.min(1, Math.abs(v) / mx) * 18; return `<rect x="${(i * w).toFixed(2)}" y="${v >= 0 ? 20 - hgt : 20}" width="${(w * 0.8).toFixed(2)}" height="${hgt.toFixed(2)}" class="${v >= 0 ? "mh" : "ma"}"/>`; }).join("");
+    return `<svg class="mom" viewBox="0 0 100 40" preserveAspectRatio="none"><line x1="0" y1="20" x2="100" y2="20" class="mid"/><line x1="${(45 * 100 / n).toFixed(1)}" y1="0" x2="${(45 * 100 / n).toFixed(1)}" y2="40" class="ht"/>${bars}</svg>`;
+  }
+  const TL_ICON = { goal: "⚽", card: "🟨", corner: "⚑", substitution: "⇄", shotontarget: "◎", shotofftarget: "○", penalty_awarded: "◉", penalty_missed: "✕", periodstart: "▶", periodscore: "⏸", injurytimeshown: "+", match_ended: "■", video_assistant_referee: "VAR" };
+  function liveBody(d) {
+    const h = d.head || {}, f = d.feed || {};
+    let out = "";
+    out += `<div class="card"><div class="label">Live tracker</div>${pitchSvg(f.ball, h)}
+      <div class="label" style="margin-top:12px">Momentum <span class="sub">(${esc(h.home || "home")} up · ${esc(h.away || "away")} down)</span></div>${momentumSvg(f.momentum)}</div>`;
+    if (f.stats && f.stats.length) out += `<div class="card"><div class="label">Match stats</div>${f.stats.map((x) => { const t = (x.home + x.away) || 1; return `<div class="sbar"><b>${x.home}</b><span>${esc(x.label)}</span><b>${x.away}</b><div class="trk"><i style="width:${(x.home / t * 100).toFixed(1)}%"></i></div></div>`; }).join("")}</div>`;
+    if (d.markets && d.markets.length) out += `<div class="section"><span class="label">Live odds · SportyBet</span><span class="sub">fair % = de-margined</span></div>` + d.markets.map((m) => `<div class="card"><div class="label">${esc(m.title)}</div><div class="outs">${m.outcomes.map((o) => `<div class="out ro"><div class="l">${esc(o.desc)}</div><div class="p">${o.prob != null ? pct(o.prob) : "–"}</div><div class="o">${o.odds ? f2(o.odds) : "🔒"}</div></div>`).join("")}</div></div>`).join("");
+    else if (h.live === false) out += `<div class="note">This match isn't in play on SportyBet any more.</div>`;
+    if (f.events && f.events.length) out += `<div class="section"><span class="label">Timeline</span></div><div class="card flush">${f.events.map((e) => `<div class="tl t-${esc(e.team)}"><span class="tmin num">${e.min != null && e.min >= 0 ? e.min + "'" : ""}</span><span class="tic ${e.type === "card" ? "c-" + esc(e.card || "yellow") : ""}">${e.type === "card" && e.card === "red" ? "🟥" : TL_ICON[e.type] || "•"}</span><div class="grow"><b>${esc(e.name)}${e.score ? " " + esc(e.score) : ""}</b>${e.player ? `<div class="sub">${esc(e.player)}${e.note ? " · " + esc(e.note) : ""}</div>` : ""}</div><span class="tteam sub">${e.team === "home" ? esc(h.home || "") : e.team === "away" ? esc(h.away || "") : ""}</span></div>`).join("")}</div>`;
+    out += `<div class="disc">Tracker drawn from Sportradar's free event feed (not video). Odds move fast; estimates, not guarantees. 18+.</div>`;
+    return out;
+  }
+  function liveHeroHtml(h) {
+    return `<div class="card hero lv"><div class="sub hl">${flag(h)}<span class="ellip">${esc(h.league || "")}</span><span class="lbadge">${h.live === false ? "ENDED" : "LIVE"}</span></div>
+      <div class="vs"><div class="side">${crest(h.home_uid, h.home, "xl")}<b>${esc(h.home)}</b></div><div class="mid"><span class="bigscore num" id="lscore">${esc(h.score || "0–0")}</span><small id="lmin" class="lmin">${esc(h.minute || "")}</small>${h.ht ? `<small class="sub">HT ${esc(String(h.ht).replace(":", "–"))}</small>` : ""}</div><div class="side">${crest(h.away_uid, h.away, "xl")}<b>${esc(h.away)}</b></div></div></div>`;
+  }
+  function videoHtml(d) {
+    const v = d.video && d.video.video, h = d.head || {};
+    if (v) return `<div class="card flush vidcard"><div class="vid"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(v.id)}?autoplay=1&mute=1&playsinline=1&rel=0" title="${esc(v.title)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen loading="lazy"></iframe></div>
+      <div class="vmeta"><span class="vchip v-confirmed">Official</span><span class="ellip sub">${esc(v.channel)} · ${esc(v.title)}</span></div></div>`;
+    return `<div class="card watch"><div class="grow"><b>${h.stream ? "Stream available on SportyBet" : "No official free stream found"}</b><div class="sub">${h.stream ? "SportyBet flags a live stream for this match: it plays in your own SportyBet account." : "We only embed official channels (clubs, leagues, broadcasters). Follow it with the tracker below, or see where it's shown."}</div></div>
+      <button class="btn small" style="width:auto;margin:0;padding:0 14px" data-act="openurl" data-u="${esc(h.url || LOAD_URL)}">${h.stream ? "Watch on SportyBet" : "Where to watch"}</button></div>`;
+  }
+  async function renderLiveMatch(eid) {
+    stopLive();
+    const isCur = () => { const c = state.mStack[state.mStack.length - 1]; return state.tab === "matches" && c && c.name === "live" && c.arg === eid; };
+    const fromList = state.live && state.live.matches.find((m) => m.id === eid);
+    const first = state.lm && state.lm.event_id === eid ? state.lm : null;
+    $view.innerHTML = backLink() + `<div id="lhero">${first && first.head ? liveHeroHtml(first.head) : fromList ? liveHeroHtml({ ...fromList, live: true }) : `<div class="card"><div class="sk sk-line"></div><div class="sk sk-line"></div></div>`}</div>
+      <div id="lvideo">${first ? videoHtml(first) : `<div class="card"><div class="sk sk-line" style="width:70%"></div></div>`}</div><div id="lbody">${first ? liveBody(first) : `<div class="card">${[0, 1, 2, 3].map(() => `<div class="sk sk-line"></div>`).join("")}</div>`}</div>`;
+    let videoDone = !!first;
+    const tick = async (n) => {
+      let d;
+      try { d = await api(`/api/live/match?event_id=${encodeURIComponent(eid)}${videoDone ? "&video=0" : ""}`); }
+      catch (e) { if (isCur()) { const b = document.getElementById("lbody"); if (b && !state.lm) b.innerHTML = `<div class="error">${esc(e.message)}</div>`; liveTimer = setTimeout(() => tick(n + 1), 15000); } return; }
+      if (!isCur()) return;
+      if (videoDone && state.lm && state.lm.event_id === eid && state.lm.video) d.video = state.lm.video;
+      const prevScore = state.lm && state.lm.event_id === eid && state.lm.head ? state.lm.head.score : null;
+      state.lm = d;
+      if (d.head) { const hs = document.getElementById("lscore"), hm = document.getElementById("lmin");
+        if (hs && hm) { hs.textContent = d.head.score || "0–0"; hm.textContent = d.head.minute || ""; if (prevScore && prevScore !== d.head.score) { hs.classList.add("flash"); hapN("success"); setTimeout(() => hs.classList.remove("flash"), 1500); } }
+        else document.getElementById("lhero").innerHTML = liveHeroHtml(d.head); }
+      if (!videoDone) { document.getElementById("lvideo").innerHTML = videoHtml(d); videoDone = true; }   // iframe created once, never re-rendered
+      const lb = document.getElementById("lbody"); if (lb) lb.innerHTML = liveBody(d);
+      if (!document.hidden && !(d.head && d.head.live === false)) liveTimer = setTimeout(() => tick(n + 1), 8000);
+    };
+    tick(0);
+  }
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stopLive(); else if (state.tab === "matches") { const c = state.mStack[state.mStack.length - 1]; if ((c && c.name === "live") || (!c && state.mRange === "live")) render(); } });
 
   // ---------------------------------------------------------------- AI
   const SUGGEST = ["Analyze today's games and give me a safe 5 odds Sporty code", "Who wins Arsenal vs Chelsea?", "Run a grand audit for today", "Best value bets this weekend?"];
@@ -450,11 +647,13 @@
   async function loadHistory(force) {
     if (state.hist && !force) return;
     state.histErr = "";
-    try { state.hist = await api("/api/history?limit=60"); } catch (e) { state.histErr = e.message; }
+    try { state.hist = await api("/api/history?limit=60"); store.set("hist", { at: Date.now(), json: state.hist }); state.histFresh = Date.now(); } catch (e) { if (!state.hist) state.histErr = e.message; }
   }
   async function renderHistory() {
     let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Tracked codes</div><h1>History</h1><div class="sub">Results update every 5 min · Telegram ping when a slip lands</div></div><button class="iconbtn" data-act="histrefresh" aria-label="Refresh">↻</button></div>`;
+    if (!state.hist) { const c = store.get("hist"); if (c) state.hist = c.json; }   // instant: last copy on this phone
     if (!state.hist && !state.histErr) { $view.innerHTML = h + `<div class="card">${[0, 1, 2].map(() => `<div class="sk sk-line"></div>`).join("")}</div>`; await loadHistory(); if (state.tab !== "history") return; }
+    else if (!state.histFresh || Date.now() - state.histFresh > 60000) { state.histFresh = Date.now(); loadHistory(true).then(() => { if (state.tab === "history") { const y = window.scrollY; renderHistory().then(() => window.scrollTo(0, y)); } }); }
     if (state.histErr) { $view.innerHTML = h + `<div class="error">${esc(state.histErr)}</div><button class="btn secondary" data-act="histrefresh">Try again</button>`; return; }
     const all = state.hist.slips || [];
     const c = (k) => all.filter((r) => r.status === k).length;
@@ -473,7 +672,7 @@
   async function loadRollover(force) {
     if (state.ro && !force) return;
     state.roErr = "";
-    try { state.ro = await api("/api/rollover"); } catch (e) { state.roErr = e.message; }
+    try { state.ro = await api("/api/rollover"); store.set("ro", { at: Date.now(), json: state.ro }); state.roFresh = Date.now(); } catch (e) { if (!state.ro) state.roErr = e.message; }
   }
   function roSteps(d) {
     const byDay = {}; (d.log || []).forEach((x) => { if (["won", "lost", "pending", "check"].includes(x.status) || !byDay[x.day]) byDay[x.day] = x; });
@@ -486,7 +685,9 @@
   }
   async function renderRollover() {
     let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Daily compounding plan</div><h1>Rollover</h1><div class="sub">Top leagues · stats-confirmed legs ≥80% each</div></div><button class="iconbtn" data-act="rorefresh" aria-label="Refresh">↻</button></div>`;
+    if (!state.ro && !state.roBusy) { const c = store.get("ro"); if (c) state.ro = c.json; }
     if (!state.ro && !state.roErr) { $view.innerHTML = h + `<div class="card">${[0, 1, 2].map(() => `<div class="sk sk-line"></div>`).join("")}</div>`; await loadRollover(); if (state.tab !== "rollover") return; }
+    else if (!state.roBusy && (!state.roFresh || Date.now() - state.roFresh > 60000)) { state.roFresh = Date.now(); loadRollover(true).then(() => { if (state.tab === "rollover" && !state.roBusy) renderRollover(); }); }
     if (state.roErr) { $view.innerHTML = h + `<div class="error">${esc(state.roErr)}</div><button class="btn secondary" data-act="rorefresh">Try again</button>`; return; }
     const act = state.ro.active;
     if (state.roBusy) h += `<div class="card"><div class="scanning"><div class="radar"></div>Scanning today's top-league matches…<div class="steps">every market → stats check → fewest strong legs to the target</div></div></div>`;
@@ -527,7 +728,7 @@
     if (busy) { state.roBusy = true; renderRollover(); }
     try { const r = await api("/api/rollover", body); hapN("success"); if (r.day && r.day.status === "no_slip") toast("No slip met the bar today: skip suggested"); else if (r.day && r.day.status === "waiting") toast(r.day.note); }
     catch (e) { hapN("error"); toast(e.message); }
-    state.roBusy = false; state.ro = null; state.hist = null;
+    state.roBusy = false; state.ro = null; state.hist = null; store.set("ro", null); store.set("hist", null);
     if (state.tab === "rollover") renderRollover();
   }
 
@@ -557,6 +758,7 @@
   document.addEventListener("click", async (ev) => {
     const t = ev.target.closest("[data-act]"); if (!t) return;
     const a = t.dataset.act;
+    if (!["scan", "bookslip", "addleg", "addpred", "bookmine", "closesheet"].includes(a)) hapSel();   // light tick on every tap
     if (a === "tab") setTab(t.dataset.t);
     else if (a === "tier") { state.tier = t.dataset.t; if (TIERS[state.tier].target) state.target = TIERS[state.tier].target; hapSel(); renderHome(); }
     else if (a === "day") { state.day = t.dataset.d; hapSel(); renderHome(); }
@@ -585,17 +787,19 @@
     else if (a === "copycode") { const c = document.getElementById("codeText").textContent; toast((await copy(c)) ? "Code copied" : "Press and hold the code to copy"); hap("light"); }
     else if (a === "copytext" || a === "copyinline") { const c = t.dataset.t || t.textContent; toast((await copy(c)) ? `Copied ${c}` : "Couldn't copy"); hap("light"); }
     else if (a === "openhub") openLink(LOAD_URL);
-    else if (a === "mrange") { state.mRange = t.dataset.r; hapSel(); renderLeagues(); }
+    else if (a === "mrange") { saveScroll(); stopLive(); state.mRange = t.dataset.r; renderLeagues(); restoreScroll(); }
+    else if (a === "livematch") { saveScroll(); state.lm = null; state.mStack.push({ name: "live", arg: t.dataset.id }); render(); window.scrollTo(0, 0); }
+    else if (a === "openurl") openLink(t.dataset.u);
     else if (a === "mretry") renderLeagues();
-    else if (a === "league") { state.mStack.push({ name: "league", arg: t.dataset.id }); render(); window.scrollTo(0, 0); }
-    else if (a === "match") { if (state.tab !== "matches") { state.tab = "matches"; document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === "matches")); } const c = state.mStack[state.mStack.length - 1]; if (!(c && c.name === "match" && c.arg === t.dataset.id)) state.mStack.push({ name: "match", arg: t.dataset.id }); render(); window.scrollTo(0, 0); }
-    else if (a === "mback") { state.mStack.pop(); render(); }
+    else if (a === "league") { saveScroll(); state.mStack.push({ name: "league", arg: t.dataset.id }); render(); window.scrollTo(0, 0); }
+    else if (a === "match") { if (state.tab !== "matches") { state.tab = "matches"; document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === "matches")); } saveScroll(); const c = state.mStack[state.mStack.length - 1]; if (!(c && c.name === "match" && c.arg === t.dataset.id)) state.mStack.push({ name: "match", arg: t.dataset.id }); render(); window.scrollTo(0, 0); }
+    else if (a === "mback") goBack();
     else if (a === "addpred") addPred(t.dataset.m, t.dataset.o);
     else if (a === "suggest") askAI(t.textContent);
-    else if (a === "histrefresh") { state.hist = null; renderHistory(); }
+    else if (a === "histrefresh") { state.hist = null; state.histFresh = 0; store.set("hist", null); renderHistory(); }
     else if (a === "histfilter") { state.histFilter = t.dataset.f; hapSel(); renderHistory(); }
     else if (a === "histtoggle") { state.histOpen[t.dataset.id] = !state.histOpen[t.dataset.id]; renderHistory(); }
-    else if (a === "rorefresh") { state.ro = null; renderRollover(); }
+    else if (a === "rorefresh") { state.ro = null; state.roFresh = 0; store.set("ro", null); renderRollover(); }
     else if (a === "rotarget") { state.roForm.target = Number(t.dataset.v); hapSel(); renderRollover(); }
     else if (a === "rodays") { const inp = document.getElementById("rostake"); if (inp) state.roForm.stake = inp.value; state.roForm.days = Math.max(3, Math.min(15, state.roForm.days + Number(t.dataset.v))); hapSel(); renderRollover(); }
     else if (a === "rostart") { const inp = document.getElementById("rostake"); const st = inp ? parseFloat(inp.value.replace(/[,₦\s]/g, "")) : NaN; roAction({ action: "start", target: state.roForm.target, days: state.roForm.days, stake: isNaN(st) ? null : st, allow_unders: !!state.roForm.allowUnders }, true); }
@@ -604,13 +808,22 @@
     else if (a === "rostop") { const doIt = () => roAction({ action: "stop" }); if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast("6.2")) tg.showConfirm("Stop this rollover plan?", (ok) => ok && doIt()); else if (confirm("Stop this rollover plan?")) doIt(); }
     else if (a === "robook") { try { const r = await api("/api/history/book", { id: t.dataset.id }); hapN("success"); toast(`Code ${r.code} created`); } catch (e) { toast(e.message); } state.ro = null; renderRollover(); }
   });
-  document.querySelectorAll(".tabbtn").forEach((b) => b.addEventListener("click", () => { if (b.dataset.tab === state.tab && state.tab === "matches") { state.mStack = []; } setTab(b.dataset.tab); }));
+  document.querySelectorAll(".tabbtn").forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.tab === state.tab && state.tab === "matches" && state.mStack.length) { stopLive(); state.mStack = []; render(); restoreScroll(); hapSel(); return; }
+    setTab(b.dataset.tab);
+  }));
 
   badge();
   if (!initData) {
     $view.innerHTML = `<div class="card" style="margin-top:20px;text-align:center"><img src="/app/logo.png" width="64" height="64" style="border-radius:16px"><h2 style="margin-top:12px">Fra Prediction</h2><div class="sub" style="margin-top:6px">Open this app from @FraPredictbot in Telegram (menu button or /start).</div></div>`;
     return;
   }
-  if (location.hash === "#history" || location.hash === "#rollover") { state.tab = location.hash.slice(1); document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab)); }
+  if (location.hash === "#history" || location.hash === "#rollover" || location.hash === "#matches") { state.tab = location.hash.slice(1); document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab)); }
   render();
+  // warm the other tabs in the background so switching is instant (cached copy first, then a quiet refresh)
+  idle(() => {
+    loadEvents("today").catch(() => {});
+    loadLive().catch(() => {});
+    setTimeout(() => { if (!state.hist) loadHistory().catch(() => {}); }, 1200);
+  });
 })();

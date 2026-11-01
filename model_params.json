@@ -1,0 +1,122 @@
+{
+ "version": "v2-2026-11-01",
+ "half_life_days": 90.0,
+ "shrink": 8.0,
+ "rho": -0.12,
+ "default_league": {
+  "home": 1.51,
+  "away": 1.217
+ },
+ "leagues": {
+  "38": {
+   "home": 1.519,
+   "away": 1.212
+  },
+  "44": {
+   "home": 1.628,
+   "away": 1.341
+  },
+  "36": {
+   "home": 1.622,
+   "away": 1.226
+  },
+  "37": {
+   "home": 1.738,
+   "away": 1.321
+  },
+  "52": {
+   "home": 1.562,
+   "away": 1.241
+  },
+  "18": {
+   "home": 1.411,
+   "away": 1.11
+  },
+  "238": {
+   "home": 1.451,
+   "away": 1.172
+  },
+  "8": {
+   "home": 1.513,
+   "away": 1.143
+  },
+  "54": {
+   "home": 1.452,
+   "away": 1.131
+  },
+  "182": {
+   "home": 1.407,
+   "away": 1.153
+  },
+  "53": {
+   "home": 1.415,
+   "away": 1.088
+  },
+  "34": {
+   "home": 1.59,
+   "away": 1.297
+  },
+  "17": {
+   "home": 1.52,
+   "away": 1.322
+  },
+  "23": {
+   "home": 1.308,
+   "away": 1.186
+  },
+  "35": {
+   "home": 1.7,
+   "away": 1.479
+  }
+ },
+ "weights": {
+  "1x2": 0.0,
+  "btts": 0.1,
+  "dc": 0.0,
+  "dnb": 0.0,
+  "h1_total": 0.0,
+  "team_total": 0.0,
+  "total": 0.0
+ },
+ "default_weight": 0.0,
+ "calibration": {
+  "1x2": {
+   "kind": "platt",
+   "a": 1.09298,
+   "b": 0.06042
+  },
+  "mkt:1x2": {
+   "kind": "platt",
+   "a": 1.09298,
+   "b": 0.06042
+  },
+  "dnb": {
+   "kind": "platt",
+   "a": 1.19246,
+   "b": 0.0
+  },
+  "mkt:dnb": {
+   "kind": "platt",
+   "a": 1.19246,
+   "b": -0.0
+  },
+  "team_total": {
+   "kind": "platt",
+   "a": 1.06536,
+   "b": 0.0
+  },
+  "mkt:team_total": {
+   "kind": "platt",
+   "a": 1.06536,
+   "b": 0.0
+  }
+ },
+ "max_shift": 0.03,
+ "trained_on": {
+  "seasons": "24/25 + 25/26",
+  "matches": 9761,
+  "leagues": 15,
+  "tested_on": "26/27 to 2026-10-29",
+  "test_matches": 1251
+ }
+}

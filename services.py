@@ -102,7 +102,7 @@ class Services:
                 ms = None
             except Exception as exc:  # stats are optional: never let them break a prediction
                 log.warning("stats lookup failed for %s: %s", event.name, exc)
-        pred = predict(event, ms)
+        pred = predict(event, ms, form)
         if pred:
             pred.form = form
             self._pred_cache[event.event_id] = (time.time(), pred)

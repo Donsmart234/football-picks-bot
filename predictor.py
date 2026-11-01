@@ -4,7 +4,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+import model
 from bookmakers import (MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, OU_SPECIFIER, SELECTIONS, Event)
+from markets import Grid
 from stats import MatchStats, TeamStats
 
 MAX_GOALS = 10
@@ -166,7 +168,24 @@ class Prediction:
     form: object = None              # srstats.MatchForm when the free stats feed answered
 
 
-def predict(event: Event, ms: MatchStats | None = None) -> Prediction | None:
+def _v2_probs(base: dict[Key, float], lam: tuple[float, float] | None) -> dict[Key, float]:
+    """Model v2 for the card: stats grid (Dixon-Coles) blended with the market per group, then calibrated.
+    lam None = market only (calibrated)."""
+    ps = None
+    if lam:
+        g = Grid(*lam, model.rho())
+        h, d = g.prob(lambda i, j: i > j), g.prob(lambda i, j: i == j)
+        ps = {(MARKET_1X2, "1"): h, (MARKET_1X2, "2"): d, (MARKET_1X2, "3"): 1 - h - d,
+              (MARKET_OU, "12"): g.prob(lambda i, j: i + j > 2.5), (MARKET_BTTS, "74"): g.prob(lambda i, j: i > 0 and j > 0)}
+    out = {}
+    for k, kind in (((MARKET_1X2, "1"), "1x2"), ((MARKET_1X2, "2"), "1x2"), ((MARKET_1X2, "3"), "1x2"),
+                    ((MARKET_OU, "12"), "total"), ((MARKET_BTTS, "74"), "btts")):
+        out[k] = model.estimate(base[k], ps[k] if ps else None, kind)[1]
+    return out
+
+
+def predict(event: Event, ms: MatchStats | None = None, form=None) -> Prediction | None:
+    """form (srstats.MatchForm) -> model v2; ms only (API-Football fallback) -> the older stats blend."""
     mkt = market_probs(event)
     fitted = fit_lambdas(mkt)
     if fitted is None:
@@ -174,10 +193,17 @@ def predict(event: Event, ms: MatchStats | None = None) -> Prediction | None:
     fit_probs = poisson_markets(*fitted)
     base = {k: mkt.get(k, fit_probs[k]) for k in fit_probs}  # market where priced, Poisson-fit elsewhere
 
-    s_lam = stats_lambdas(ms) if ms else None
-    if s_lam:
-        model = poisson_markets(*s_lam)
-        raw = {k: STATS_WEIGHT * model[k] + (1 - STATS_WEIGHT) * base[k] for k in base}
+    lam2 = None
+    if form is not None and getattr(form, "ok", False):
+        lam2 = model.stats_lambdas_v2(form.home.games, form.away.games, model.utid_of(event.tournament_id))
+    s_lam = stats_lambdas(ms) if ms and not lam2 else None
+    if lam2:
+        raw = _v2_probs(base, lam2)
+        xg = fitted
+        source = f"stats+odds (model {model.PARAMS.get('version', 'v2')}, calibrated)"
+    elif s_lam:
+        sm = poisson_markets(*s_lam)
+        raw = {k: STATS_WEIGHT * sm[k] + (1 - STATS_WEIGHT) * base[k] for k in base}
         xg = (STATS_WEIGHT * s_lam[0] + (1 - STATS_WEIGHT) * fitted[0],
               STATS_WEIGHT * s_lam[1] + (1 - STATS_WEIGHT) * fitted[1])
         source = "stats+odds"
@@ -195,6 +221,8 @@ def predict(event: Event, ms: MatchStats | None = None) -> Prediction | None:
     best = max(pool, key=lambda p: p.ev) if pool else (max(priced, key=lambda p: p.prob) if priced else None)
 
     reasoning = _reason(event, probs, xg, source, ms, best)
+    if lam2:
+        reasoning += f"\nStats model xG {lam2[0]:.1f}–{lam2[1]:.1f} (last 10 games, time-weighted)."
     return Prediction(event, probs, source, xg, best, reasoning, picks)
 
 
@@ -202,7 +230,7 @@ def _reason(event: Event, probs: dict[Key, float], xg, source: str, ms: MatchSta
     h, d, a = (probs[(MARKET_1X2, o)] for o in ("1", "2", "3"))
     fav = event.home if h >= a else event.away
     line1 = f"Expected goals ≈ {xg[0]:.1f}–{xg[1]:.1f}; {fav} favoured ({max(h, a):.0%}), draw {d:.0%}."
-    if source == "stats+odds" and ms and ms.home and ms.away:
+    if source.startswith("stats+odds") and ms and ms.home and ms.away:
         hf, af = ms.home.form[-5:] or "n/a", ms.away.form[-5:] or "n/a"
         extra = f" Form {hf} vs {af}"
         if len(ms.h2h) >= 3:
@@ -211,6 +239,6 @@ def _reason(event: Event, probs: dict[Key, float], xg, source: str, ms: MatchSta
         line2 = extra.strip() + "."
     else:
         line2 = "Odds-only estimate (no team stats available): built from SportyBet's de-vigged prices."
-    if best and best.ev and best.ev >= 1.05 and source == "stats+odds":
+    if best and best.ev and best.ev >= 1.05 and source.startswith("stats+odds"):
         line2 += f" {best.label} looks like value vs the price."
     return f"{line1}\n{line2}"

@@ -7,8 +7,11 @@ Probability per outcome (all estimates):
   feed     = Betradar's own outcome probability shipped with the price (when present)
   fit      = Poisson model fitted to the match's 1X2 + O/U 2.5 prices
   base     = 0.55*market + 0.15*feed + 0.30*fit
-  stats    = Poisson from team stats (last-10 home/away goals, form, H2H), when the stats feed answers
-  estimate = base + clamp(0.35*(stats - base), -8 pts, +4 pts)   (odds-only legs: base - 2 pts)
+  stats    = model v2 (model.py): time-decayed Dixon-Coles Poisson from both teams' last 10 games with league home/away
+             goal averages, when the stats feed answers
+  estimate = calibrate_g( logit-blend_g(base, stats) )  (weights + calibration maps tuned by backtest/backtest.py on
+             ~9,800 matches; goals markets only). Odds-only goals legs: calibrate_g(base) - 2 pts. Corners/cards/props/
+             specials have no backtest and keep their market estimate.
 Stats then confirm (stats ≥ market - 3 pts), demote (-3..-10 pts) or drop (< -10 pts, or a form red flag) each leg.
 """
 from __future__ import annotations
@@ -25,7 +28,7 @@ import config
 from bookmakers import Event, SportyBetNG
 from constraints import TOTAL_HI, TOTAL_LO, Constraints, leg_tags, market_tags, verify
 from markets import FAMILIES, Family, devig_group, model_prob, pretty_pick, side_of, spec_value, usable_line
-from predictor import stats_lambdas
+import model
 from srstats import MatchForm, SportradarStats
 
 log = logging.getLogger(__name__)
@@ -137,6 +140,8 @@ class Leg:
     away_uid: str = ""
     category: str = ""              # country / "International Clubs"
     tags: tuple = ()                # market types (constraints.market_tags): under, over, 1x2, corners, ...
+    utid: str = ""                  # Sportradar unique tournament id (league goal averages for the stats model)
+    p_raw: float | None = None      # blended probability before calibration
 
     @property
     def ev(self) -> float:
@@ -157,6 +162,7 @@ class Leg:
                   "p_feed": None if self.p_feed is None else round(self.p_feed, 4),
                   "p_fit": None if self.p_fit is None else round(self.p_fit, 4),
                   "p_stats": None if self.p_stats is None else round(self.p_stats, 4),
+                  "p_raw": None if self.p_raw is None else round(self.p_raw, 4),
                   "ev": round(self.ev, 3)})
         return d
 
@@ -336,6 +342,7 @@ class Scanner:
                     pick=pick, odds=o["odds"], p_market=pm, p_feed=pf, p_fit=pfit, base=base, est=base - 0.02,
                     side=side_of(fam, o["id"]) if fam else None, level=level, group=m.get("group", ""),
                     home_uid=uid_of(e.home_id), away_uid=uid_of(e.away_id), category=e.category,
+                    utid=model.utid_of(e.tournament_id),
                     tags=market_tags(m["id"], mk_name, pick, m.get("group", ""), m["specifier"], e.home, e.away)))
         if len(legs) > keep:
             by_conf = sorted(legs, key=lambda l: -l.base)
@@ -675,19 +682,21 @@ def apply_stats(leg: Leg, form: MatchForm | None) -> None:
             leg.why += f" Form: {form.home.name} {_rec(form.home)}, {form.away.name} {_rec(form.away)}."
         return
     if not form or not form.ok:
-        leg.p_stats, leg.est, leg.verdict = None, base - 0.02, "odds only"
+        raw, cal = model.estimate(base, None, fam.kind, fam.period)
+        leg.p_stats, leg.p_raw, leg.est, leg.verdict = None, raw, cal - 0.02, "odds only"
         leg.why = "Odds-only: no team stats available for this match."
         return
-    ms = form.to_match_stats()
-    lam = stats_lambdas(ms) if ms else None
+    lam = model.stats_lambdas_v2(form.home.games, form.away.games, leg.utid)
     if not lam:
-        leg.p_stats, leg.est, leg.verdict = None, base - 0.02, "odds only"
+        raw, cal = model.estimate(base, None, fam.kind, fam.period)
+        leg.p_stats, leg.p_raw, leg.est, leg.verdict = None, raw, cal - 0.02, "odds only"
         leg.why = "Odds-only: too few recent games in the stats feed."
         return
-    ps = model_prob(fam, leg.specifier, leg.outcome_id, *lam)
+    ps = model_prob(fam, leg.specifier, leg.outcome_id, *lam, rho=model.rho())
     leg.p_stats = ps
-    # Stats nudge the estimate (small last-10 samples are noisy): they can cut up to 8 pts, add at most 4.
-    leg.est = base + max(-0.08, min(0.04, 0.35 * (ps - base)))
+    # Model v2: logit blend of market and stats (weight tuned per market group by backtest) then the group's
+    # calibration map, so the estimate is what such legs actually hit on past matches.
+    leg.p_raw, leg.est = model.estimate(base, ps, fam.kind, fam.period)
     delta = ps - leg.p_market
     flag = _red_flag(leg, fam, form)
     if flag:

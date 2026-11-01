@@ -12,8 +12,11 @@ import asyncio
 import json
 import sys
 import tempfile
+import os
 import time
 from pathlib import Path
+
+os.environ.setdefault("FRA_WARMER", "0")   # no background warm-up during tests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -99,9 +102,23 @@ async def live(do_book: bool) -> None:
             ju = r.json()
             check(r.status_code == 200 and ju["count"] >= j["count"],
                   f"/api/events upcoming: {ju.get('count')} matches ({len(r.content) // 1024} KB)")
-            m = next(m for l in ju["leagues"] for m in l["matches"] if m["odds"]["1"])
-            print(f"   first league: {ju['leagues'][0]['name']}; sample: {m['day']} {m['time']} "
-                  f"{m['home']} vs {m['away']} {m['odds']}")
+            row = next(m for l in ju["leagues"] for m in l["matches"] if m[6])
+            m = {"id": row[0], "home": row[1], "away": row[2], "start": row[3], "odds": {"1": row[6], "X": row[7], "2": row[8]}}
+            check(len(row) == 9 and isinstance(row[3], int), "compact match rows [id, home, away, start, uids, odds]")
+            print(f"   first league: {ju['leagues'][0]['name']}; sample: {m['home']} vs {m['away']} {m['odds']}")
+            et = r.headers.get("ETag")
+            r304 = await c.get("/api/events?range=upcoming", headers={**hdr, "If-None-Match": et or ""})
+            check(bool(et) and r304.status_code == 304, "ETag -> 304 Not Modified")
+            r = await c.get("/app/app.js?v=x", headers={"Accept-Encoding": "gzip"})
+            check("immutable" in r.headers.get("Cache-Control", ""), "versioned assets cached as immutable")
+            r = await c.get("/api/live", headers=hdr)
+            lj = r.json()
+            check(r.status_code == 200 and "matches" in lj, f"/api/live: {lj.get('count')} in-play matches")
+            if lj.get("matches"):
+                r = await c.get(f"/api/live/match?event_id={lj['matches'][0]['id']}", headers=hdr)
+                d = r.json()
+                check(r.status_code == 200 and "feed" in d, f"/api/live/match: {len(d.get('markets', []))} markets, "
+                      f"{len(d.get('feed', {}).get('events', []))} events, video={bool((d.get('video') or {}).get('video'))}")
             r = await c.post("/api/predict", json={"event_id": m["id"]}, headers=hdr)
             p = r.json()
             check(r.status_code == 200 and len(p.get("markets", [])) == 4 and p.get("disclaimer"),
@@ -114,9 +131,9 @@ async def live(do_book: bool) -> None:
                 picks, used = [], set()
                 for l in ju["leagues"]:
                     for mm in l["matches"]:
-                        if mm["odds"]["1"] and mm["id"] not in used and len(picks) < 2:
-                            used.add(mm["id"])
-                            picks.append({"event_id": mm["id"], "market_id": "1", "specifier": "",
+                        if mm[6] and mm[0] not in used and len(picks) < 2:
+                            used.add(mm[0])
+                            picks.append({"event_id": mm[0], "market_id": "1", "specifier": "",
                                           "outcome_id": "1"})
                 r = await c.post("/api/book", json={"selections": picks}, headers=hdr)
                 b = r.json()
