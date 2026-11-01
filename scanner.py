@@ -28,6 +28,7 @@ import config
 from bookmakers import Event, SportyBetNG
 from constraints import TOTAL_HI, TOTAL_LO, Constraints, leg_tags, market_tags, verify
 from markets import FAMILIES, Family, devig_group, model_prob, pretty_pick, side_of, spec_value, usable_line
+import leagues
 import model
 from srstats import MatchForm, SportradarStats
 
@@ -82,27 +83,13 @@ def uid_of(competitor_id: str) -> str:
     return s if s.isdigit() and len(s) <= 9 else ""
 
 
-# Rollover allowlist: well-known top-flight leagues and cups only (category, tournament name prefix).
-ROLLOVER_LEAGUES = [
-    ("England", "Premier League"), ("England", "Championship"), ("England", "FA Cup"), ("England", "EFL Cup"),
-    ("England", "League Cup"), ("Spain", "LaLiga"), ("Spain", "Copa del Rey"), ("Italy", "Serie A"),
-    ("Italy", "Coppa Italia"), ("Germany", "Bundesliga"), ("Germany", "DFB Pokal"), ("France", "Ligue 1"),
-    ("France", "Coupe de France"), ("International Clubs", "UEFA Champions League"),
-    ("International Clubs", "UEFA Europa League"), ("International Clubs", "UEFA Conference League"),
-    ("Netherlands", "Eredivisie"), ("Portugal", "Liga Portugal"), ("Portugal", "Primeira Liga"),
-    ("Scotland", "Premiership"), ("Turkiye", "Super Lig"), ("Belgium", "Pro League"), ("USA", "MLS"),
-    ("Brazil", "Brasileiro Serie A"), ("Argentina", "Liga Profesional"),
-]
-
-
 def rollover_allowed(e: Event) -> bool:
-    cat, lg = (e.category or "").lower(), (e.league or "").lower()
-    if any(x in f"{lg} {e.home} {e.away}".lower() for x in ("women", "u19", "u20", "u21", "u23", " ii", "youth",
-                                                            "srl", "simulated")):
-        return False
-    if lg.startswith("liga portugal 2") or "2. bundesliga" in lg or lg.startswith("laliga 2"):
-        return False
-    return any(cat == c.lower() and lg.startswith(l.lower()) for c, l in ROLLOVER_LEAGUES)
+    """Rollover (and every default scan) uses the top-leagues allowlist, matched by Sportradar ids (leagues.py)."""
+    return leagues.is_top(e)
+
+
+def top_league(e) -> bool:
+    return leagues.is_top(e)
 
 
 def _excluded(e: Event) -> bool:
@@ -142,6 +129,7 @@ class Leg:
     tags: tuple = ()                # market types (constraints.market_tags): under, over, 1x2, corners, ...
     utid: str = ""                  # Sportradar unique tournament id (league goal averages for the stats model)
     p_raw: float | None = None      # blended probability before calibration
+    category_id: str = ""           # sr:category:<id>
 
     @property
     def ev(self) -> float:
@@ -243,7 +231,11 @@ class Scanner:
 
     def select(self, events: list[Event], leagues: list[str] | None, cap: int,
                rules: Constraints | None = None) -> list[Event]:
+        """Matches to scan. Default: top-leagues allowlist only (leagues.py, by Sportradar ids). Widened only when
+        the user explicitly names leagues / countries / teams or asks for all leagues."""
         evs = [e for e in events if not _excluded(e)]
+        if not (leagues or (rules is not None and rules.widens_leagues())):
+            evs = [e for e in evs if top_league(e)]
         if leagues:
             ls = [x.lower() for x in leagues if x]
             evs = [e for e in evs if any(x in e.league_full.lower() for x in ls)]
@@ -288,7 +280,8 @@ class Scanner:
                 self._pools.pop(k, None)
             return pool
 
-    def event_legs(self, e: Event, markets: list[dict], keep: int = 160) -> list[Leg]:
+    def event_legs(self, e: Event, markets: list[dict], keep: int = 160,
+                   odds_range: tuple[float, float] = (1.04, 15.0)) -> list[Leg]:
         """Score every outcome of every open market of one match. Returns the strongest `keep` legs plus the best
         value legs (memory bound on the free instance); everything is scored before pruning."""
         t = {}
@@ -322,7 +315,7 @@ class Scanner:
                 fair, mode = [min(0.985, 1 / (o["odds"] * 1.06)) for o in outs], "single"
             mk_name = m["desc"] or (fam.name if fam else f"Market {m['id']}")
             for o, pm in zip(outs, fair):
-                if o["odds"] < 1.04 or o["odds"] > 15:
+                if o["odds"] < odds_range[0] or o["odds"] > odds_range[1]:
                     continue
                 pf = o["prob"] if o["prob"] and 0 < o["prob"] < 1 else None
                 pfit = model_prob(fam, m["specifier"], o["id"], *lam, grid_cache=grid) if modeled else None
@@ -342,7 +335,7 @@ class Scanner:
                     pick=pick, odds=o["odds"], p_market=pm, p_feed=pf, p_fit=pfit, base=base, est=base - 0.02,
                     side=side_of(fam, o["id"]) if fam else None, level=level, group=m.get("group", ""),
                     home_uid=uid_of(e.home_id), away_uid=uid_of(e.away_id), category=e.category,
-                    utid=model.utid_of(e.tournament_id),
+                    utid=model.utid_of(e.tournament_id), category_id=getattr(e, "category_id", ""),
                     tags=market_tags(m["id"], mk_name, pick, m.get("group", ""), m["specifier"], e.home, e.away)))
         if len(legs) > keep:
             by_conf = sorted(legs, key=lambda l: -l.base)

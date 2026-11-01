@@ -7,6 +7,52 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-01, later): Bet analyzer + top-leagues default
+**Bet analyzer** (`analyzer.py`). Paste any SportyBet NG booking code: `/analyze N6RXGP` (optional rules for the swaps:
+`/analyze N6RXGP no unders`), or just send the bare 6-character code in chat (a message that is only 6 letters/digits with a
+digit or all capitals; ordinary words still go to the AI), the Mini App **Analyze** tab (input + Paste, recent codes), or ask
+the AI ("check this code N6RXGP" → tool `analyze_booking_code`).
+- Loads the slip with `GET /api/ng/orders/share/<code>` through the relay (verified 2026-11-01: `bizCode 10000` + `data.outcomes[]`,
+  each with event status/score, the one market + outcome, `isWinning`/`refundFactor` once settled, `unavailableOutcomes[]`
+  with only an eventId; invalid/expired codes answer `bizCode 19000 "The code is invalid."`). Started legs show the live score,
+  finished legs won/lost/void; unavailable selections are flagged.
+- Each pre-match leg: the match's full book is re-read (`factsCenter/event`, which also gives team ids for crests/stats) and
+  scored exactly like the scanner (`event_legs` + `apply_stats`: de-margined price + feed probability + Poisson fit, model v2
+  stats blend + calibration). Shown: estimate, fair odds (1/est), value (est × odds − 1), rating **Strong** (≥80%) / **OK**
+  (≥65%) / **Weak** (≥45%) / **Avoid**, one step down when demoted by the stats check or priced >8% under fair, at best Weak when
+  the stats check dropped it; a one-line reason (form, H2H or goals trend, stats vs price, red flag, and **team news** from the
+  free feed `match_missingplayers` + `match_squads`: players out, line-ups confirmed; context only, not in the model).
+  Player props, specials, single-price markets, other sports and in-play legs are **Not rated** (the combined chance counts
+  them at the de-margined price and says so). Legs outside the top-leagues list are flagged.
+- Slip: total odds, combined estimated hit chance (independent legs), weakest legs, grade **A–F** (55% leg quality + 45%
+  chance on a log scale, penalty when the whole slip is priced well under fair; any Avoid leg caps it at C), drop suggestions,
+  safer swaps in the same match (lower total line, DC/DNB instead of a win, Over 1.5 instead of GG; never turns an over into an
+  under; obeys rules given with the code) with the new combined chance, and an **improved slip**. It ends with a verdict:
+  "✅ I'd go for this", "⚠️ I'd go for this only after dropping/switching …" or "❌ I'd skip this".
+- **Rebook improved slip** books only on an explicit tap (Telegram: tap → preview → ✅ Confirm; Mini App: button → confirm
+  sheet); refused if it breaks the given rules or a match has started. That new booking is saved to History and tracked as usual.
+- **Analyzed codes are not saved to History or tracked** (History = bot-generated / booked slips only). If the code is already in
+  History (the bot booked it) its booked prices are read, nothing is written.
+- 🧠 **AI take**: optional Gemini paragraph from the computed numbers only (no tools); every percentage it writes must exist
+  in the facts or it is replaced by a rule-based summary.
+- Access stays owner-only. Opening it to others later is config only: `ANALYZER_ACCESS=allowlist` + `ANALYZER_USERS=id1,id2`, or
+  `ANALYZER_ACCESS=public`. Then only `/analyze`, bare codes, the analyzer buttons and `/api/analyze*` open up; everything else
+  stays owner-only, and a guest's rebook isn't written to the owner's History.
+
+**Top leagues by default** (`leagues.py`). Every scan (all tiers, `/scan`, Mini App Scanner, AI `scan_markets`, rollover) reads
+only allowlisted competitions, matched by Sportradar **unique-tournament id + category id** (SportyBet's `sr:tournament:<id>` /
+`sr:category:<id>`; every id checked on 2026-11-01 against SportyBet's list and `gismo/uniquetournament_info/<id>`):
+EPL 17, Championship 18, FA Cup 19, EFL Cup 21 · LaLiga 8, Copa del Rey 329 · Serie A 23, Coppa Italia 328 · Bundesliga 35,
+DFB Pokal 217 · Ligue 1 34, Coupe de France 335 · UCL 7, UEL 679, UECL 34480 · Eredivisie 37, KNVB beker 330 · Liga Portugal 238,
+Taça de Portugal 336, Taça da Liga 327 · Scottish Premiership 36, Scottish Cup 347, League Cup 332 · Süper Lig 52, Türkiye Kupası 96
+· Belgian Pro League 38, Belgian Cup 326 · MLS 242 · Brasileirão 325, Copa do Brasil 373 · Argentina Primera LPF 155 · national
+teams: World Cup 16, WC qualifiers UEFA 11 / CONMEBOL 295 / CAF 13 / AFC 308 / CONCACAF 14 / inter-confed playoffs 20434, EURO 1,
+EURO qualifiers 27, Nations League 23755, AFCON 270, AFCON qualifiers 1848, Copa América 133, Gold Cup 140, Asian Cup 246, Asian Cup
+qualifiers 28, CONCACAF Nations League 27420, Finalissima 36497. Women's/youth/reserve/friendly competitions have their own ids
+and are excluded (plus a U19/U21/Women/II/Reserves team-name guard). Widened only when the user asks: name a league/country/team
+(constraints layer), say "all leagues" (`/scan safe 5 allleagues`, AI `all_leagues=true`), or tap **Top leagues only (tap for
+all)** in the Scanner. Extra ids without code changes: `TOP_LEAGUES_EXTRA="384,357"`. Rollover uses the same list.
+
 ## What's new (2026-11-01): smooth Mini App, Live view, model v2 (backtested)
 **Model v2** (`model.py`, `model_params.json`, `backtest/`). Leg estimate = `calibrate_g(logit-blend_g(market, stats))`:
 the stats model is now a time-decayed (half-life 90 days) Poisson from both teams' last 10 games with league-specific
@@ -51,7 +97,7 @@ cold server first Matches load is still ~7 s (SportyBet pages via the relay), wh
 
 ## What's new: scanner, AI analyst, fintech UI
 **Market scanner** (`scanner.py`, `markets.py`). For a window (today / tomorrow / next 24h / 48h) it picks up to 80 matches
-(major and reliable leagues first, then by market depth; SRL/virtual/eSoccer excluded), fetches **every open market** of each
+(top-leagues allowlist by default, see `leagues.py`; major leagues first, then by market depth; SRL/virtual/eSoccer excluded), fetches **every open market** of each
 match from `GET /api/ng/factsCenter/event?eventId=<sr:match:..>&productId=3` (360–1,430 markets per match: main, goals,
 halves, minutes, combos, corners, bookings, player props, early-payout 1UP/2UP), 6 at a time, through the relay, and scores
 every outcome:
@@ -137,7 +183,7 @@ Player props, specials, minute markets and combos become **Check** once the matc
 as soon as a leg loses; ❔ when nothing lost but a leg needs a manual look. Per-leg wins are shown in History, not pinged.
 
 **Rollover** (`/rollover`, Mini App Rollover tab). Pick a daily target (2, 3, 4 or 5) and 3–15 days, optional starting stake. Each
-morning from 09:00 Africa/Lagos (until 20:00) the day's slip is built from an allowlist of top competitions (`ROLLOVER_LEAGUES` in
+morning from 09:00 Africa/Lagos (until 20:00) the day's slip is built from an allowlist of top competitions (now the shared `leagues.py` id list; formerly `ROLLOVER_LEAGUES` in
 `scanner.py`: EPL, Championship, FA/EFL Cup, LaLiga, Copa del Rey, Serie A, Coppa Italia, Bundesliga, DFB Pokal, Ligue 1, Coupe de
 France, UCL/UEL/UECL, Eredivisie, Liga Portugal, Scottish Premiership, Süper Lig, Belgian Pro League, MLS, Brasileirão, Argentina
 Liga Profesional; women/youth/reserve sides excluded) using only **stats-confirmed** legs with est. ≥80% and odds ≥1.12; a
@@ -178,6 +224,9 @@ button, safe-area insets.
 | `POST /api/history/book {"id"}` | Book a saved slip that has no code yet (rollover day) |
 | `GET /api/rollover` · `POST /api/rollover {"action": start\|now\|skip\|stop\|mark, target, days, stake, result}` | Rollover plan |
 | `POST /api/admin/tick {"id"?}` · `POST /api/admin/test_settle {"legs"}` · `POST /api/admin/delete_test {"id"}` | Admin only: run the tracker now, settle a TEST slip of finished matches (pings once, marked TEST), delete TEST records |
+| `POST /api/analyze {"code", "rules"?}` | Bet analyzer result (legs, summary, suggestions, improved slip, recommendation, `id`); not saved |
+| `POST /api/analyze/rebook {"id"}` | Book the improved slip of analysis `id` (explicit tap only); saved to History |
+| `POST /api/analyze/narrative {"id"}` | Short AI take grounded in the analysis numbers |
 | `POST /api/ai {"message"}` · `POST /api/ai/reset` | AI analyst |
 | `GET /api/admin/diag` | Server diagnostics (relay, Sportradar, Gemini models); **only** with `X-Admin-Token` = `ADMIN_TOKEN` |
 
@@ -204,10 +253,11 @@ It forwards to `https://www.sportybet.com<p>` with browser headers, only for pat
 | `/predict Arsenal vs Chelsea` | Classic prediction card with add-to-slip buttons |
 | `/slip`, `/book`, `/clear` | Chat slip, booking code, clear |
 | `/reset` | Clear the AI chat memory |
+| `/analyze CODE [rules]` or paste a bare code | Bet analyzer: rating per leg, grade, suggestions, verdict, Rebook / AI take buttons |
 | `/history` | Last 12 booked codes with results + the latest running slip |
 | `/rollover [2-5] [3-15] [stake] [unders]` · `/rollover now\|skip\|stop\|won\|lost` | Start / manage a rollover plan (no unders unless `unders`) |
 
-Bot menu (set on start): /start, /scan, /ai, /today, /rollover, /history, /slip, /help. Profile photo, description and short description were set via
+Bot menu (set on start): /start, /scan, /ai, /analyze, /today, /rollover, /history, /slip, /help. Profile photo, description and short description were set via
 the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setMyDescription`, `setMyShortDescription`).
 
 ## Environment variables
@@ -229,6 +279,9 @@ the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setM
 | `SUPABASE_URL` | for durable history | `https://ectglmhgqfiipexvczmh.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | for durable history | Supabase service_role key (vault "Supabase love-diary service key (fra bot)"); without it history falls back to SQLite, which Render wipes on restart |
 | `FRA_WARMER` | no | `0` disables the background warm-up of today's events list (tests) |
+| `ANALYZER_ACCESS` | no | `owner` (default) · `allowlist` (owner + `ANALYZER_USERS`) · `public`: who may use the bet analyzer |
+| `ANALYZER_USERS` | no | Comma-separated Telegram user ids for `ANALYZER_ACCESS=allowlist` |
+| `TOP_LEAGUES_EXTRA` | no | Extra Sportradar unique-tournament ids added to the top-leagues allowlist |
 | `PUBLIC_BASE_URL` | no | https base for the Mini App; defaults to `WEBHOOK_URL` / `RENDER_EXTERNAL_URL`. Without an https base the app button and menu button are skipped |
 
 Never commit secrets: `.env` and `data/` are git-ignored.
@@ -278,11 +331,12 @@ python tests/test_webapp.py        # initData validation unit tests (fake token)
 python tests/test_webapp.py --live # + local server: /app, 403s, /api/events, /api/predict through the relay
 python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/book
 python tests/test_constraints.py   # offline: Under tagging, rule parsing, scanner/rollover enforcement, AI rule merge + booking refusals
+python tests/test_analyzer.py      # offline: code detection, share parsing (fixtures), ratings, grade, swaps, verdict, top-leagues ids, no history writes
 python tests/test_tracker.py       # 26 settlement cases + tracker run on real finished matches (SQLite, fake bot, 1 ping per slip)
 ```
 
 ## Files
-`main.py` (run modes, /health, webhook) · `webapp.py` (Mini App API + initData auth) · `webapp_static/` (UI, logo) ·
+`analyzer.py` (bet analyzer) · `leagues.py` (top-leagues allowlist by Sportradar ids) · `main.py` (run modes, /health, webhook) · `webapp.py` (Mini App API + initData auth) · `webapp_static/` (UI, logo) ·
 `handlers.py` (Telegram UX, owner lock, /scan, /history, /rollover, AI chat) · `tracker.py` (history recording, result loop, pings,
 rollover plans) · `settle.py` (Sportradar results → won/lost/void/check) · `history.py` (Supabase PostgREST / SQLite store) ·
 `fmt.py` (Telegram formatting, flags) · `constraints.py` (slip rules, market-type tags, parsing, verification) · `ai.py` (Gemini analyst + tools) · `scanner.py` (market scanner, tiers,

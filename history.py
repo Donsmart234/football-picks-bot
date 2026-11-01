@@ -141,6 +141,27 @@ class HistoryStore:
         return {"id": r[0], "kind": r[1], "status": r[2], "created_at": r[3], "updated_at": r[4],
                 "data": json.loads(r[5] or "{}")}
 
+    async def find_code(self, code: str) -> dict | None:
+        """Newest slip record whose booking code is `code` (None when the code isn't in the history)."""
+        code = (code or "").strip().upper()
+        if not code:
+            return None
+        if self.remote:
+            r = await self._http().get(f"/{TABLE}", params={"kind": "eq.slip", "data->>code": f"eq.{code}",
+                                                            "order": "created_at.desc", "limit": "1", "select": "*"})
+            r.raise_for_status()
+            rows = r.json()
+            return rows[0] if rows else None
+        if self.storage is None:
+            return None
+        rows = self.storage._exec(f"SELECT id, kind, status, created_at, updated_at, data FROM {TABLE} WHERE kind='slip' "
+                                  "AND data LIKE ? ORDER BY created_at DESC", (f'%"code": "{code}"%',))
+        for r in rows:
+            d = json.loads(r[5] or "{}")
+            if str(d.get("code") or "").upper() == code:
+                return {"id": r[0], "kind": r[1], "status": r[2], "created_at": r[3], "updated_at": r[4], "data": d}
+        return None
+
     async def delete(self, rid: str) -> None:
         if self.remote:
             await self._http().delete(f"/{TABLE}", params={"id": f"eq.{rid}"})

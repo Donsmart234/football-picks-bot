@@ -253,6 +253,7 @@ class Constraints:
     kickoff_after: str | None = None      # local "HH:MM" or "YYYY-MM-DD HH:MM" (Africa/Lagos)
     kickoff_before: str | None = None
     stats_confirmed_only: bool = False
+    all_leagues: bool = False             # lift the default top-leagues allowlist (leagues.py)
     unknown: list[str] = field(default_factory=list)   # market words we couldn't map (reported back, not ignored)
 
     # ---- construction ---------------------------------------------------
@@ -289,6 +290,7 @@ class Constraints:
         c.kickoff_after = _clock(a.get("kickoff_after"))
         c.kickoff_before = _clock(a.get("kickoff_before"))
         c.stats_confirmed_only = bool(a.get("stats_confirmed_only"))
+        c.all_leagues = bool(a.get("all_leagues"))
         return c
 
     def to_dict(self, compact: bool = True) -> dict:
@@ -317,6 +319,7 @@ class Constraints:
             if uv is not None:
                 setattr(self, k, uv)
         self.stats_confirmed_only = self.stats_confirmed_only or user.stats_confirmed_only
+        self.all_leagues = self.all_leagues or user.all_leagues
         # an include that the user excluded makes no sense: the exclusion wins
         self.include_markets = [m for m in self.include_markets if m not in self.exclude_markets]
         return self
@@ -345,9 +348,9 @@ class Constraints:
             return "dropped by the stats check"
         league = str(get("league") or "").lower()
         country = str(get("category") or "").lower() or league.split(" · ")[0]
-        if self.include_leagues and not any(_league_match(x, league) for x in self.include_leagues):
+        if self.include_leagues and not any(_league_match(x, league, l) for x in self.include_leagues):
             return "league not included"
-        if any(_league_match(x, league) for x in self.exclude_leagues):
+        if any(_league_match(x, league, l) for x in self.exclude_leagues):
             return "league excluded"
         if self.include_countries and not any(x.lower() in (country, league.split(" · ")[0]) or
                                               x.lower() in league for x in self.include_countries):
@@ -373,7 +376,14 @@ class Constraints:
         return Constraints(include_leagues=self.include_leagues, exclude_leagues=self.exclude_leagues,
                            include_countries=self.include_countries, exclude_countries=self.exclude_countries,
                            include_teams=self.include_teams, exclude_teams=self.exclude_teams,
-                           kickoff_after=self.kickoff_after, kickoff_before=self.kickoff_before)
+                           kickoff_after=self.kickoff_after, kickoff_before=self.kickoff_before,
+                           all_leagues=self.all_leagues)
+
+    def widens_leagues(self) -> bool:
+        """True when the user explicitly asked beyond the default top-leagues allowlist: all leagues, a named
+        league / country / team (the scan then reads those matches, top league or not)."""
+        named = [x for x in self.include_leagues if x.lower().strip() != TOP_LEAGUES_KEY]
+        return bool(self.all_leagues or named or self.include_countries or self.include_teams)
 
     def match_key(self) -> str:
         d = self.match_rules().to_dict()
@@ -384,6 +394,7 @@ class Constraints:
         if not self.match_key():
             return True
         probe = {"league": e.league_full, "category": e.category, "home": e.home, "away": e.away,
+                 "tournament_id": e.tournament_id, "category_id": getattr(e, "category_id", ""),
                  "kickoff": e.start.isoformat(), "est": 1.0, "odds": 2.0, "tags": ("1x2",)}
         return not self.match_rules().leg_problem(probe)
 
@@ -426,6 +437,8 @@ class Constraints:
             parts.append(f"kick-off ≤{self.kickoff_before}")
         if self.stats_confirmed_only:
             parts.append("stats-confirmed only")
+        if self.all_leagues:
+            parts.append("all leagues")
         return " · ".join(parts)
 
 
@@ -434,13 +447,11 @@ def _label(m: str) -> str:
         m, m.replace("_", " "))
 
 
-def _league_match(q: str, league: str) -> bool:
+def _league_match(q: str, league: str, leg=None) -> bool:
     q = q.lower().strip()
     if q == TOP_LEAGUES_KEY:
-        from scanner import ROLLOVER_LEAGUES
-        cat, _, lg = league.partition(" · ")
-        return any(cat == c.lower() and lg.startswith(l.lower()) for c, l in ROLLOVER_LEAGUES) and not any(
-            x in lg for x in ("women", "u19", "u21", "u23"))
+        import leagues
+        return leg is not None and leagues.is_top(leg)
     q = LEAGUE_ALIASES.get(q, q).lower()
     if " · " in q:
         cat, _, lg = q.partition(" · ")
@@ -547,6 +558,8 @@ def parse_text(text: str) -> Constraints:
     c = Constraints()
     t = " " + (text or "").lower().replace("’", "'") + " "
     t = re.sub(r"\bunder[- ]free\b", "no unders", t)
+    if re.search(r"(?<![a-z])(all|any|every|lower|other)[- ](leagues?|competitions?)(?![a-z])|(?<=\s)allleagues(?=\s)", t):
+        c.all_leagues = True
     # command tokens: -under, nounders, no-unders, only:a,b, legs:4-8, minodds:1.2, maxodds:1.5, after:18:00 ...
     t = re.sub(r"(?<=\s)-(?=[a-z])", "no ", t)
     t = re.sub(r"(?<=\s)no-?(unders?|overs?|corners?|cards?|bookings?|props|combos?|handicaps?|btts|gg|halves|"

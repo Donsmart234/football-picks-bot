@@ -147,7 +147,7 @@ class SportradarStats:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _get(self, path: str) -> dict | None:
+    async def _get(self, path: str, ttl: int = TTL) -> dict | None:
         key = "sr:" + path
         hit = self.storage.cache_get(key)
         if hit is not None:
@@ -165,7 +165,7 @@ class SportradarStats:
             self.failures += 1
             return None
         data = doc.get("data") or {}
-        self.storage.cache_set(key, data, TTL)
+        self.storage.cache_set(key, data, ttl)
         return data
 
     async def team_form(self, competitor_id: str, name: str = "") -> TeamForm | None:
@@ -217,3 +217,39 @@ class SportradarStats:
         th, ta, hh = await asyncio.gather(self.team_form(home_id, home), self.team_form(away_id, away),
                                           self.h2h(home_id, away_id))
         return MatchForm(th, ta, hh)
+
+
+    async def match_news(self, match_id: str, home_uid: str = "", away_uid: str = "") -> dict | None:
+        """Team news for one match from the same feed: players listed missing / doubtful
+        (match_missingplayers) and whether starting line-ups are published yet (match_squads). Context only:
+        the probability model does not use it (the market price usually reflects known absences)."""
+        mid = str(match_id or "").rsplit(":", 1)[-1]
+        if not mid.isdigit():
+            return None
+        mp, sq = await asyncio.gather(self._get(f"match_missingplayers/{mid}", ttl=1800),
+                                      self._get(f"match_squads/{mid}", ttl=900))
+        if mp is None and sq is None:
+            return None
+        out = {"home_missing": [], "away_missing": [], "home_doubtful": [], "away_doubtful": [],
+               "lineups": False}
+        for p in (mp or {}).get("players") or []:
+            try:
+                team = str((p.get("uniqueteam") or {}).get("_id") or "")
+                st = p.get("status") or {}
+                pl = p.get("player") or {}
+                name = str(pl.get("name") or "")
+                if "," in name:                      # "Adorante, Andrea" -> "Adorante"
+                    name = name.split(",", 1)[0].strip()
+                pos = ((pl.get("position") or {}).get("abbr") or "")
+            except AttributeError:
+                continue
+            side = "home" if team and team == str(home_uid) else "away" if team and team == str(away_uid) else ""
+            if not side or not name:
+                continue
+            key = f"{side}_doubtful" if st.get("doubtful") and not st.get("missing") else f"{side}_missing"
+            out[key].append({"name": name, "pos": pos, "why": str(st.get("name") or st.get("status") or "")})
+        for side in ("home", "away"):
+            lu = ((sq or {}).get(side) or {}).get("startinglineup")
+            if isinstance(lu, list) and len(lu) >= 11:
+                out["lineups"] = True
+        return out

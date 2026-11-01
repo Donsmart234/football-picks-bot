@@ -58,6 +58,7 @@ class Event:
     home_id: str = ""          # sr:competitor:<uid>
     away_id: str = ""
     market_count: int = 0
+    category_id: str = ""      # sr:category:<id> (Sportradar real category)
 
     @property
     def name(self) -> str:
@@ -206,6 +207,7 @@ class SportyBetNG(BookmakerAdapter):
             home_id=str(raw.get("homeTeamId") or ""),
             away_id=str(raw.get("awayTeamId") or ""),
             market_count=int(raw.get("totalMarketSize") or 0),
+            category_id=str(cat.get("id") or ""),
         )
 
     def _extract(self, data: dict, seen: set[str], out: list[Event]) -> int:
@@ -256,25 +258,9 @@ class SportyBetNG(BookmakerAdapter):
             self._cache[hours] = (time.time(), events)
             return events
 
-    async def event_markets(self, event_id: str, families: dict | None = None,
-                            ttl: int = 600, cache: bool = True) -> list[dict] | None:
-        """Full market list of one event (GET /factsCenter/event?eventId=..&productId=3), filtered to Betradar
-        markets in `families`. Each item: {id, specifier, desc, outcomes:[{id, desc, odds, active, prob}]}.
-        Cached `ttl` seconds. Returns None when SportyBet didn't answer or the event isn't open for betting."""
-        hit = self._mk_cache.get(event_id)
-        if hit and time.time() - hit[0] < ttl:
-            return hit[1]
-        async with self._mk_sem:
-            try:
-                url, q = self._url("/factsCenter/event", {"eventId": event_id, "productId": 3})
-                r = await self._client.get(url, params=q)
-                self._check(r)
-                data = (r.json() or {}).get("data") or {}
-            except (httpx.HTTPError, ValueError) as exc:
-                log.warning("event markets %s failed: %s", event_id, exc.__class__.__name__)
-                return None
-        if not data or data.get("status", 0) != 0:
-            return []
+    @staticmethod
+    def parse_markets(data: dict, families: dict | None = None) -> list[dict]:
+        """Open markets of a factsCenter/event payload: [{id, specifier, desc, group, source, outcomes:[...]}]."""
         out = []
         for m in data.get("markets") or []:
             mid = str(m.get("id"))
@@ -296,6 +282,33 @@ class SportyBetNG(BookmakerAdapter):
                              "active": bool(o.get("isActive", 1)), "prob": prob})
             out.append({"id": mid, "specifier": m.get("specifier") or "", "desc": m.get("desc") or m.get("name", ""),
                         "group": m.get("group", ""), "source": m.get("sourceType", ""), "outcomes": outs})
+        return out
+
+    async def _event_raw(self, event_id: str) -> dict | None:
+        async with self._mk_sem:
+            try:
+                url, q = self._url("/factsCenter/event", {"eventId": event_id, "productId": 3})
+                r = await self._client.get(url, params=q)
+                self._check(r)
+                return (r.json() or {}).get("data") or {}
+            except (httpx.HTTPError, ValueError) as exc:
+                log.warning("event markets %s failed: %s", event_id, exc.__class__.__name__)
+                return None
+
+    async def event_markets(self, event_id: str, families: dict | None = None,
+                            ttl: int = 600, cache: bool = True) -> list[dict] | None:
+        """Full market list of one event (GET /factsCenter/event?eventId=..&productId=3), filtered to Betradar
+        markets in `families`. Each item: {id, specifier, desc, outcomes:[{id, desc, odds, active, prob}]}.
+        Cached `ttl` seconds. Returns None when SportyBet didn't answer or the event isn't open for betting."""
+        hit = self._mk_cache.get(event_id)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+        data = await self._event_raw(event_id)
+        if data is None:
+            return None
+        if not data or data.get("status", 0) != 0:
+            return []
+        out = self.parse_markets(data, families)
         if cache:   # big matches carry 1,000+ markets: keep only a few raw books in memory
             self._mk_cache[event_id] = (time.time(), out)
             if len(self._mk_cache) > 12:
@@ -303,15 +316,55 @@ class SportyBetNG(BookmakerAdapter):
                     self._mk_cache.pop(k, None)
         return out
 
-    async def load_code(self, code: str) -> dict | None:
-        """Read a booking code back (GET /orders/share/<code>): {legs, unavailable}. None on failure."""
+    async def event_detail(self, event_id: str) -> tuple[Event | None, list[dict] | None, dict]:
+        """(Event built from the event header, open pre-match markets or None, raw header without markets).
+        Works for any listed event, including ones beyond the 72 h browse window."""
+        data = await self._event_raw(event_id)
+        if data is None:
+            return None, None, {}
+        if not data.get("eventId"):
+            return None, [], {}
+        hdr = {k: v for k, v in data.items() if k != "markets"}
+        cat = ((data.get("sport") or {}).get("category") or {})
+        tour = cat.get("tournament") or {}
+        try:
+            ev = Event(event_id=data["eventId"], home=data.get("homeTeamName", "?"), away=data.get("awayTeamName", "?"),
+                       start=datetime.fromtimestamp((data.get("estimateStartTime") or 0) / 1000, tz=timezone.utc),
+                       league=tour.get("name", ""), category=cat.get("name", ""), tournament_id=tour.get("id", ""),
+                       home_id=str(data.get("homeTeamId") or ""), away_id=str(data.get("awayTeamId") or ""),
+                       market_count=len(data.get("markets") or []), category_id=str(cat.get("id") or ""))
+        except (TypeError, ValueError, OSError):
+            return None, [], hdr
+        markets = self.parse_markets(data) if data.get("status", 0) == 0 else []
+        return ev, markets, hdr
+
+    async def share(self, code: str) -> dict:
+        """Load a booking code (GET /orders/share/<code>). Returns {ok: True, data} or {ok: False, error, kind}
+        where kind is invalid | unavailable (SportyBet didn't answer)."""
         try:
             url, q = self._url(f"/orders/share/{code}")
             r = await self._client.get(url, params=q)
             self._check(r)
-            data = (r.json() or {}).get("data") or {}
-        except (httpx.HTTPError, ValueError):
+            payload = r.json() or {}
+        except httpx.HTTPStatusError as exc:
+            return {"ok": False, "kind": "unavailable",
+                    "error": f"SportyBet didn't answer (HTTP {exc.response.status_code}). Try again in a minute."}
+        except (httpx.HTTPError, ValueError) as exc:
+            return {"ok": False, "kind": "unavailable",
+                    "error": f"SportyBet didn't answer ({exc.__class__.__name__}). Try again in a minute."}
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not data or str(payload.get("bizCode")) != "10000":
+            msg = (payload.get("message") or payload.get("innerMsg") or "") if isinstance(payload, dict) else ""
+            return {"ok": False, "kind": "invalid",
+                    "error": (msg or "The code is invalid") .rstrip(".") + " (wrong, expired or never booked)."}
+        return {"ok": True, "data": data}
+
+    async def load_code(self, code: str) -> dict | None:
+        """Read a booking code back (GET /orders/share/<code>): {legs, unavailable}. None on failure."""
+        res = await self.share(code)
+        if not res["ok"]:
             return None
+        data = res["data"]
         return {"legs": len(data.get("outcomes") or []), "unavailable": len(data.get("unavailableOutcomes") or [])}
 
     async def book(self, selections: list[Selection]) -> str:

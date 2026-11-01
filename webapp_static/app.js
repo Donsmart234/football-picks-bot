@@ -41,6 +41,7 @@
     live: null, liveAt: 0, liveErr: "", lm: null, lmErr: "", scroll: {},
     chat: [], aiBusy: false,
     hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false },
+    az: null, azBusy: false, azErr: "", azCode: "", azTake: null, azTakeBusy: false, allLg: (() => { try { return localStorage.getItem("fra_alllg") === "1"; } catch (e) { return false; } })(),
     ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
   };
   const EXCL = [["under", "No unders"], ["corners", "No corners"], ["cards", "No cards"], ["player_props", "No player props"], ["handicap", "No handicaps"], ["combo", "No combos"]];
@@ -170,7 +171,7 @@
   function render() {
     if (tg && tg.BackButton) (backVisible() ? tg.BackButton.show() : tg.BackButton.hide());
     badge();
-    ({ home: renderHome, matches: renderMatches, ai: renderAI, slip: renderSlip, history: renderHistory, rollover: renderRollover })[state.tab]();
+    ({ home: renderHome, analyze: renderAnalyze, matches: renderMatches, ai: renderAI, slip: renderSlip, history: renderHistory, rollover: renderRollover })[state.tab]();
   }
   const backLink = () => (tg && tg.BackButton && tg.isVersionAtLeast && tg.isVersionAtLeast("6.1") ? "" : `<button class="back" data-act="mback">‹ Back</button>`);
 
@@ -223,7 +224,7 @@
   function renderHome() {
     const t = TIERS[state.tier];
     let html = `<div style="margin:4px 2px 12px"><div class="label">Market scanner</div><h1>Build a slip</h1>
-      <div class="sub">Every SportyBet market · up to 80 matches · form, home/away &amp; H2H checked</div></div>
+      <div class="sub">Every SportyBet market · top leagues · form, home/away &amp; H2H checked</div></div>
       <div class="chips">${Object.entries(TIERS).map(([k, v]) => `<button class="chip t-${k}${state.tier === k ? " on" : ""}" data-act="tier" data-t="${k}"><i></i>${v.label}</button>`).join("")}</div>
       <div class="card t-${state.tier}" style="margin-top:10px">
         <div class="seg"><button data-act="day" data-d="today" class="${state.day === "today" ? "on" : ""}">Today</button><button data-act="day" data-d="tomorrow" class="${state.day === "tomorrow" ? "on" : ""}">Tomorrow</button><button data-act="day" data-d="48h" class="${state.day === "48h" ? "on" : ""}">Next 48h</button></div>`;
@@ -232,6 +233,7 @@
         <div class="quick">${t.quick.map((q) => `<button data-act="quick" data-q="${q}" class="${Number(state.target) === q ? "on" : ""}">${q}×</button>`).join("")}</div>`;
     }
     html += `<div class="label" style="margin-top:12px">Filters</div><div class="chips fchips">${EXCL.map(([k, v]) => `<button class="chip${state.ex.includes(k) ? " on" : ""}" data-act="excl" data-k="${k}" aria-pressed="${state.ex.includes(k)}">${state.ex.includes(k) ? "✓ " : ""}${v}</button>`).join("")}</div>`;
+    html += `<div class="chips fchips" style="margin-top:6px"><button class="chip${state.allLg ? " on" : ""}" data-act="alllg" aria-pressed="${state.allLg}">${state.allLg ? "✓ All leagues" : "Top leagues only (tap for all)"}</button></div>`;
     html += `<div class="rules">${esc(t.rule)}</div>
         <button class="btn" data-act="scan" ${state.scanning ? "disabled" : ""}>${state.scanning ? "Scanning…" : state.tier === "audit" ? "Run grand audit" : "Generate slip"}</button></div>`;
     html += `<div id="scanOut">${scanOut()}</div>
@@ -283,7 +285,7 @@
     if (inp) state.target = parseFloat(inp.value.replace(",", ".")) || TIERS[state.tier].target;
     state.scanning = true; state.scanErr = ""; state.scan = null; state.viewSlip = null; hap("medium"); renderHome();
     try {
-      state.scan = await api("/api/scan", { tier: state.tier, target: state.tier === "audit" ? null : state.target, day: state.day, exclude_markets: state.ex });
+      state.scan = await api("/api/scan", { tier: state.tier, target: state.tier === "audit" ? null : state.target, day: state.day, exclude_markets: state.ex, all_leagues: state.allLg });
       hapN("success");
     } catch (e) { state.scanErr = e.message; hapN("error"); }
     state.scanning = false;
@@ -618,6 +620,120 @@
     if (state.tab === "ai") renderAI();
   }
 
+  // ---------------------------------------------------------------- ANALYZER
+  const RCLS = { Strong: "r-Strong", OK: "r-OK", Weak: "r-Weak", Avoid: "r-Avoid", "Not rated": "r-NR" };
+  const pc = (x) => (x == null ? "–" : x < 0.095 ? (x * 100).toFixed(1) + "%" : Math.round(x * 100) + "%");
+  const rchip = (r) => `<span class="rchip ${RCLS[r] || "r-NR"}">${esc(r)}</span>`;
+  const azRecent = { get() { try { return JSON.parse(localStorage.getItem("fra_az_recent") || "[]"); } catch (e) { return []; } },
+    add(c) { const a = this.get().filter((x) => x !== c); a.unshift(c); try { localStorage.setItem("fra_az_recent", JSON.stringify(a.slice(0, 6))); } catch (e) {} } };
+  function azLeg(l) {
+    const [h, a] = splitMatch(l);
+    if (l.state === "unavailable") return `<div class="leg azleg dim"><div class="lg-meta"><span>Selection ${l.idx + 1}</span>${rchip("Not rated")}</div><div class="why">${esc(l.reason)}</div></div>`;
+    const when = l.kickoff ? kickDay(l.kickoff) + " " + kickTime(l.kickoff) : "";
+    const topc = l.flags && l.flags.length ? `<span class="rchip r-top" style="margin-left:6px">Outside top leagues</span>` : "";
+    let body = "";
+    if (l.state === "ended" || l.state === "cancelled") {
+      const [ic, t, c] = STATUS[l.result] || STATUS.pending;
+      body = `<div class="state ${c === "st-won" ? "c-acc" : c === "st-lost" ? "c-red" : ""}">${ic} ${t || "Result pending"}${l.score ? " · " + esc(String(l.score).replace(":", "-")) : ""}</div>`;
+    } else if (l.state === "live") {
+      body = `<div class="state c-live">● Live ${esc(String(l.score || "").replace(":", "-"))} ${esc(l.minute || "")} · not rated in play</div>`;
+    } else if (l.rated) {
+      const color = l.est >= 0.8 ? "var(--accent)" : l.est >= 0.65 ? "var(--mid)" : l.est >= 0.45 ? "var(--amber)" : "var(--red)";
+      body = `<div class="prob"><div class="track"><div class="fill" style="width:${Math.round(l.est * 100)}%;background:${color}"></div></div><b>${pct(l.est)}</b></div>
+        <div class="nums"><div><b class="num">${f2(l.fair_odds)}</b><span>Fair odds</span></div><div><b class="num ${l.value >= 0 ? "c-acc" : l.value < -0.08 ? "c-red" : ""}">${(l.value >= 0 ? "+" : "") + Math.round(l.value * 100)}%</b><span>Value</span></div><div><b class="num">${l.booked_odds && Math.abs(l.booked_odds - l.odds) > 0.004 ? f2(l.booked_odds) : "–"}</b><span>Booked at</span></div></div>`;
+    }
+    const alt = (l.alternatives || [])[0];
+    return `<div class="leg azleg${l.state !== "upcoming" ? " dim" : ""}"><div class="lg-meta">${flag(l)}<span class="ellip">${esc(leagueShort(l.league))}</span><span class="dot">·</span><span class="num">${esc(when)}</span>${topc}${l.state === "upcoming" ? rchip(l.rating) : ""}</div>
+      <div class="top">${teamsBlock(l, "grow")}<div class="tick ${tierOfOdds(l.odds)}">${f2(l.odds)}</div></div>
+      <div class="mkt"><span class="ellip">${esc(mktLabel(l))}</span> <span class="pick">${esc(l.pick)}</span></div>
+      ${body}${l.reason && l.state === "upcoming" ? `<div class="why">${esc(l.reason)}</div>` : l.state === "unavailable" ? "" : ""}
+      ${alt ? `<div class="alt">↪ Safer in this match: <b>${esc(alt.pick)}</b> @ ${f2(alt.odds)} · est ${pct(alt.est)} <span class="sub">(${esc(mktLabel(alt))})</span></div>` : ""}</div>`;
+  }
+  function azOut() {
+    if (state.azBusy) return `<div class="card"><div class="scanning"><div class="radar"></div>Loading the code…<div class="steps">read slip → re-price every leg's market → form, H2H &amp; team news → grade</div></div>${[0, 1].map(() => `<div class="leg"><div class="sk sk-line" style="width:40%"></div><div class="sk sk-line" style="width:75%"></div><div class="sk sk-line" style="width:55%"></div></div>`).join("")}</div>`;
+    if (state.azErr) return `<div class="error">${esc(state.azErr)}</div>`;
+    const r = state.az; if (!r) return `<div class="empty">Paste any SportyBet NG booking code to see each leg's estimated chance, fair odds, value and risk, plus safer swaps.</div>`;
+    const s = r.summary, sg = r.suggestions, imp = sg.improved;
+    const counts = Object.entries(s.ratings || {}).filter(([, v]) => v).map(([k, v]) => `<span class="rchip ${RCLS[k]}">${v} ${esc(k)}</span>`).join("");
+    let h = `<div class="card port t-${s.grade === "A" ? "safe" : s.grade === "B" ? "mid" : s.grade ? "risk" : "audit"}">
+      <div class="head"><span class="label">Code <button class="codechip" data-act="copytext" data-t="${esc(r.code)}">${esc(r.code)}</button></span><span class="pill">${s.legs} legs</span></div>
+      <div class="az-sum" style="margin-top:12px"><div class="grade g-${s.grade || "none"}">${s.grade || "–"}</div><div><div class="verdict">${esc(r.verdict)}</div><div class="sub" style="margin-top:3px">Grade blends leg quality with the chance of landing</div></div></div>
+      <div class="kpis"><div class="kpi"><b>${s.odds_known === false ? "n/a" : f2(s.total_odds)}</b><span>Total odds</span></div><div class="kpi"><b>${pc(s.chance)}</b><span>Est. hit chance</span></div><div class="kpi"><b>${s.rated}/${s.legs}</b><span>Rated legs</span></div></div>
+      ${s.grade ? meter(s.chance) : ""}
+      ${counts ? `<div class="rchips">${counts}${s.outside_top ? `<span class="rchip r-top">${s.outside_top} outside top leagues</span>` : ""}</div>` : ""}
+      ${s.approx_legs ? `<div class="note">${s.approx_legs} leg(s) can't be rated (props, specials, in play): the combined chance counts them at the bookmaker's de-margined price.</div>` : ""}
+      ${s.started ? `<div class="sub" style="margin-top:8px">${s.started} leg(s) started or finished; the rest can still change.</div>` : ""}
+      <div class="btnrow"><button class="btn small secondary" data-act="aztake" ${state.azTakeBusy ? "disabled" : ""}>${state.azTakeBusy ? "Thinking…" : "🧠 AI take"}</button><button class="btn small secondary" data-act="openhub">Open SportyBet</button></div>
+      ${state.azTake ? `<div class="note ai-take" style="background:var(--bg2);border-color:var(--line);color:var(--text)">${esc(state.azTake)}</div>` : ""}</div>`;
+    h += `<div class="section"><span class="label">Legs</span><span class="sub">est. · fair odds · value</span></div><div class="card flush">${r.legs.map(azLeg).join("")}</div>`;
+    const rows = [];
+    sg.drops.slice(0, 3).forEach((d) => rows.push(`<div class="sugg"><span class="ic">✂️</span><div class="grow">Drop <b>${esc(r.legs[d.idx].match.replace(" vs ", " v "))}</b> · ${esc(d.pick)} <span class="sub">(${esc(d.rating)} ${pct(d.est)})</span><div class="sub">chance ${pc(s.chance)} → <span class="up">${pc(d.chance)}</span> · odds ${f2(d.total_odds)}</div></div></div>`));
+    sg.swaps.slice(0, 4).forEach((w) => rows.push(`<div class="sugg"><span class="ic">🔁</span><div class="grow"><b>${esc(w.match.replace(" vs ", " v "))}</b>: ${esc(w.from)} → <b class="c-acc">${esc(w.to)}</b><div class="sub">${pct(w.from_est)} → ${pct(w.to_est)} · slip chance <span class="up">${pc(w.chance)}</span> · odds ${f2(w.total_odds)}</div></div></div>`));
+    if (rows.length) h += `<div class="section"><span class="label">Suggestions</span></div><div class="card flush">${rows.join("")}</div>`;
+    if (imp) h += `<div class="card port imp t-safe"><div class="head"><span class="label">Improved slip</span><span class="pill">${imp.legs.length} legs</span></div>
+      <div class="kpis"><div class="kpi"><b>${f2(imp.total_odds)}</b><span>Total odds</span></div><div class="kpi"><b class="c-acc">${pc(imp.chance)}</b><span>Est. hit chance</span></div><div class="kpi"><b>${pc(imp.base_chance)}</b><span>Was</span></div></div>
+      <div class="chg">${imp.changes.map((c) => "• " + esc(c)).join("<br>")}${imp.excluded_started ? `<br>• ${imp.excluded_started} started leg(s) left out` : ""}</div>
+      ${imp.bookable ? `<button class="btn" data-act="azrebook">Rebook improved slip</button>` : `<div class="note">The improved slip breaks your rules, so it can't be booked.</div>`}</div>`;
+    if (r.recommendation) { const k = r.recommendation.kind; h += `<div class="card verdict-card v-${esc(k)}"><div class="label">My verdict</div><div class="vtext">${esc(r.recommendation.text)}</div></div>`; }
+    h += `<div class="disc">${esc(r.disclaimer)} Team news is context only (the model doesn't use it). Analyzed codes aren't saved to History.</div>`;
+    return h;
+  }
+  function renderAnalyze() {
+    const rec = azRecent.get();
+    $view.innerHTML = `<div style="margin:4px 2px 12px"><div class="label">Bet analyzer</div><h1>Check any code</h1><div class="sub">Every leg re-priced with the scanner's calibrated model · form, H2H &amp; team news</div></div>
+      <div class="card"><form id="azForm" class="az-row"><div class="field"><input id="azCode" value="${esc(state.azCode)}" placeholder="N6RXGP" maxlength="40" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go"></div><button type="button" class="paste" data-act="azpaste">Paste</button></form>
+        <button class="btn" data-act="azgo" ${state.azBusy ? "disabled" : ""}>${state.azBusy ? "Analyzing…" : "Analyze code"}</button>
+        ${rec.length ? `<div class="az-recent">${rec.map((c) => `<button class="chip" data-act="azrecent" data-c="${esc(c)}" style="padding:5px 10px;font-size:12.5px">${esc(c)}</button>`).join("")}</div>` : ""}</div>
+      <div id="azOut">${azOut()}</div>`;
+    const f = document.getElementById("azForm");
+    f.addEventListener("submit", (ev) => { ev.preventDefault(); runAnalyze(); });
+  }
+  async function runAnalyze(code) {
+    const inp = document.getElementById("azCode");
+    const raw = (code || (inp ? inp.value : state.azCode) || "").trim();
+    if (!raw) { toast("Paste a booking code first"); return; }
+    state.azCode = raw.toUpperCase(); state.azBusy = true; state.azErr = ""; state.az = null; state.azTake = null; hap("medium");
+    if (inp) inp.blur();
+    renderAnalyze();
+    try { state.az = await api("/api/analyze", { code: raw }); azRecent.add(state.az.code); state.azCode = state.az.code; hapN("success"); }
+    catch (e) { state.azErr = e.message; hapN("error"); }
+    state.azBusy = false;
+    if (state.tab === "analyze") renderAnalyze();
+  }
+  async function azPaste() {
+    let t = "";
+    try { if (navigator.clipboard && navigator.clipboard.readText) t = await navigator.clipboard.readText(); } catch (e) {}
+    if (!t && tg && tg.readTextFromClipboard) { try { t = await new Promise((res) => tg.readTextFromClipboard((x) => res(x || ""))); } catch (e) {} }
+    const m = String(t || "").match(/sharecode=([A-Za-z0-9]{5,10})/i) || String(t || "").match(/\b([A-Za-z0-9]{6})\b/);
+    if (m) { state.azCode = m[1].toUpperCase(); const inp = document.getElementById("azCode"); if (inp) inp.value = state.azCode; runAnalyze(state.azCode); }
+    else { toast("Clipboard is empty here: long-press the box and Paste"); const inp = document.getElementById("azCode"); if (inp) inp.focus(); }
+  }
+  function azRebookSheet() {
+    const imp = state.az && state.az.suggestions.improved; if (!imp) return;
+    openSheet(`<div class="label" style="text-align:center">Rebook improved slip</div>
+      <div class="sub" style="text-align:center;margin:6px 0 10px">${imp.legs.length} legs · total odds ${f2(imp.total_odds)} · est. hit ${pc(imp.chance)}</div>
+      <div class="card flush" style="max-height:40vh;overflow:auto">${imp.legs.map((l) => `<div class="row"><div class="grow"><b>${esc(l.match.replace(" vs ", " v "))}</b><div class="sub">${esc(mktLabel(l))} · ${esc(l.pick)}${l.est != null ? " · est " + pct(l.est) : ""}</div></div><span class="num" style="font-weight:800">${f2(l.odds)}</span></div>`).join("")}</div>
+      <div class="btnrow"><button class="btn" data-act="azconfirm">Confirm &amp; book</button><button class="btn secondary" data-act="closesheet">Cancel</button></div>
+      <div class="disc">Creates a new SportyBet booking code (free, no money). Estimates, not guarantees. 18+.</div>`);
+  }
+  async function azConfirm() {
+    openSheet(`<div class="label" style="text-align:center">SportyBet booking code</div><div class="scanning"><div class="radar"></div>Creating your code…</div>`);
+    try {
+      const r = await api("/api/analyze/rebook", { id: state.az.id });
+      state.hist = null; store.set("hist", null); hapN("success");
+      openSheet(`<div class="label" style="text-align:center">Improved slip booked</div><div class="code" id="codeText">${esc(r.code)}</div>
+        <div class="sub" style="text-align:center">${r.legs} legs · total odds ${f2(r.total_odds)} · est. hit ${pc(r.chance)}${r.loaded != null && r.loaded !== r.legs ? ` · ⚠ ${r.loaded}/${r.legs} loaded` : ""}</div>
+        <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="openhub">Open SportyBet</button></div>
+        <div class="sub" style="text-align:center;margin-top:8px">${r.history_id ? "Saved to History · you'll get a Telegram ping when it lands" : ""}</div>`);
+    } catch (e) { hapN("error"); openSheet(`<div class="label" style="text-align:center">Rebook failed</div><div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="closesheet">Close</button>`); }
+  }
+  async function azTake() {
+    if (!state.az || state.azTakeBusy) return;
+    state.azTakeBusy = true; renderAnalyze();
+    try { const r = await api("/api/analyze/narrative", { id: state.az.id }); state.azTake = r.text; } catch (e) { toast(e.message); }
+    state.azTakeBusy = false; if (state.tab === "analyze") renderAnalyze();
+  }
+
   // ---------------------------------------------------------------- HISTORY
   function fmtWhen(iso) { try { return new Date(iso).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Africa/Lagos" }); } catch (e) { return ""; } }
   function statusPill(st) { const [i, t, c] = STATUS[st] || STATUS.pending; return `<span class="spill ${c}">${i ? `<i>${i}</i>` : ""}${t}</span>`; }
@@ -766,6 +882,13 @@
     else if (a === "scan") runScan();
     else if (a === "excl") { const k = t.dataset.k; state.ex = state.ex.includes(k) ? state.ex.filter((x) => x !== k) : state.ex.concat([k]); try { localStorage.setItem("fra_ex", JSON.stringify(state.ex)); } catch (e) {} hapSel(); renderHome(); }
     else if (a === "rounders") { const si = document.getElementById("rostake"); if (si) state.roForm.stake = si.value; state.roForm.allowUnders = !state.roForm.allowUnders; hapSel(); renderRollover(); }
+    else if (a === "azgo") runAnalyze();
+    else if (a === "azpaste") azPaste();
+    else if (a === "azrecent") { state.azCode = t.dataset.c; runAnalyze(t.dataset.c); }
+    else if (a === "azrebook") { hap("medium"); azRebookSheet(); }
+    else if (a === "azconfirm") azConfirm();
+    else if (a === "aztake") azTake();
+    else if (a === "alllg") { state.allLg = !state.allLg; try { localStorage.setItem("fra_alllg", state.allLg ? "1" : "0"); } catch (e) {} hapSel(); renderHome(); }
     else if (a === "viewslip") { state.viewSlip = t.dataset.k; renderHome(); window.scrollTo(0, 0); }
     else if (a === "auditback") { state.viewSlip = null; renderHome(); }
     else if (a === "bookslip") {
@@ -818,7 +941,9 @@
     $view.innerHTML = `<div class="card" style="margin-top:20px;text-align:center"><img src="/app/logo.png" width="64" height="64" style="border-radius:16px"><h2 style="margin-top:12px">Fra Prediction</h2><div class="sub" style="margin-top:6px">Open this app from @FraPredictbot in Telegram (menu button or /start).</div></div>`;
     return;
   }
-  if (location.hash === "#history" || location.hash === "#rollover" || location.hash === "#matches") { state.tab = location.hash.slice(1); document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab)); }
+  const hm = location.hash.match(/^#analyze(?:=([A-Za-z0-9]{5,10}))?$/);
+  if (hm) { state.tab = "analyze"; document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === "analyze")); if (hm[1]) { state.azCode = hm[1].toUpperCase(); setTimeout(() => runAnalyze(state.azCode), 0); } }
+  else if (location.hash === "#history" || location.hash === "#rollover" || location.hash === "#matches") { state.tab = location.hash.slice(1); document.querySelectorAll(".tabbtn").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab)); }
   render();
   // warm the other tabs in the background so switching is instant (cached copy first, then a quiet refresh)
   idle(() => {

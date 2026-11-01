@@ -17,6 +17,7 @@ from telegram.request import HTTPXRequest
 import config
 import handlers
 from ai import Analyst
+from analyzer import Analyzer
 from services import Services
 from tracker import Tracker
 from webapp import MiniApp
@@ -48,6 +49,7 @@ def build_app(webhook: bool) -> Application:
     services = Services()
     services.ai = Analyst(services)
     services.tracker = Tracker(services)
+    services.analyzer = Analyzer(services)
     app.bot_data["services"] = services
     handlers.register(app)
     return app

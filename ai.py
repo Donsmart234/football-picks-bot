@@ -51,6 +51,13 @@ Rules:
   one short line. If target_reached is false or no legs qualify, say plainly that the rules can't be met at the
   safety bar right now (give what it reached) and offer options (lower target, relax a rule, another day). Never
   break or quietly drop a rule the user gave, and never swap in weaker legs to hit the odds.
+- Scans use only the TOP LEAGUES by default (big-5 leagues + cups, UEFA club cups, Eredivisie, Primeira Liga,
+  Championship, Scottish Prem, Süper Lig, Belgian Pro League, MLS, Brasileirão, Argentine Primera, major national-team
+  competitions). Widen only when the user names a league/country/team (include_leagues/countries/teams) or explicitly
+  asks for all leagues (all_leagues=true).
+- A SportyBet booking code to check ("analyze/check/rate this code N6RXGP") => analyze_booking_code. Lead with its verdict line, then the grade,
+  total odds, combined chance, each leg's rating in one short line, the weakest legs and the suggested swaps/drops,
+  and flag legs outside the top leagues. Never book the improved slip yourself: a button under your reply does that.
 - "Who wins X vs Y?" => predict_match. Mention the key numbers (1X2 %, best pick) and the form/H2H facts.
 - Each leg already passed a team-stats check (form, home/away record, goals, H2H); quote its short "why".
 - If a slip falls short of the target, say so honestly instead of padding it. Never add a weaker leg to a Safe slip
@@ -107,7 +114,10 @@ TOOLS = [{"functionDeclarations": [
          "exclude_teams": {"type": "array", "items": {"type": "string"}},
          "kickoff_after": {"type": "string", "description": "local time HH:MM (Africa/Lagos), or 'YYYY-MM-DD HH:MM'"},
          "kickoff_before": {"type": "string", "description": "local time HH:MM (Africa/Lagos), or 'YYYY-MM-DD HH:MM'"},
-         "stats_confirmed_only": {"type": "boolean", "description": "only legs confirmed by the team-stats check"}},
+         "stats_confirmed_only": {"type": "boolean", "description": "only legs confirmed by the team-stats check"},
+         "all_leagues": {"type": "boolean",
+                         "description": "true ONLY if the user explicitly asks for all / any / lower leagues; scans "
+                                        "use the top-leagues allowlist by default"}},
          "required": ["tier"]}},
     {"name": "build_booking_code",
      "description": ("Create a SportyBet booking code from a scanned slip (slip_id) or explicit selections. The code "
@@ -121,6 +131,16 @@ TOOLS = [{"functionDeclarations": [
          "selections": {"type": "array", "items": {"type": "object", "properties": {
              "event_id": {"type": "string"}, "market_id": {"type": "string"}, "specifier": {"type": "string"},
              "outcome_id": {"type": "string"}}}}}}},
+    {"name": "analyze_booking_code",
+     "description": ("Load any SportyBet NG booking code (6 characters, e.g. N6RXGP) and analyze the slip: every leg's "
+                     "estimated probability (same calibrated model as the scanner), fair odds, value, risk rating "
+                     "Strong/OK/Weak/Avoid with a reason (form, H2H, goals trend, team news), legs outside the top "
+                     "leagues, total odds, combined hit chance, grade A-F, legs to drop and safer swaps. Never books "
+                     "anything: the user rebooks the improved slip with a button."),
+     "parameters": {"type": "object", "properties": {
+         "code": {"type": "string", "description": "the booking code"},
+         "rules": {"type": "string", "description": "optional rules for the suggested swaps, e.g. 'no unders'"}},
+         "required": ["code"]}},
     {"name": "recent_history",
      "description": "Recently booked codes with their tier, total odds and result (pending / won / lost per leg).",
      "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
@@ -200,11 +220,13 @@ class Analyst:
                 log.warning("Gemini models list failed: %s", exc.__class__.__name__)
         return MODEL_PREFS
 
-    async def _generate(self, contents: list[dict]) -> dict:
-        body = {"systemInstruction": {"parts": [{"text": SYSTEM.format(
+    async def _generate(self, contents: list[dict], system: str | None = None, tools: bool = True,
+                        max_tokens: int = 2048) -> dict:
+        body = {"systemInstruction": {"parts": [{"text": system or SYSTEM.format(
                     today=datetime.now(TZ).strftime("%A %d %B %Y, %H:%M"))}]},
-                "contents": contents, "tools": TOOLS,
-                "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2048}}
+                "contents": contents, "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
+        if tools:
+            body["tools"] = TOOLS
         last = None
         errs = []
         for model in await self._models():
@@ -251,7 +273,7 @@ class Analyst:
         if not self.enabled:
             return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
         contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]
-        turn = {"slip": None, "code": None, "tools": [], "hard": parse_text(text)}
+        turn = {"slip": None, "code": None, "tools": [], "hard": parse_text(text), "analysis": None}
         reply = ""
         for _ in range(MAX_ROUNDS):
             data = await self._generate(contents)
@@ -283,8 +305,22 @@ class Analyst:
             reply += f"\n\n_{DISCLAIMER}_"
         self._save(chat_id, "user", text)
         self._save(chat_id, "model", reply)
+        an = turn.get("analysis")
         return {"reply": reply, "slip": turn["slip"], "code": turn["code"], "tools": turn["tools"],
-                "model": self.model}
+                "model": self.model, "analysis": an}
+
+    async def narrate(self, facts: dict) -> str:
+        """Short plain-English take on an analyzed slip, grounded only in the numbers given (no tools, no web)."""
+        import json as _json
+        system = ("You write a 3-4 sentence verdict on a football bet slip for a Telegram user in Nigeria. Use ONLY "
+                  "the facts in the JSON: never add teams, players, injuries, stats or numbers that aren't there, and "
+                  "copy percentages exactly as written. Say which legs carry the risk and what the suggestions change. "
+                  "Plain text, no headings, no lists, at most 90 words. Call the numbers estimates; never promise a "
+                  "win.")
+        data = await self._generate([{"role": "user", "parts": [{"text": _json.dumps(facts, ensure_ascii=False)}]}],
+                                    system=system, tools=False, max_tokens=400)
+        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        return "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
 
     @staticmethod
     def _rules_footer(turn: dict) -> str:
@@ -479,6 +515,16 @@ class Analyst:
                                         meta.get("total_odds"), meta.get("est_prob"), target=meta.get("target"))
             return {"code": code, "selections": len(sels), "verified_on_load": check,
                     "load_at": self.s.bookmaker.load_code_url, "saved_to_history": bool(saved)}
+        if name == "analyze_booking_code":
+            an = getattr(self.s, "analyzer", None)
+            if an is None:
+                return {"error": "analyzer unavailable"}
+            from analyzer import Analyzer, extract_code
+            code = extract_code(str(a.get("code") or "")) or str(a.get("code") or "").strip().upper()
+            res = await an.analyze(code, str(a.get("rules") or ""))
+            if res.get("ok"):
+                turn["analysis"] = res
+            return Analyzer.compact(res)
         if name == "recent_history":
             tr = getattr(self.s, "tracker", None)
             if not tr:

@@ -15,7 +15,8 @@ from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHand
 import config
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
 from ai import md_to_html
-from fmt import RULE, STATUS_ICON, record_text, slip_text
+from analyzer import bare_code, extract_code
+from fmt import RULE, STATUS_ICON, analysis_messages, record_text, slip_text
 from predictor import Prediction
 from constraints import parse_text
 from scanner import TIER_ALIASES
@@ -29,12 +30,13 @@ RG_NOTE = ("⚠️ <i>Predictions are statistical estimates, never guarantees. B
 HELP = (
     "<b>Commands</b>\n"
     "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit). Filters: nounders, -corners, "
-    "-cards, -props, only:1x2,dc, legs:4-8, minodds:1.2, league:epl, after:18:00\n"
+    "-cards, -props, only:1x2,dc, legs:4-8, minodds:1.2, league:epl, after:18:00, allleagues (top leagues by default)\n"
     "/ai question – ask the AI analyst (or just type any message)\n"
     "/today – today's matches by league\n"
     "/upcoming – next 3 days\n"
     "/predict Team A vs Team B – analyse a match\n"
     "/slip – your picks · /book – booking code · /clear – empty slip\n"
+    "/analyze CODE – analyze any SportyBet booking code (or just paste the 6-character code)\n"
     "/history – booked codes and results (pinged when a slip lands)\n"
     "/rollover 2 7 – rollover plan: daily target 2–5, 3–15 days (+ optional stake)\n"
     "/reset – clear the AI chat memory"
@@ -63,7 +65,22 @@ async def owner_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             return
         raise ApplicationHandlerStop
     if user.id != owner:
+        if _analyzer_update(update) and config.analyzer_allowed(user.id, owner):
+            return                   # ANALYZER_ACCESS=allowlist|public opens the analyzer only
         raise ApplicationHandlerStop  # silently ignore everyone else
+
+
+def _analyzer_update(update: Update) -> bool:
+    q = update.callback_query
+    if q is not None:
+        return (q.data or "").startswith("AZ")
+    msg = update.effective_message
+    t = (msg.text or "").strip() if msg else ""
+    return t.split()[0].split("@")[0].lower() == "/analyze" if t.startswith("/") else bool(bare_code(t))
+
+
+def is_owner(ctx, uid: int) -> bool:
+    return uid == svc(ctx).storage.get_owner()
 
 
 def app_url() -> str | None:
@@ -102,6 +119,10 @@ async def predict_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.effective_message.text or "").strip()
+    code = bare_code(text)
+    if code:                      # a pasted 6-character booking code: analyze it
+        await _run_analysis(update, ctx, code, "")
+        return
     ai = getattr(svc(ctx), "ai", None)
     if ai and ai.enabled:
         await _ask_ai(update, ctx, text)
@@ -119,6 +140,59 @@ async def ai_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "<i>Who wins Arsenal vs Chelsea?</i>. You can also just type without /ai.", parse_mode=ParseMode.HTML)
         return
     await _ask_ai(update, ctx, text)
+
+
+async def analyze_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    args = " ".join(ctx.args or []).strip()
+    code = extract_code(args.split()[0]) if args else None
+    if not code:
+        await update.effective_message.reply_text(
+            "Send <code>/analyze CODE</code> (e.g. <code>/analyze N6RXGP</code>) or just paste the 6-character "
+            "SportyBet booking code. Add rules for the suggested swaps if you like: <code>/analyze N6RXGP no unders</code>.",
+            parse_mode=ParseMode.HTML)
+        return
+    await _run_analysis(update, ctx, code, " ".join(args.split()[1:]))
+
+
+def _analysis_kb(res: dict) -> Kb | None:
+    rows = []
+    imp = (res.get("suggestions") or {}).get("improved")
+    if imp and imp.get("legs") and imp.get("bookable"):
+        rows.append([Btn(f"♻️ Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
+                         callback_data=f"AZR|{res['id']}")])
+    rows.append([Btn("🧠 AI take", callback_data=f"AZN|{res['id']}"),
+                 Btn("Open SportyBet", url=res.get("load_url") or "https://www.sportybet.com/ng/m/code-hub/load-code")])
+    return Kb(rows)
+
+
+async def _run_analysis(update: Update, ctx, code: str, rules: str) -> None:
+    s = svc(ctx)
+    an = getattr(s, "analyzer", None)
+    if an is None:
+        await update.effective_message.reply_text("The analyzer isn't available right now.")
+        return
+    note = await update.effective_message.reply_text(
+        f"🔍 Loading <code>{esc(code)}</code> and rating every leg (form, H2H, team news)… ~10 s",
+        parse_mode=ParseMode.HTML)
+    try:
+        res = await an.analyze(code, rules)   # not saved / tracked
+    except Exception as exc:
+        log.warning("analyze failed: %s", exc, exc_info=True)
+        await note.edit_text("The analysis failed on my side (SportyBet or the stats feed didn't answer). "
+                             "Send the code again in a minute.")
+        return
+    if not res.get("ok"):
+        icon = "⛔" if res.get("kind") == "invalid" else "⚠️"
+        await note.edit_text(f"{icon} <code>{esc(code)}</code>: {esc(res.get('error', 'could not load it'))}",
+                             parse_mode=ParseMode.HTML)
+        return
+    msgs = analysis_messages(res)
+    kb = _analysis_kb(res)
+    await note.edit_text(msgs[0], parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                         reply_markup=kb if len(msgs) == 1 else None)
+    for i, m in enumerate(msgs[1:], 1):
+        await update.effective_message.reply_text(m, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                                                  reply_markup=kb if i == len(msgs) - 1 else None)
 
 
 async def reset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -157,6 +231,12 @@ async def _ask_ai(update: Update, ctx, text: str) -> None:
         await typer
     kb = None
     rows = []
+    an_res = res.get("analysis")
+    if an_res and an_res.get("id"):
+        imp = (an_res.get("suggestions") or {}).get("improved")
+        if imp and imp.get("legs") and imp.get("bookable"):
+            rows.append([Btn(f"♻️ Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
+                             callback_data=f"AZR|{an_res['id']}")])
     if res.get("code"):
         rows.append([Btn("Open SportyBet code hub", url=s.bookmaker.load_code_url)])
     elif res.get("slip") and res["slip"].get("slip_id") and res["slip"].get("legs"):
@@ -207,7 +287,8 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     s = svc(ctx)
     rules = f" · {esc(c.describe())}" if c else ""
     note = await update.effective_message.reply_text(
-        f"🔎 Scanning up to 80 matches ({day}){rules}, every market, then checking form/H2H… ~30 s",
+        f"🔎 Scanning up to 80 {'' if c and c.widens_leagues() else 'top-league '}matches ({day}){rules}, every market, "
+        "then checking form/H2H… ~30 s",
         parse_mode=ParseMode.HTML)
     try:
         res = await s.scanner.scan(tier, target, day, None, c)
@@ -685,12 +766,67 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await q.message.reply_text(f"📒 <b>Booking code: <code>{esc(d['code'])}</code></b> · {len(d['legs'])} legs · "
                                    f"total odds {d['total_odds']:.2f}", parse_mode=ParseMode.HTML,
                                    reply_markup=Kb([[Btn("Open SportyBet code hub", url=s.bookmaker.load_code_url)]]))
+    elif kind in ("AZR", "AZC", "AZN"):
+        await _analyzer_callback(q, ctx, kind, parts[1] if len(parts) > 1 else "")
     elif kind == "CLR":
         s.storage.slip_clear(uid)
         await q.answer("Slip cleared")
         await q.edit_message_text("🗑 Slip cleared.")
     else:
         await q.answer()
+
+
+async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
+    s = svc(ctx)
+    an = getattr(s, "analyzer", None)
+    res = an.get(aid) if an else None
+    if not res:
+        await q.answer("That analysis expired. Send the code again.", show_alert=True)
+        return
+    if kind == "AZN":
+        await q.answer("Thinking…")
+        try:
+            out = await an.narrative(aid)
+        except Exception as exc:
+            await q.message.reply_text(f"No AI take right now ({esc(str(exc)[:100])}).", parse_mode=ParseMode.HTML)
+            return
+        tag = "🧠 <b>AI take</b>" if out["source"] == "ai" else "🧠 <b>Summary</b>"
+        await q.message.reply_text(f"{tag} · <code>{esc(res['code'])}</code>\n{esc(out['text'])}",
+                                   parse_mode=ParseMode.HTML)
+        return
+    imp = (res.get("suggestions") or {}).get("improved")
+    if not imp:
+        await q.answer("No improved slip for this code.", show_alert=True)
+        return
+    if kind == "AZR":            # step 1: show exactly what would be booked
+        await q.answer()
+        lines = [f"♻️ <b>Improved slip</b> from <code>{esc(res['code'])}</code>"]
+        lines += [f"• {esc(c)}" for c in imp["changes"]]
+        lines.append(RULE)
+        for i, l in enumerate(imp["legs"], 1):
+            lines.append(f"{i}. {esc(l['match'].replace(' vs ', ' v '))}: <b>{esc(l['pick'])}</b> @ "
+                         f"<code>{l['odds']:.2f}</code>" + (f" · est {l['est']:.0%}" if l.get("est") is not None else ""))
+        lines.append(f"Total odds <b>{imp['total_odds']:.2f}</b> · est. hit chance <b>{imp['chance']:.0%}</b>")
+        lines.append("<i>Tap Confirm to create the new booking code. Estimates, not guarantees.</i>")
+        await q.message.reply_text("\n".join(lines)[:4000], parse_mode=ParseMode.HTML,
+                                   reply_markup=Kb([[Btn("✅ Confirm rebook", callback_data=f"AZC|{aid}")]]))
+        return
+    await q.answer("Booking…")      # AZC: explicit confirmation tap
+    try:
+        out = await an.rebook(aid, save=is_owner(ctx, q.from_user.id))
+    except (BookingError, ValueError) as exc:
+        await q.message.reply_text(f"Couldn't rebook: {esc(str(exc))}", parse_mode=ParseMode.HTML)
+        return
+    try:
+        await q.edit_message_reply_markup(None)
+    except Exception:
+        pass
+    await q.message.reply_text(
+        f"📒 <b>New booking code: <code>{esc(out['code'])}</code></b>\n{out['legs']} legs · total odds "
+        f"{out['total_odds']:.2f} · est. hit chance {out['chance']:.0%}"
+        + ("\nSaved to /history: I'll ping you when it lands." if out.get("history_id") else "")
+        + f"\n\n{RG_NOTE}", parse_mode=ParseMode.HTML,
+        reply_markup=Kb([[Btn("Open SportyBet code hub", url=out["url"])]]))
 
 
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -705,7 +841,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start", "Open the app + help"), BotCommand("scan", "Scan markets: /scan safe 5"),
-        BotCommand("ai", "Ask the AI analyst"), BotCommand("today", "Today's matches by league"),
+        BotCommand("ai", "Ask the AI analyst"), BotCommand("analyze", "Analyze a booking code: /analyze CODE"), BotCommand("today", "Today's matches by league"),
         BotCommand("rollover", "Rollover plan: /rollover 2 7"), BotCommand("history", "Booked codes + results"),
         BotCommand("slip", "Your slip and total odds"), BotCommand("help", "How it works"),
     ])
@@ -733,6 +869,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("clear", clear_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
     app.add_handler(CommandHandler("ai", ai_cmd))
+    app.add_handler(CommandHandler("analyze", analyze_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("rollover", rollover_cmd))

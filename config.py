@@ -34,3 +34,21 @@ SPORTYBET_CACHE_SECONDS = _int("SPORTYBET_CACHE_SECONDS", 300)
 # Relay for SportyBet calls (Render's IP gets an AWS WAF challenge). Set to an empty string for direct mode.
 SPORTYBET_RELAY_URL = os.environ.get("SPORTYBET_RELAY_URL",
                                      "https://ectglmhgqfiipexvczmh.supabase.co/functions/v1/sb").strip()
+
+# Bet analyzer access: "owner" (default: the bot stays private), "allowlist" (owner + ANALYZER_USERS) or "public".
+# Only /analyze, bare codes, the analyzer buttons and the Mini App's /api/analyze* routes open up; everything else
+# stays owner-only, and only the owner's analyses are saved to the history.
+ANALYZER_ACCESS = os.environ.get("ANALYZER_ACCESS", "owner").strip().lower()
+ANALYZER_USERS = {int(x) for x in os.environ.get("ANALYZER_USERS", "").replace(" ", "").split(",") if x.isdigit()}
+
+
+def analyzer_allowed(user_id: int | None, owner_id: int | None) -> bool:
+    if user_id is None:
+        return False
+    if owner_id is not None and int(user_id) == int(owner_id):
+        return True
+    if ANALYZER_ACCESS == "public":
+        return True
+    if ANALYZER_ACCESS == "allowlist":
+        return int(user_id) in ANALYZER_USERS
+    return False

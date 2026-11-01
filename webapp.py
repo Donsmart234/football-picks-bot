@@ -48,7 +48,18 @@ DISCLAIMER = "Estimate, not guaranteed. 18+. Bet only what you can afford to los
 def validate_init_data(init_data: str, bot_token: str, owner_id: int | None,
                        max_age: int = MAX_AGE, now: float | None = None) -> dict | None:
     """Return the parsed user dict when initData is authentic, fresh and from the owner, else None."""
-    if not init_data or not bot_token or not owner_id:
+    if not owner_id:
+        return None
+    user = validate_init_data_any(init_data, bot_token, max_age, now)
+    if user is None or int(user.get("id", 0) or 0) != int(owner_id):
+        return None
+    return user
+
+
+def validate_init_data_any(init_data: str, bot_token: str, max_age: int = MAX_AGE,
+                           now: float | None = None) -> dict | None:
+    """Authentic + fresh initData from any Telegram user (the caller decides what that user may do)."""
+    if not init_data or not bot_token:
         return None
     try:
         pairs = parse_qsl(init_data, keep_blank_values=True, strict_parsing=True)
@@ -73,7 +84,7 @@ def validate_init_data(init_data: str, bot_token: str, owner_id: int | None,
     now = time.time() if now is None else now
     if auth_date <= 0 or now - auth_date > max_age or auth_date - now > 300:
         return None
-    if not isinstance(user, dict) or int(user.get("id", 0) or 0) != int(owner_id):
+    if not isinstance(user, dict) or not int(user.get("id", 0) or 0):
         return None
     return user
 
@@ -160,6 +171,10 @@ class MiniApp:
                                       self.owner_id())
             if user is None and self._admin(request):   # server-side diagnostics only
                 user = {"id": self.owner_id() or 0, "admin": True}
+            if user is None and request.path.startswith("/api/analyze") and config.ANALYZER_ACCESS != "owner":
+                guest = validate_init_data_any(request.headers.get("X-Telegram-Init-Data", ""), self.bot_token)
+                if guest and config.analyzer_allowed(int(guest["id"]), self.owner_id()):
+                    user = {**guest, "guest": True}     # analyzer only (ANALYZER_ACCESS=allowlist|public)
             if request.path.startswith("/api/admin/") and not (user or {}).get("admin"):
                 user = None
             if user is None:
@@ -188,6 +203,9 @@ class MiniApp:
         app.router.add_post("/api/admin/test_settle", self.admin_test_settle)
         app.router.add_post("/api/admin/delete_test", self.admin_delete_test)
         app.router.add_get("/api/live", self.live_list)
+        app.router.add_post("/api/analyze", self.analyze)
+        app.router.add_post("/api/analyze/rebook", self.analyze_rebook)
+        app.router.add_post("/api/analyze/narrative", self.analyze_narrative)
         app.router.add_get("/api/live/match", self.live_match)
         app.on_startup.append(self._on_startup)
         app.on_cleanup.append(self._on_cleanup)
@@ -552,6 +570,8 @@ class MiniApp:
                 c.exclude_markets.append(nm)
         if data.get("no_unders") and "under" not in c.exclude_markets:
             c.exclude_markets.append("under")
+        if data.get("all_leagues"):
+            c.all_leagues = True        # lift the default top-leagues allowlist
         try:
             res = await self.s.scanner.scan(tier, target, day, leagues, c if not c.empty() else None)
         except Exception as exc:
@@ -566,6 +586,50 @@ class MiniApp:
             else:
                 ai.remember_slip(res)
         return self._gz(web.json_response(res))
+
+    # ---- bet analyzer -------------------------------------------------------------
+    async def analyze(self, request: web.Request) -> web.Response:
+        data = await self._json(request)
+        from analyzer import extract_code
+        raw = str(data.get("code") or "")[:200]
+        code = extract_code(raw)
+        if not code:
+            return web.json_response({"error": "Paste a SportyBet booking code (6 characters, e.g. N6RXGP)."},
+                                     status=400)
+        an = getattr(self.s, "analyzer", None)
+        if an is None:
+            return web.json_response({"error": "The analyzer isn't available."}, status=503)
+        try:   # analyzed codes are not saved or tracked; only an explicit rebook is
+            res = await an.analyze(code, str(data.get("rules") or "")[:300], use_cache=not data.get("fresh"))
+        except Exception as exc:
+            log.warning("analyze failed: %s", exc, exc_info=True)
+            return web.json_response({"error": "SportyBet or the stats feed didn't answer. Try again shortly."},
+                                     status=502)
+        if not res.get("ok"):
+            return web.json_response({"error": res.get("error"), "kind": res.get("kind"), "code": code},
+                                     status=404 if res.get("kind") in ("invalid", "empty") else 502)
+        return self._gz(web.json_response(res))
+
+    async def analyze_rebook(self, request: web.Request) -> web.Response:
+        data = await self._json(request)
+        an = getattr(self.s, "analyzer", None)
+        try:
+            out = await an.rebook(str(data.get("id") or ""), save=not request["tg_user"].get("guest"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except BookingError as exc:
+            return web.json_response({"error": f"{exc} A match may have started: analyze the code again."},
+                                     status=502)
+        return web.json_response(out)
+
+    async def analyze_narrative(self, request: web.Request) -> web.Response:
+        data = await self._json(request)
+        an = getattr(self.s, "analyzer", None)
+        try:
+            out = await an.narrative(str(data.get("id") or ""))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(out)
 
     async def ai(self, request: web.Request) -> web.Response:
         data = await self._json(request)

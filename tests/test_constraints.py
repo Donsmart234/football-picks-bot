@@ -201,7 +201,9 @@ def test_rollover():
     from bookmakers import Event
     pool.events = [Event(event_id=f"sr:match:{i}", home=f"Home{i}", away=f"Away{i}",
                          league="Premier League" if i <= 12 else "LaLiga", category="England" if i <= 12 else "Spain",
-                         tournament_id="t", start=KO, markets={}, market_count=100)
+                         tournament_id="sr:tournament:17" if i <= 12 else "sr:tournament:8",
+                         category_id="sr:category:1" if i <= 12 else "sr:category:32", start=KO, markets={},
+                         market_count=100)
                    for i in range(1, 25)]
     for tgt in (2, 3, 5):
         r = asyncio.run(sc.rollover_slip(tgt))
