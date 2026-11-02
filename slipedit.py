@@ -161,12 +161,34 @@ def parse_market(text: str) -> dict | None:
     return None
 
 
+_NOT_TEAM = {"this", "that", "the", "these", "those", "which", "every", "each", "other", "whole", "any", "some",
+             "next", "same", "weakest", "strongest", "riskiest", "safest", "another", "different", "first", "second",
+             "third", "fourth", "fifth", "sixth", "last", "final", "new", "fresh", "better", "safer", "extra", "more",
+             "single", "only", "your", "their", "risky", "weak", "bad", "today", "tonight", "away", "home", "over",
+             "under", "draw", "one", "two", "three", "four", "five"}
+
+
+def unknown_team(text: str, legs: list[dict]) -> str | None:
+    """A team-like name the message points at ('the Arsenal game') that isn't on the slip, else None."""
+    t = _norm_text(text)
+    for m in re.finditer(r"\b([a-z][a-z.'-]{3,})\s+(?:game|match|fixture|leg|pick|selection)\b", t):
+        w = m.group(1)
+        if w in _NOT_TEAM or ORDINALS.get(w) or CARDINALS.get(w):
+            continue
+        if _team_index(w, legs) is None:
+            return w
+    return None
+
+
 def parse_edit(text: str, legs: list[dict]) -> dict | None:
-    """One edit op from the user's words, or None when the message isn't recognisably an edit."""
+    """One edit op from the user's words, or None when the message isn't recognisably an edit (or points at a
+    team that isn't on the slip)."""
     t = _norm_text(text)
     if not t:
         return None
     idx = parse_index(t, legs)
+    if idx is None and unknown_team(t, legs):
+        return None
     if RE_REBUILD.search(t):
         return {"action": "rebuild", "index": None, "market": None, "same_match": False}
     mk = parse_market(t) if RE_MARKET.search(t) else None

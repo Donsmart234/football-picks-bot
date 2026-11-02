@@ -254,7 +254,7 @@ class Analyst:
         return MODEL_PREFS
 
     async def _generate(self, contents: list[dict], system: str | None = None, tools=True,
-                        max_tokens: int = 8192) -> dict:
+                        max_tokens: int = 8192, timeout: float | None = None) -> dict:
         body = {"systemInstruction": {"parts": [{"text": system or SYSTEM.format(
                     today=datetime.now(TZ).strftime("%A %d %B %Y, %H:%M"))}]},
                 "contents": contents, "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
@@ -275,7 +275,9 @@ class Analyst:
                     try:
                         r = await self._client.post(f"{API}/models/{model}:generateContent",
                                                     json={**body, "generationConfig": gen},
-                                                    headers={"x-goog-api-key": self.key})
+                                                    headers={"x-goog-api-key": self.key},
+                                                    **({"timeout": httpx.Timeout(timeout, connect=10.0)}
+                                                       if timeout else {}))
                     except httpx.HTTPError as exc:
                         last = f"network error ({exc.__class__.__name__})"
                         r = None
@@ -301,7 +303,8 @@ class Analyst:
         self.last_errors = errs
         raise RuntimeError(f"Gemini unavailable ({last})")
 
-    async def _loop(self, contents: list[dict], turn: dict, tools=True, system: str | None = None) -> str:
+    async def _loop(self, contents: list[dict], turn: dict, tools=True, system: str | None = None,
+                    timeout: float | None = None) -> str:
         """Gemini function-calling loop. Returns the final text ('' only when every recovery failed).
         Why replies came back empty before (2026-11-02, "I couldn't finish that analysis"): Gemini 3 counts its
         thinking against maxOutputTokens (was 2048), so after a large scan result it could end with
@@ -313,7 +316,7 @@ class Analyst:
         for _ in range(MAX_ROUNDS):
             dbg["rounds"] += 1
             t0 = time.time()
-            data = await self._generate(contents, system=system, tools=tools)
+            data = await self._generate(contents, system=system, tools=tools, **({"timeout": timeout} if timeout else {}))
             dbg.setdefault("gemini_s", []).append(round(time.time() - t0, 1))
             cand = (data.get("candidates") or [{}])[0]
             dbg["finish"].append(cand.get("finishReason") or (data.get("promptFeedback") or {}).get("blockReason") or "?")
@@ -345,7 +348,7 @@ class Analyst:
             try:
                 data = await self._generate(contents + [{"role": "user", "parts": [{"text": (
                     "Write your final answer to my last message now, briefly, using only the tool results above. "
-                    "No more tool calls.")}]}], system=system, tools=None)
+                    "No more tool calls.")}]}], system=system, tools=None, **({"timeout": timeout} if timeout else {}))
                 cand = (data.get("candidates") or [{}])[0]
                 dbg["finish"].append(cand.get("finishReason") or "?")
                 parts = (cand.get("content") or {}).get("parts") or []
@@ -412,12 +415,21 @@ class Analyst:
             contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": (
                 f"[I'm replying to this slip]\n{ctx_txt}\n\n[My message]\n{text}")}]}]
             system = SYSTEM.format(today=datetime.now(TZ).strftime("%A %d %B %Y, %H:%M")) + EDIT_RULES
+            warm = asyncio.create_task(ed.prefetch(ctx))       # candidate pool warms while Gemini reads the request
             try:
-                reply = await asyncio.wait_for(self._loop(contents, turn, tools=EDIT_TOOLS, system=system), timeout=75)
+                reply = await asyncio.wait_for(self._loop(contents, turn, tools=EDIT_TOOLS, system=system, timeout=25),
+                                               timeout=60)
             except Exception as exc:
                 log.warning("AI edit loop failed (%s): using the rule-based edit", exc.__class__.__name__)
                 reply = ""
-        if turn["edit"] is None and op is not None and ed is not None:
+                turn["edit_tool_called"] = False      # a cut-off loop: let the rule-based edit decide
+            self._bg = getattr(self, "_bg", set())
+            self._bg.add(warm)                 # let a running pool build finish (cancelling it would waste it)
+            warm.add_done_callback(self._bg.discard)
+        called = turn.get("edit_tool_called", "edit_slip" in turn["tools"])
+        use_rules = op is not None and ed is not None and turn["edit"] is None and (
+            not reply or (not called and op.get("index") is not None))
+        if use_rules:
             turn["tools"].append("rule_edit")
             turn["edit"] = await ed.run(ctx, op)
         out = turn["edit"]

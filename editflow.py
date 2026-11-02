@@ -292,6 +292,20 @@ class SlipEditor:
         return "\n".join(lines)
 
     # ---- edits -------------------------------------------------------------------------
+    async def prefetch(self, ctx: dict) -> None:
+        """Warm the candidate pool for this slip's section (runs while Gemini reads the message)."""
+        try:
+            sec = ctx.get("section")
+            if sec in ("rollover_preview", "rollover_day"):
+                await self.s.scanner.edit_candidates("rollover", allow_unders=bool(ctx.get("allow_unders")))
+            elif sec in ("scan", "ai") and (ctx.get("slip") or {}).get("tier") in ("safe", "mid", "risk", "high"):
+                sl = ctx["slip"]
+                c = Constraints.from_dict(sl.get("constraints")) if sl.get("constraints") else None
+                await self.s.scanner.edit_candidates("scan", (sl.get("scan_args") or {}).get("day") or sl.get("day")
+                                                     or "today", tier=sl.get("tier"), c=c)
+        except Exception as exc:
+            log.info("edit prefetch failed: %s", exc.__class__.__name__)
+
     async def run(self, ctx: dict, op: dict) -> dict:
         sec = ctx.get("section")
         try:

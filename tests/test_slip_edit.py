@@ -295,7 +295,7 @@ class FakeGemini:
     def __init__(self, script):
         self.script, self.calls = list(script), []
 
-    async def __call__(self, contents, system=None, tools=True, max_tokens=8192):
+    async def __call__(self, contents, system=None, tools=True, max_tokens=8192, **kw):
         self.calls.append({"tools": tools, "n": len(contents)})
         step = self.script.pop(0)
         if isinstance(step, Exception):
@@ -332,6 +332,16 @@ async def flow_gemini():
     assert not s.bookmaker.booked
     print("gemini: edit_slip tool used, only edit/predict/stats tools offered in reply context OK")
 
+    # 1b) Gemini points at a team that isn't on the slip -> its plain answer, no edit of another leg
+    ai._generate = FakeGemini([_call("edit_slip", {"action": "safer", "team": "Real Oviedo"}),
+                               _txt("There's no Real Oviedo game on this slip.")])
+    res = await ai.ask(1, "this Real Oviedo game no go enter", context=ctx)
+    assert res["edit"] is None and "no Real Oviedo" in res["reply"], res
+    assert slipedit.parse_edit("this Oviedo game no go enter", SLIP) is None
+    # 1c) Gemini answers a question about the slip with text only -> text, no edit
+    ai._generate = FakeGemini([_txt("Total is 1.96 at about 42%.")])
+    res = await ai.ask(1, "what's the total?", context=ctx)
+    assert res["edit"] is None and res["reply"].startswith("Total is 1.96")
     # 2) Gemini errors -> rule-based edit (never a generic slip)
     ai._generate = FakeGemini([RuntimeError("Gemini unavailable (HTTP 503)")])
     res = await ai.ask(1, "Change the first selection", context=ctx)
