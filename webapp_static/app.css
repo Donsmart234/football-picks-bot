@@ -384,4 +384,6 @@ body { min-height: var(--vh-stable, var(--tg-viewport-stable-height, 100vh)); }
 
 .composer .attach { background: var(--card); color: var(--text); border: 1px solid var(--line); }
 .msg .msgimg { display: block; max-width: 220px; max-height: 260px; border-radius: 10px; margin-bottom: 4px; }
-.imgchip img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; vertical-align: middle; margin-right: 6px; }
+.imgchip { display: flex; align-items: center; gap: 8px; }
+.imgchip img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; flex: none; }
+.imgchip .btn { flex: none; margin-left: auto !important; }
