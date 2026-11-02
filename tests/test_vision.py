@@ -446,6 +446,13 @@ async def flow_bot_slip():
     ref = await ed.lookup(1, pointer.message_id)
     assert ref and ref["section"] == "rollover_preview" and "Reply to this message" in pointer.text
     assert not s.bookmaker.booked
+    # the preview was confirmed (YNAP2N -> replaced): a screenshot read in a chat without refs, header code YNAP2N,
+    # resolves to the slip that replaced it (its legs are the ones in the image), as the current rollover day
+    done = await tr.refresh_confirm(tok)          # fake bookmaker in this test world
+    ai._generate = FakeGemini([read(kind="bot_slip", legs=shot, header="SAFE SLIP", booking_code="YNAP2N")])
+    out = await vision.handle_image(ai, 77, jpeg(), "image/jpeg", "")
+    assert out["kind"] == "bot_slip" and out["context"]["slip_id"] == done["record"]["id"], out["context"]
+    assert out["context"]["section"] == "rollover_day"
     print("telegram: photo + caption -> '📷 That's one of my slips' + preview with Confirm/Keep; reply to a photo -> "
           "read with the reply text; no-caption pointer message is reply-editable OK")
 

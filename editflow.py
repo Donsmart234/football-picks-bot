@@ -242,10 +242,23 @@ class SlipEditor:
                 rec = await tr.history.find_code(code) if tr else None
             except Exception:
                 rec = None
-            rlegs = ((rec or {}).get("data") or {}).get("legs") or []
-            if rec and rec.get("kind", "slip") == "slip" and (
-                    not pairs or covered({"legs": rlegs}) >= max(1, round(0.6 * len(pairs)))):
-                ref = {"section": "history", "slip_id": rec["id"]}     # the code's own legs are what the image shows
+            # the code's slip, or the slip that replaced it (a rollover preview shows the old code in its header
+            # and the new picks below): whichever covers more of the teams in the image
+            chain = []
+            while rec and rec.get("kind", "slip") == "slip" and len(chain) < 4:
+                chain.append(rec)
+                nxt = (rec.get("data") or {}).get("replaced_by") if rec.get("status") == "replaced" else None
+                try:
+                    rec = await tr.history.get(nxt) if nxt else None
+                except Exception:
+                    rec = None
+            best_rec = None
+            for r in chain:
+                n = covered({"legs": (r.get("data") or {}).get("legs") or []}) if pairs else 1
+                if n >= max(1, round(0.6 * len(pairs))) and (best_rec is None or n >= best_rec[0]):
+                    best_rec = (n, r)
+            if best_rec:
+                ref = {"section": "history", "slip_id": best_rec[1]["id"]}
         if ref is None:
             ref = self.from_text(header)
         if ref is None:
