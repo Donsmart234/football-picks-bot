@@ -180,6 +180,13 @@ class HistoryStore:
                 out.append({"id": r[0], "kind": r[1], "status": r[2], "created_at": r[3], "updated_at": r[4], "data": d})
         return out
 
+    async def delete_kind_before(self, kind: str, before_iso: str) -> None:
+        """Delete records of `kind` created before `before_iso` (housekeeping for short-lived kinds like 'msgref')."""
+        if self.remote:
+            await self._http().delete(f"/{TABLE}", params={"kind": f"eq.{kind}", "created_at": f"lt.{before_iso}"})
+        elif self.storage is not None:
+            self.storage._exec(f"DELETE FROM {TABLE} WHERE kind=? AND created_at < ?", (kind, before_iso))
+
     async def delete(self, rid: str) -> None:
         if self.remote:
             await self._http().delete(f"/{TABLE}", params={"id": f"eq.{rid}"})

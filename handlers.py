@@ -117,14 +117,52 @@ async def predict_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await _predict_query(update, ctx, query)
 
 
+def _remember(ctx, msg, ref: dict | None) -> None:
+    """Store which slip a sent bot message shows, so a reply to it edits that slip (editflow.py)."""
+    ed = getattr(svc(ctx), "editor", None)
+    if ed is None or msg is None or not ref:
+        return
+    try:
+        ed.remember(msg.chat_id, msg.message_id, ref)
+    except Exception as exc:
+        log.warning("slip ref not stored: %s", exc)
+
+
+async def _slip_context(update: Update, ctx, text: str) -> dict | None:
+    """The slip a message refers to: the bot message it replies to, or (no reply) the last slip shown when the
+    message names a leg ("change the first selection")."""
+    ed = getattr(svc(ctx), "editor", None)
+    msg = update.effective_message
+    if ed is None:
+        return None
+    chat_id = update.effective_chat.id
+    rt = msg.reply_to_message
+    try:
+        if rt is not None and (rt.from_user is None or rt.from_user.is_bot):
+            return await ed.resolve(chat_id, rt)
+        if rt is None:
+            from slipedit import parse_edit
+            ref = await ed.last_ref(chat_id)
+            if ref and ref.get("legs"):
+                op = parse_edit(text, ref["legs"])
+                if op and op.get("index") is not None:
+                    return await ed.hydrate(ref)
+    except Exception as exc:
+        log.warning("reply context failed: %s", exc, exc_info=True)
+    return None
+
+
 async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.effective_message.text or "").strip()
     code = bare_code(text)
     if code:                      # a pasted 6-character booking code: analyze it
         await _run_analysis(update, ctx, code, "")
         return
+    sctx = await _slip_context(update, ctx, text)
     ai = getattr(svc(ctx), "ai", None)
-    if ai and ai.enabled:
+    if sctx is not None and ai is not None:
+        await _ask_ai(update, ctx, text, sctx)
+    elif ai and ai.enabled:
         await _ask_ai(update, ctx, text)
     elif " vs " in text.lower() or " v " in text.lower():
         await _predict_query(update, ctx, text)
@@ -190,9 +228,14 @@ async def _run_analysis(update: Update, ctx, code: str, rules: str) -> None:
     kb = _analysis_kb(res)
     await note.edit_text(msgs[0], parse_mode=ParseMode.HTML, disable_web_page_preview=True,
                          reply_markup=kb if len(msgs) == 1 else None)
+    sent = [note]
     for i, m in enumerate(msgs[1:], 1):
-        await update.effective_message.reply_text(m, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-                                                  reply_markup=kb if i == len(msgs) - 1 else None)
+        sent.append(await update.effective_message.reply_text(m, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                                                              reply_markup=kb if i == len(msgs) - 1 else None))
+    ref = {"section": "analysis", "aid": res.get("id"), "code": res.get("code"),
+           "legs": [l for l in res.get("legs") or [] if l.get("event_id")]}
+    for m in sent:
+        _remember(ctx, m, ref)
 
 
 async def reset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,13 +258,14 @@ async def _typing_loop(chat, stop):
             pass
 
 
-async def _ask_ai(update: Update, ctx, text: str) -> None:
+async def _ask_ai(update: Update, ctx, text: str, sctx: dict | None = None) -> None:
     import asyncio
     s = svc(ctx)
     stop = asyncio.Event()
     typer = asyncio.create_task(_typing_loop(update.effective_chat, stop))
     try:
-        res = await s.ai.ask(update.effective_chat.id, text)
+        res = await (s.ai.ask(update.effective_chat.id, text, context=sctx) if sctx else
+                     s.ai.ask(update.effective_chat.id, text))
     except Exception as exc:
         log.warning("AI failed: %s", exc)
         res = {"reply": f"The AI analyst is unavailable right now ({esc(str(exc)[:120])}). /scan still works.",
@@ -229,6 +273,9 @@ async def _ask_ai(update: Update, ctx, text: str) -> None:
     finally:
         stop.set()
         await typer
+    if sctx is not None and res.get("edit") is not None:
+        await _send_edit(update, ctx, res["edit"], sctx)
+        return
     kb = None
     rows = []
     an_res = res.get("analysis")
@@ -244,16 +291,71 @@ async def _ask_ai(update: Update, ctx, text: str) -> None:
     if rows:
         kb = Kb(rows)
     html_text = md_to_html(res["reply"])
+    sent = None
     for i in range(0, len(html_text), 3900):
-        await update.effective_message.reply_text(html_text[i:i + 3900], parse_mode=ParseMode.HTML,
-                                                  disable_web_page_preview=True,
-                                                  reply_markup=kb if i + 3900 >= len(html_text) else None)
+        sent = await update.effective_message.reply_text(html_text[i:i + 3900], parse_mode=ParseMode.HTML,
+                                                         disable_web_page_preview=True,
+                                                         reply_markup=kb if i + 3900 >= len(html_text) else None)
+    sl = res.get("slip")
+    if sl and sl.get("slip_id") and sl.get("legs") and not res.get("code"):
+        _remember(ctx, sent, {"section": "scan" if sl.get("tier") in ("safe", "mid", "risk", "high") else "ai",
+                              "sid": sl["slip_id"], "legs": sl["legs"],
+                              "slip": {k: v for k, v in sl.items() if k != "legs"}})
+    elif an_res and an_res.get("id"):
+        _remember(ctx, sent, {"section": "analysis", "aid": an_res["id"], "code": an_res.get("code"),
+                              "legs": [l for l in an_res.get("legs") or [] if l.get("event_id")]})
+
+
+def _edit_html(out: dict) -> tuple[str, Kb | None]:
+    """Telegram message for an edited slip, in its own section (rollover preview / scan result / custom slip)."""
+    from fmt import leg_lines
+    legs = out["legs"]
+    body = "\n".join(leg_lines(l, i, why=False) for i, l in enumerate(legs, 1))
+    change = f"✏️ <i>{esc(out.get('change') or '')}</i>"
+    tail = (f"{RULE}\n<b>Total odds <code>{out['total_odds']:.2f}</code></b> · est. hit chance "
+            f"<b>{out['est_prob']:.0%}</b>")
+    if out["section"] == "rollover_preview":
+        if out.get("old_code"):
+            lead = (f"Your current slip is booked as <code>{esc(out['old_code'])}</code>. Confirm to book a <b>new code</b>; "
+                    "the old one is marked <i>replaced</i> (not counted as a loss) and stops being tracked.")
+        else:
+            lead = ("Confirm to book these picks as today's code; the current (unbooked) slip is marked <i>replaced</i>.")
+        text = (f"🔄 <b>New picks for today</b> (preview) · Rollover day {out.get('day') or ''} · target "
+                f"{(out.get('target') or 0):g}\n{change}\n{lead}\n{RULE}\n{body}\n{tail}\n<i>Same rules: top leagues, "
+                "every leg ≥80% est." + ("" if out.get("allow_unders") else " No unders.")
+                + " Nothing is booked until you confirm. Estimates, not guarantees. 18+.</i>")
+        kb = Kb([[Btn("✅ Confirm: book new code", callback_data=f"RC|{out['token']}")],
+                 [Btn("Keep current slip", callback_data="NOOP")]])
+        return text[:4096], kb
+    sl = out.get("slip") or {}
+    if sl.get("tier") in ("safe", "mid", "risk", "high"):
+        head = f"✏️ <b>Edited slip</b> · not saved until you book\n{change}\n"
+        return _scan_msg(sl, head), _scan_kb(out.get("sid"), sl)
+    title = ("✏️ <b>Edited slip</b>" + (f" (from <code>{esc(out.get('based_on'))}</code>)" if out.get("based_on") else "")
+             + f" · not saved until you book\n{change}")
+    text = f"{title}\n{RULE}\n{body}\n{tail}\n<i>Estimates, not guarantees. 18+.</i>"
+    kb = Kb([[Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{out['sid']}")]]) if out.get("sid") else None
+    return text[:4096], kb
+
+
+async def _send_edit(update: Update, ctx, out: dict, sctx: dict) -> None:
+    msg = update.effective_message
+    if not out.get("ok"):
+        await msg.reply_text(f"⚠️ {esc(out.get('note') or 'That change is not possible right now.')}",
+                             parse_mode=ParseMode.HTML)
+        return
+    text, kb = _edit_html(out)
+    sent = await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+    ed = getattr(svc(ctx), "editor", None)
+    if ed is not None:
+        _remember(ctx, sent, ed.outcome_ref(out, sctx))
 
 
 def format_slip(sl: dict, why: bool = True) -> str:
     rule = f"Each leg est. ≥{sl['rules']['min_p']:.0%} after the stats check" if sl.get("rules", {}).get("min_p") else ""
-    title = (f"🧮 <b>{esc(sl['label']).upper()} SLIP</b> · target {sl['target']:g} · {esc(sl['day'])}"
-             + (f"\n<i>{rule} · {sl['candidates']} qualified · {sl['with_stats']} matches stats-checked</i>" if rule else ""))
+    title = (f"🧮 <b>{esc(sl['label']).upper()} SLIP</b> · target {sl['target']:g} · {esc(sl.get('day', ''))}"
+             + (f"\n<i>{rule} · {sl.get('candidates', 0)} qualified · {sl.get('with_stats', 0)} matches stats-checked</i>"
+               if rule and not sl.get("edited") else f"\n<i>{rule}</i>" if rule else ""))
     if sl.get("constraints_text"):
         chk = sl.get("constraint_check") or {}
         title += (f"\n🎛 Your rules: {esc(sl['constraints_text'])}"
@@ -321,6 +423,12 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     res["scan_args"] = {"tier": tier, "target": target, "day": day, "constraints": c.to_dict() if c else None}
     sid = ai.remember_slip(res) if ai else None
     await note.edit_text(_scan_msg(res), parse_mode=ParseMode.HTML, reply_markup=_scan_kb(sid, res))
+    if sid and res.get("legs"):
+        _remember(ctx, note, _scan_ref(sid, res))
+
+
+def _scan_ref(sid: str, res: dict) -> dict:
+    return {"section": "scan", "sid": sid, "legs": res["legs"], "slip": {k: v for k, v in res.items() if k != "legs"}}
 
 
 def _scan_msg(res: dict, head: str = "") -> str:
@@ -375,7 +483,8 @@ async def _scan_refresh(q, ctx, sid: str, exclude_prev: bool) -> None:
     nsid = ai.remember_slip(res)
     kept = len(new & prev)
     head = f"🔄 <b>Refreshed</b> · {len(new) - kept} new pick(s), {kept} kept · not saved until you book\n"
-    await q.message.reply_text(_scan_msg(res, head), parse_mode=ParseMode.HTML, reply_markup=_scan_kb(nsid, res))
+    sent = await q.message.reply_text(_scan_msg(res, head), parse_mode=ParseMode.HTML, reply_markup=_scan_kb(nsid, res))
+    _remember(ctx, sent, _scan_ref(nsid, res))
 
 
 async def slip_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -779,6 +888,8 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
     tail = (f"{RULE}\n<b>Total odds <code>{res['total_odds']:.2f}</code></b> · est. hit chance <b>{res['est_prob']:.0%}</b>"
             "\n<i>Same rules: top leagues, every leg ≥80% est. Estimates, not guarantees. 18+.</i>")
     if out["status"] == "preview":
+        _remember(ctx, note, {"section": "rollover_preview", "token": out["token"], "slip_id": slip_id,
+                              "code": out.get("old_code"), "legs": res["legs"]})
         await note.edit_text(
             f"🔄 <b>New picks for today</b> (preview)\nYour current slip is booked as <code>{esc(out['old_code'])}</code>. "
             "Confirm to book a <b>new code</b>; the old one is marked <i>replaced</i> (not counted as a loss) and "
@@ -787,6 +898,7 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
                              [Btn("Keep current slip", callback_data="NOOP")]]))
         return
     rec = out["record"]
+    _remember(ctx, note, {"section": "rollover_day", "slip_id": rec["id"], "legs": res["legs"]})
     await note.edit_text(f"🔄 <b>Picks refreshed</b> · Rollover day {rec['data']['rollover_day']}\n"
                          f"The previous slip is marked replaced.\n{RULE}\n{body}\n{tail}", parse_mode=ParseMode.HTML,
                          reply_markup=day_markup(rec["id"], bool(rec["data"].get("code"))))
@@ -797,7 +909,22 @@ async def _ro_refresh_confirm(q, ctx, token: str) -> None:
     tr = svc(ctx).tracker
     await q.answer("Booking the new slip…")
     try:
-        out = await tr.refresh_confirm(token)
+        try:
+            out = await tr.refresh_confirm(token)
+        except ValueError as exc:
+            # preview lost (redeploy / >15 min): rebuild it from the slip stored with this message, if recent
+            ed = getattr(svc(ctx), "editor", None)
+            ref = await ed.lookup(q.message.chat_id, q.message.message_id) if ed and "expired" in str(exc) else None
+            import time as _t
+            if not ref or ref.get("section") != "rollover_preview" or not ref.get("legs") or not ref.get("slip_id") \
+                    or _t.time() - ref.get("ts", 0) > 3600:
+                raise
+            from slipedit import combined, total_odds
+            legs = ref["legs"]
+            tok = tr.edit_preview(ref["slip_id"], {"tier": "rollover", "label": "Rollover", "legs": legs,
+                                                   "total_odds": round(total_odds(legs), 2),
+                                                   "est_prob": round(combined(legs), 4), "reached": True})
+            out = await tr.refresh_confirm(tok)
     except (ValueError, BookingError) as exc:
         await q.message.reply_text(f"⚠️ {esc(str(exc))}", parse_mode=ParseMode.HTML)
         return
@@ -806,11 +933,12 @@ async def _ro_refresh_confirm(q, ctx, token: str) -> None:
         await q.edit_message_reply_markup(None)
     except Exception:
         pass
-    await q.message.reply_text(
+    sent = await q.message.reply_text(
         f"📒 <b>New code: <code>{esc(out['code'])}</code></b> · Rollover day {rec['data']['rollover_day']} · "
         f"{len(rec['data']['legs'])} legs · total odds {rec['data']['total_odds']:.2f}\n"
         f"<code>{esc(out.get('old_code') or '')}</code> is marked replaced (not a loss). Tracking the new one.",
         parse_mode=ParseMode.HTML, reply_markup=day_markup(rec["id"], True))
+    _remember(ctx, sent, {"section": "rollover_day", "slip_id": rec["id"], "legs": rec["data"]["legs"]})
 
 
 async def rollover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

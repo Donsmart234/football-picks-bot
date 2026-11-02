@@ -16,6 +16,7 @@ from telegram.request import HTTPXRequest
 
 import config
 import handlers
+from editflow import SlipEditor
 from ai import Analyst
 from analyzer import Analyzer
 from services import Services
@@ -50,6 +51,7 @@ def build_app(webhook: bool) -> Application:
     services.ai = Analyst(services)
     services.tracker = Tracker(services)
     services.analyzer = Analyzer(services)
+    services.editor = SlipEditor(services)
     app.bot_data["services"] = services
     handlers.register(app)
     return app

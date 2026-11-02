@@ -674,8 +674,28 @@ class MiniApp:
         if not ai or not ai.enabled:
             return web.json_response({"error": "The AI analyst isn't configured on the server yet."}, status=503)
         chat = int(request["tg_user"].get("id") or 0)
+        if request["tg_user"].get("admin") and data.get("chat") is not None:
+            chat = int(data["chat"])        # diagnostics: keep test turns out of the owner's AI memory
+        sctx = None
+        cx = data.get("context") if isinstance(data.get("context"), dict) else None
+        ed = getattr(self.s, "editor", None)
+        if cx and ed is not None:
+            # the slip in view in the Mini App: {"kind": "rollover", "slip_id"} | {"kind": "preview", "token", "slip_id"}
+            # | {"kind": "scan"|"ai", "sid"} | {"kind": "history", "slip_id"}
+            kind = str(cx.get("kind") or "")
+            ref = {"rollover": {"section": "rollover_day", "slip_id": str(cx.get("slip_id") or "")},
+                   "preview": {"section": "rollover_preview", "token": str(cx.get("token") or ""),
+                               "slip_id": str(cx.get("slip_id") or "")},
+                   "scan": {"section": "scan", "sid": str(cx.get("sid") or "")},
+                   "ai": {"section": "ai", "sid": str(cx.get("sid") or "")},
+                   "history": {"section": "history", "slip_id": str(cx.get("slip_id") or "")}}.get(kind)
+            if ref:
+                try:
+                    sctx = await ed.hydrate(ref)
+                except Exception as exc:
+                    log.warning("ai context hydrate failed: %s", exc)
         try:
-            res = await ai.ask(chat, msg)
+            res = await (ai.ask(chat, msg, context=sctx) if sctx else ai.ask(chat, msg))
         except Exception as exc:
             log.warning("ai failed: %s", exc)
             return web.json_response({"error": f"The AI analyst is unavailable right now ({str(exc)[:120]})."},
@@ -735,6 +755,7 @@ class MiniApp:
                 out["gemini_error"] = str(exc)[:160]
             out["gemini_model"] = ai.model
             out["gemini_last_errors"] = getattr(ai, "last_errors", None)
+            out["gemini_last_turn"] = getattr(ai, "last_turn", None)
         tr = getattr(self.s, "tracker", None)
         if tr:
             out["history_backend"] = tr.history.backend

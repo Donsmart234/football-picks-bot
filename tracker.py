@@ -80,14 +80,21 @@ class Tracker:
     def owner(self) -> int | None:
         return config.OWNER_TELEGRAM_ID or self.s.storage.get_owner()
 
-    async def send(self, text: str, test: bool = False, markup=None) -> bool:
+    async def send(self, text: str, test: bool = False, markup=None, ref: dict | None = None) -> bool:
+        """ref: slip reference stored under the sent message id, so a reply to it edits that slip (editflow.py)."""
         if not self.bot or not self.owner():
             return False
         if test:
             text = "🧪 <b>TEST</b> (tracker check, not a real result)\n" + text
         try:
-            await self.bot.send_message(self.owner(), text[:4096], parse_mode=ParseMode.HTML,
-                                        disable_web_page_preview=True, reply_markup=markup)
+            msg = await self.bot.send_message(self.owner(), text[:4096], parse_mode=ParseMode.HTML,
+                                              disable_web_page_preview=True, reply_markup=markup)
+            ed = getattr(self.s, "editor", None)
+            if ref and ed is not None and getattr(msg, "message_id", None):
+                try:
+                    ed.remember(self.owner(), msg.message_id, ref)
+                except Exception as exc:
+                    log.warning("slip ref save failed: %s", exc)
             return True
         except Exception as exc:
             log.warning("owner ping failed: %s", exc.__class__.__name__)
@@ -390,7 +397,10 @@ class Tracker:
                       + ("" if d.get("allow_unders") else " No under selections.")
                       + " Estimates, not guarantees. 18+.</i>"]
             markup = day_markup(srec["id"], bool(code)) if srec else None
-            await self.send("\n".join(lines), test=d.get("test"), markup=markup)
+            ref = {"section": "rollover_day", "slip_id": srec["id"], "plan_id": rec["id"], "day": n,
+                   "target": float(d["target"]), "allow_unders": bool(d.get("allow_unders")),
+                   "code": code, "legs": res["legs"]} if srec else None
+            await self.send("\n".join(lines), test=d.get("test"), markup=markup, ref=ref)
         return entry
 
     async def book_record(self, rid: str) -> dict:
@@ -590,6 +600,18 @@ class Tracker:
                     "old_id": slip_id}
         new = await self._replace_day(slip, plan, res, "")
         return {"status": "replaced", "record": new, "slip": res, "old_id": slip_id}
+
+    def edit_preview(self, slip_id: str, res: dict) -> str:
+        """Store an edited rollover slip (AI / reply edit) as a preview; it is booked and replaces the day only on
+        refresh_confirm(token), exactly like a refreshed slip."""
+        token = new_id("rf")
+        self._previews = {k: v for k, v in self._previews.items() if time.time() - v["ts"] < 900}
+        self._previews[token] = {"slip_id": slip_id, "res": res, "ts": time.time(), "edited": True}
+        return token
+
+    def preview(self, token: str) -> dict | None:
+        pv = self._previews.get(token)
+        return pv if pv and time.time() - pv["ts"] <= 900 else None
 
     async def refresh_confirm(self, token: str) -> dict:
         """Explicit confirm: book the previewed slip (new code), mark the old booked slip replaced."""

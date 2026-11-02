@@ -39,7 +39,7 @@
     tab: "home", tier: "safe", target: 5, day: "today", scan: null, scanning: false, scanErr: "",
     mRange: "today", mData: {}, mStack: [], mQuery: "", pred: null, markets: null,
     live: null, liveAt: 0, liveErr: "", lm: null, lmErr: "", scroll: {},
-    chat: [], aiBusy: false,
+    chat: [], aiBusy: false, aiCtx: null,
     hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false },
     az: null, azBusy: false, azErr: "", azCode: "", azTake: null, azTakeBusy: false, allLg: (() => { try { return localStorage.getItem("fra_alllg") === "1"; } catch (e) { return false; } })(),
     ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
@@ -218,6 +218,7 @@
       ${s.legs.length ? `<div class="btnrow"><button class="btn" data-act="bookslip" data-k="${esc(key)}">Book on SportyBet</button>
         <button class="btn secondary" style="flex:.7" data-act="slipall" data-k="${esc(key)}">Add to slip</button></div>` : ""}
       ${key === "scan" ? `<div class="btnrow"><button class="btn small secondary" data-act="scanrefresh" data-x="0" ${state.scanRefreshing ? "disabled" : ""}>${state.scanRefreshing ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="scanrefresh" data-x="1" ${state.scanRefreshing ? "disabled" : ""}>🔀 Different picks</button></div>
+        ${s.slip_id && s.legs.length ? `<button class="btn ghost" data-act="aiedit" data-kind="scan" data-sid="${esc(s.slip_id)}">✏️ Edit with AI</button>` : ""}
         <div class="sub" style="text-align:center;margin-top:6px">Not saved to History until you book a code</div>` : ""}
     </div>`;
   }
@@ -615,12 +616,17 @@
       if (m.role === "me") h += `<div class="msg me">${esc(m.text)}</div>`;
       else {
         h += `<div class="msg bot">${mdLite(m.text)}${m.tools && m.tools.length ? `<span class="tools">⚙ ${esc([...new Set(m.tools)].join(" · "))}</span>` : ""}</div>`;
+        if (m.edit && m.edit.ok) {
+          h += `<div class="card" style="max-width:88%;margin:4px 0 8px">${(m.edit.legs || []).map((l, j) => `<div class="sub" style="margin:3px 0">${j + 1}. <b>${esc((l.home || "") + " v " + (l.away || ""))}</b> · ${esc(l.pick || "")} @ ${f2(l.odds)}${l.est != null ? " · est " + pct(l.est) : ""}</div>`).join("")}<div style="margin-top:6px"><b>${f2(m.edit.total_odds)}</b> total · est ${pct(m.edit.est_prob, 1)}</div></div>`;
+          if (m.edit.section === "rollover_preview") h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="roconfirm" data-t="${esc(m.edit.token)}">✅ Confirm: book new code</button><button class="btn small secondary" data-act="aikeep">Keep current slip</button></div>`;
+        }
         if (m.slip && m.slip.legs && m.slip.legs.length && !m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="bookslip" data-k="chat:${i}">Book this slip</button><button class="btn small secondary" data-act="slipall" data-k="chat:${i}">Add to slip</button></div>`;
         if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="openhub">Open SportyBet</button></div>`;
       }
     });
     if (state.aiBusy) h += `<div class="msg bot"><span class="typing"><i></i><i></i><i></i></span> <span class="sub">analysing… scans take ~30 s</span></div>`;
-    h += `</div><div class="composer"><form id="aiForm"><input id="aiInput" placeholder="Ask about matches, slips, codes…" autocomplete="off" ${state.aiBusy ? "disabled" : ""}>
+    if (state.aiCtx) h += `<div class="rules" style="margin:8px 2px">✏️ Editing: <b>${esc(state.aiCtx.label)}</b> · try “change the first selection”, “make it safer” <button class="btn small secondary" style="width:auto;margin:0 0 0 6px;padding:0 10px" data-act="aictxclear">✕</button></div>`;
+    h += `</div><div class="composer"><form id="aiForm"><input id="aiInput" placeholder="${state.aiCtx ? "What should I change on this slip?" : "Ask about matches, slips, codes…"}" autocomplete="off" ${state.aiBusy ? "disabled" : ""}>
       <button type="submit" aria-label="Send" ${state.aiBusy ? "disabled" : ""}><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></form></div>`;
     $view.innerHTML = h;
     document.getElementById("aiForm").addEventListener("submit", (ev) => { ev.preventDefault(); const v = document.getElementById("aiInput").value.trim(); if (v) askAI(v); });
@@ -630,8 +636,12 @@
     if (state.aiBusy) return;
     state.chat.push({ role: "me", text }); state.aiBusy = true; hap("light"); renderAI();
     try {
-      const r = await api("/api/ai", { message: text });
-      state.chat.push({ role: "bot", text: r.reply, slip: r.slip && r.slip.legs ? r.slip : null, code: r.code, tools: r.tools });
+      const body = { message: text }; if (state.aiCtx) body.context = state.aiCtx;
+      const r = await api("/api/ai", body);
+      const ed = r.edit || null;
+      const eslip = ed && ed.ok && ed.slip && ed.slip.legs ? { ...ed.slip, slip_id: ed.sid } : null;
+      state.chat.push({ role: "bot", text: r.reply, slip: eslip || (r.slip && r.slip.legs ? r.slip : null), code: r.code, tools: r.tools, edit: ed });
+      if (ed && ed.ok) state.aiCtx = ed.section === "rollover_preview" ? { kind: "preview", token: ed.token, slip_id: ed.slip_id, label: `Rollover day ${ed.day || ""} preview` } : { kind: ed.section === "scan" ? "scan" : "ai", sid: ed.sid, label: "Edited slip" };
       hapN("success");
     } catch (e) { state.chat.push({ role: "bot", text: "⚠ " + e.message }); hapN("error"); }
     state.aiBusy = false;
@@ -892,7 +902,7 @@
         h += `<div class="section"><span class="label">Day ${dd.rollover_day} slip</span>${statusPill(ds.status)}</div>
           <div class="card"><div class="hhead"><div class="grow">${dd.code ? `<button class="codechip" data-act="copytext" data-t="${esc(dd.code)}">${esc(dd.code)}</button>` : `<button class="btn small" style="margin:0;width:auto;padding:0 14px" data-act="robook" data-id="${esc(ds.id)}">Book code</button>`}</div><div class="hright"><div class="num hbig">${f2(dd.total_odds)}</div><span class="sub">est ${pct(dd.est_prob, 1)}</span></div></div>
           <div class="hlegs">${(dd.legs || []).map(histLeg).join("")}</div>
-          ${ds.can_refresh ? `<div class="btnrow"><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="0" ${state.roPicking ? "disabled" : ""}>${state.roPicking ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="1" ${state.roPicking ? "disabled" : ""}>🔀 Different picks</button></div><div class="sub" style="text-align:center;margin-top:6px">Same rules · only before the first kick-off${dd.code ? " · a new code only after you confirm" : ""}</div>` : ""}</div>`;
+          ${ds.can_refresh ? `<div class="btnrow"><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="0" ${state.roPicking ? "disabled" : ""}>${state.roPicking ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="1" ${state.roPicking ? "disabled" : ""}>🔀 Different picks</button></div><button class="btn ghost" data-act="aiedit" data-kind="rollover" data-id="${esc(ds.id)}" data-day="${esc(dd.rollover_day)}">✏️ Edit with AI</button><div class="sub" style="text-align:center;margin-top:6px">Same rules · only before the first kick-off${dd.code ? " · a new code only after you confirm" : ""}</div>` : ""}</div>`;
       }
       h += ticketsHtml(state.ro.tickets || [], d);
       const notes = (d.log || []).filter((x) => x.status === "no_slip" || x.status === "skipped").slice(-3);
@@ -992,6 +1002,9 @@
     else if (a === "mback") goBack();
     else if (a === "addpred") addPred(t.dataset.m, t.dataset.o);
     else if (a === "suggest") askAI(t.textContent);
+    else if (a === "aiedit") { state.aiCtx = t.dataset.kind === "rollover" ? { kind: "rollover", slip_id: t.dataset.id, label: `Rollover day ${t.dataset.day || ""} slip` } : { kind: "scan", sid: t.dataset.sid, label: "Scanner slip" }; setTab("ai"); }
+    else if (a === "aictxclear") { state.aiCtx = null; renderAI(); }
+    else if (a === "aikeep") { toast("Kept your current slip"); }
     else if (a === "histrefresh") { state.hist = null; state.histFresh = 0; store.set("hist", null); renderHistory(); }
     else if (a === "histfilter") { state.histFilter = t.dataset.f; hapSel(); renderHistory(); }
     else if (a === "histtoggle") { state.histOpen[t.dataset.id] = !state.histOpen[t.dataset.id]; if (t.dataset.ro) renderRollover(); else renderHistory(); }

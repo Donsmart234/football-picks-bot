@@ -7,6 +7,43 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-02, later): reply to a slip to edit it (AI slip edits in the same section)
+**Reply-context awareness** (`editflow.py`). Every bot message that shows a slip (rollover day push, rollover refresh
+preview, edited preview, new-code message, `/scan` result and its refreshes, AI slip, analyzer result) stores a *slip
+reference* under (chat, message id): section, plan / day / record id / preview token / slip id, legs and rules: in memory,
+SQLite (`slip_refs`) and Supabase (`fra_records` kind `msgref`, pruned after 3 days) so replies resolve after a redeploy.
+Without a stored ref the reply is resolved from the replied message's buttons (`RC|token`, `RF|slip`, `SR|sid`, `SB|sid`,
+`AZR|aid`, `HB|slip`) and last from its header text (rollover messages → the plan's current day). A message that is *not*
+a reply but names a leg ("change the first selection") edits the last slip shown in the chat (3 h).
+
+**Slip edits** (`slipedit.py`, pure): replace leg N (by number, "first/second/last", or team name), remove, add, change the
+market on a leg ("change leg 3 to over 1.5", "Sassuolo to double chance"), make it safer (weakest leg → stronger pick),
+rebuild ("different picks"). Casual / Nigerian English understood ("comot the second one", "abeg make e safer", "this
+Newcastle game no go enter"). Replacements obey the section's rules: **rollover** = target window 0.97–1.20×, top leagues,
+stats-confirmed, every leg ≥80% calibrated, no unders unless the plan allows them, not kicking off within 5 min, no
+duplicate matches (1 replacement leg, else 2); **scan** = the tier + the user's constraints, total near the target;
+**analyzer / history** = top leagues, est ≥75%, no unders unless the slip had them, total within 0.85–1.25× of the current.
+Impossible → a plain "No qualifying replacement … Your slip is unchanged." and the slip stays.
+
+**Same section, nothing booked without confirm.** A rollover edit comes back as "🔄 New picks for today (preview)" for
+that plan/day with **✅ Confirm: book new code** / **Keep current slip** (`tracker.edit_preview` → the existing `RC|token`
+→ `refresh_confirm`: new code, old slip `replaced`, not a loss); a scan edit as a scan result with Book / Refresh /
+Different buttons (not saved); analyzer / history edits as an edited slip with a Book button. Each edited message gets
+its own ref, so "now change the last one" chains. If a confirm token expired (redeploy, >15 min) it's rebuilt from the
+message's stored ref (≤1 h old).
+
+**AI.** With a reply context Gemini gets the slip (section, rules, numbered legs) and only `edit_slip`, `predict_match`,
+`team_stats` (no scan / booking tools, so it can't wander into an unrelated slip). If Gemini fails, times out (75 s) or
+doesn't edit, a rule-based parse makes the edit; never a generic slip. **Cause of "I couldn't finish that
+analysis"**: the reply reached the AI with no slip context, Gemini ran `scan_markets` (generic slip) and then returned no
+text; the old code didn't log `finishReason`, so the exact reason isn't in the logs, but the likely one is Gemini 3
+counting its thinking against `maxOutputTokens` (2048) after the big tool result (MAX_TOKENS, empty), with
+MALFORMED_FUNCTION_CALL / running out of rounds ending the same way → fallback line + the unrelated slip's footer. Now: 8192-token budget, `finishReason`
+logged (`/api/admin/diag` → `gemini_last_turn`), one tool-free "answer now" round, then a plain summary of the slip.
+Mini App: **✏️ Edit with AI** on the rollover day slip and the Scanner slip; the AI tab shows "Editing: …" and sends it as
+`context` (`POST /api/ai {"message", "context": {"kind": "rollover", "slip_id"} | {"kind": "scan", "sid"} | …}` → `edit`
+with legs + Confirm for rollover). Tests: `tests/test_slip_edit.py` (offline).
+
 ## What's new (2026-11-02): rollover tickets, refresh picks, early "Entered" settlement
 **Rollover tickets.** Every rollover day's slip is a `slip` record in `fra_records` (`data.rollover_id` = plan id,
 `rollover_day`, legs, odds, code if booked, est.), and the plan's `log` keeps per day: status, `stake`, `expected_return`,

@@ -255,7 +255,7 @@ def test_ai():
         {"candidates": [{"content": {"role": "model", "parts": [{"text": "Here is your safe slip (estimates)."}]}}]},
     ])
 
-    async def fake_generate(contents):
+    async def fake_generate(contents, **kw):
         return next(calls)
     an._generate = fake_generate
     res = asyncio.run(an.ask(1, "give me sure 5 odds without under selections"))

@@ -637,6 +637,38 @@ class Scanner:
                 "generated": datetime.fromtimestamp(pool.created, timezone.utc).isoformat(),
                 "disclaimer": "Estimates from prices + team stats, not guarantees. 18+."}
 
+    async def edit_candidates(self, mode: str, day: str = "today", min_p: float = ROLLOVER_MIN_P,
+                              allow_unders: bool = False, tier: str | None = None, c: Constraints | None = None,
+                              fresh: bool = False) -> list[dict]:
+        """Every leg that may replace / join a slip of a section (slip edits, slipedit.py), as leg dicts.
+        rollover: same per-leg rules as rollover_slip (top leagues, stats-confirmed, est >= min_p, odds >= 1.12, no
+        unders unless allowed, not kicking off within 5 min). scan: the tier + the user's constraints (allowed()).
+        custom: top leagues, not dropped by the stats check, est >= min_p."""
+        soon = datetime.now(timezone.utc) + timedelta(minutes=5)
+        out: list[Leg] = []
+        if mode == "rollover":
+            rc = Constraints(**{**(c.to_dict() if c else {})}) if c else Constraints()
+            if not allow_unders and "under" not in rc.exclude_markets:
+                rc.exclude_markets.append("under")
+            pool = await self.pool(day, fresh=fresh)
+            allowed = [e for e in pool.events if rollover_allowed(e)]
+            await self.ensure_stats(pool, allowed)
+            for e in allowed:
+                out += [l for l in pool.legs.get(e.event_id) or [] if l.verdict == "confirmed" and l.est >= min_p
+                        and l.odds >= ROLLOVER_MIN_ODDS and rc.leg_ok(l, min_p) and not_started(l, soon)]
+        elif mode == "scan":
+            t = TIER_ALIASES.get((tier or "safe").lower(), "safe")
+            cc = c if c is not None and not c.empty() else None
+            pool = await self.pool(day, rules=cc, fresh=fresh)
+            for legs in pool.legs.values():
+                out += self.allowed(legs, t, cc)
+        else:
+            pool = await self.pool(day, fresh=fresh)
+            for legs in pool.legs.values():
+                out += [l for l in legs if l.verdict != "dropped" and l.est >= min_p and 1.04 <= l.odds <= 10
+                        and not_started(l, soon) and (allow_unders or "under" not in l.tags)]
+        return [l.to_json() for l in out]
+
     def event_report(self, pool: Pool | None, legs: list[Leg], top: int = 12) -> list[dict]:
         ok = sorted([l for l in legs if l.odds >= 1.15], key=lambda l: -l.conf)
         return [l.to_json() for l in ok[:top]]

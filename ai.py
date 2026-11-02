@@ -147,6 +147,39 @@ TOOLS = [{"functionDeclarations": [
 ]}]
 
 
+EDIT_RULES = """
+
+REPLY CONTEXT: the user is replying to a slip the bot showed (given above their message, with its section, rules and
+numbered legs). Treat the message as an edit of THAT slip unless it is plainly just a question about it.
+- Call edit_slip: action replace (change/swap a leg), remove, add, change_market (other market on the same match),
+  safer (stronger pick; with no leg = the weakest leg), rebuild (whole new set of picks). leg = the 1-based number in the
+  list ("first" = 1, "last" = the highest number); or pass team when the user names a team. market = the market words
+  they asked for ("over 1.5", "double chance").
+- Understand casual and Nigerian English: "comot", "remove am", "change am", "abeg", "e no sure", "this one no go enter".
+- The section's rules are enforced by the tool (rollover: target odds, top leagues, every leg >=80%, no unders unless the
+  plan allows them, no started matches, no duplicate matches). If the tool says it's impossible, tell the user plainly
+  and that the current slip stays. Never invent legs, never scan for an unrelated slip, never book: the bot shows the
+  edited slip under the user's message with its own confirm / book buttons.
+- If they ask for two changes, call edit_slip once per change (each call edits the result of the previous one).
+- After the tool, reply in at most two short lines (what changed, new total). Do not list the legs again."""
+
+EDIT_TOOLS = [{"functionDeclarations": [
+    {"name": "edit_slip",
+     "description": ("Edit the slip the user is replying to, under that slip's own rules, and return the edited slip "
+                     "(not booked). Fails plainly when no qualifying pick exists."),
+     "parameters": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["replace", "remove", "add", "change_market", "safer", "rebuild"]},
+         "leg": {"type": "integer", "description": "1-based leg number in the slip as listed"},
+         "team": {"type": "string", "description": "team name the user used to point at a leg"},
+         "market": {"type": "string", "description": "target market for change_market, e.g. 'over 1.5', 'double chance'"}},
+         "required": ["action"]}},
+    {"name": "predict_match", "description": "Full analysis of one match (probabilities, form, H2H).",
+     "parameters": {"type": "object", "properties": {"match": {"type": "string"}}, "required": ["match"]}},
+    {"name": "team_stats", "description": "Recent form, home/away records, goals and H2H for a match.",
+     "parameters": {"type": "object", "properties": {"match": {"type": "string"}}, "required": ["match"]}},
+]}]
+
+
 def _pct(x) -> str:
     return f"{x * 100:.0f}%" if isinstance(x, (int, float)) else "n/a"
 
@@ -220,13 +253,13 @@ class Analyst:
                 log.warning("Gemini models list failed: %s", exc.__class__.__name__)
         return MODEL_PREFS
 
-    async def _generate(self, contents: list[dict], system: str | None = None, tools: bool = True,
-                        max_tokens: int = 2048) -> dict:
+    async def _generate(self, contents: list[dict], system: str | None = None, tools=True,
+                        max_tokens: int = 8192) -> dict:
         body = {"systemInstruction": {"parts": [{"text": system or SYSTEM.format(
                     today=datetime.now(TZ).strftime("%A %d %B %Y, %H:%M"))}]},
                 "contents": contents, "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
         if tools:
-            body["tools"] = TOOLS
+            body["tools"] = TOOLS if tools is True else tools
         last = None
         errs = []
         for model in await self._models():
@@ -268,16 +301,20 @@ class Analyst:
         self.last_errors = errs
         raise RuntimeError(f"Gemini unavailable ({last})")
 
-    async def ask(self, chat_id: int, text: str) -> dict:
-        """Returns {reply, slip, code, tools}."""
-        if not self.enabled:
-            return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
-        contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]
-        turn = {"slip": None, "code": None, "tools": [], "hard": parse_text(text), "analysis": None}
+    async def _loop(self, contents: list[dict], turn: dict, tools=True, system: str | None = None) -> str:
+        """Gemini function-calling loop. Returns the final text ('' only when every recovery failed).
+        Why replies came back empty before (2026-11-02, "I couldn't finish that analysis"): Gemini 3 counts its
+        thinking against maxOutputTokens (was 2048), so after a large scan result it could end with
+        finishReason MAX_TOKENS and no text; MALFORMED_FUNCTION_CALL / empty candidates and running out of rounds
+        ended the same way. Now: 8192-token budget, finishReason logged, and one tool-free "answer now" round."""
+        dbg = {"rounds": 0, "finish": [], "tools": turn["tools"]}
+        self.last_turn = dbg
         reply = ""
         for _ in range(MAX_ROUNDS):
-            data = await self._generate(contents)
+            dbg["rounds"] += 1
+            data = await self._generate(contents, system=system, tools=tools)
             cand = (data.get("candidates") or [{}])[0]
+            dbg["finish"].append(cand.get("finishReason") or (data.get("promptFeedback") or {}).get("blockReason") or "?")
             content = cand.get("content") or {"role": "model", "parts": []}
             parts = content.get("parts") or []
             calls = [p["functionCall"] for p in parts if "functionCall" in p]
@@ -297,7 +334,52 @@ class Analyst:
                 responses.append({"functionResponse": {"name": name, "response": {"result": result}}})
             contents.append({"role": "user", "parts": responses})
         if not reply:
-            reply = "I couldn't finish that analysis. Try a simpler question."
+            # recovery: one more round without tools, asking for the answer from what is already there
+            dbg["recovery"] = True
+            log.warning("Gemini gave no text (finish=%s, tools=%s): asking for the final answer", dbg["finish"],
+                        turn["tools"])
+            try:
+                data = await self._generate(contents + [{"role": "user", "parts": [{"text": (
+                    "Write your final answer to my last message now, briefly, using only the tool results above. "
+                    "No more tool calls.")}]}], system=system, tools=None)
+                cand = (data.get("candidates") or [{}])[0]
+                dbg["finish"].append(cand.get("finishReason") or "?")
+                parts = (cand.get("content") or {}).get("parts") or []
+                reply = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+            except Exception as exc:
+                log.warning("Gemini recovery round failed: %s", exc)
+        dbg["empty"] = not reply
+        return reply
+
+    @staticmethod
+    def _slip_summary(sl: dict) -> str:
+        """Plain reply built from a scanned slip when the model wrote nothing."""
+        if not sl or not sl.get("legs"):
+            return ""
+        lines = [f"Here's the {sl.get('label', 'slip')} slip I built:"]
+        for l in sl["legs"]:
+            lines.append(f"• {l.get('kickoff_local', '')[4:]} · {l.get('match', '')} · {l.get('pick', '')} "
+                         f"@{float(l.get('odds') or 0):.2f} ({_pct(l.get('est'))})")
+        lines.append(f"Total odds **{sl.get('total_odds', 0):.2f}** · est. hit chance {_pct(sl.get('est_prob'))}")
+        if sl.get("note"):
+            lines.append(sl["note"])
+        return "\n".join(lines)
+
+    async def ask(self, chat_id: int, text: str, context: dict | None = None) -> dict:
+        """Returns {reply, slip, code, tools, edit}. context = the slip the user is replying to (editflow.py):
+        the message is then treated as an edit of THAT slip and answered inside its section."""
+        if context and context.get("legs"):
+            return await self._ask_edit(chat_id, text, context)
+        if not self.enabled:
+            return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
+        contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]
+        turn = {"slip": None, "code": None, "tools": [], "hard": parse_text(text), "analysis": None}
+        reply = await self._loop(contents, turn)
+        if not reply:
+            reply = self._slip_summary(turn["slip"]) if turn.get("slip") and turn["slip"].get("tier") != "audit" else ""
+        if not reply:
+            reply = ("I didn't get an answer back from the AI model this time, so nothing was built or booked. "
+                     "Send it again, or use /scan safe 5 for a slip right away.")
         reply += self._rules_footer(turn)
         if turn["code"] and turn["code"] not in reply:
             reply += f"\n\nBooking code: `{turn['code']}`"
@@ -308,6 +390,42 @@ class Analyst:
         an = turn.get("analysis")
         return {"reply": reply, "slip": turn["slip"], "code": turn["code"], "tools": turn["tools"],
                 "model": self.model, "analysis": an}
+
+    async def _ask_edit(self, chat_id: int, text: str, ctx: dict) -> dict:
+        """Edit of the slip the user replied to. Gemini gets the slip and the edit_slip tool (no scan / booking
+        tools); if it fails or doesn't edit, a rule-based parse of the message does the edit. Never falls back to
+        an unrelated new slip, never books."""
+        from slipedit import parse_edit
+        ed = getattr(self.s, "editor", None)
+        op = parse_edit(text, ctx["legs"])
+        turn = {"slip": None, "code": None, "tools": [], "hard": None, "analysis": None, "edit": None,
+                "ctx": dict(ctx), "edit_ops": 0}
+        reply = ""
+        sec_label = {"rollover_preview": "rollover preview", "rollover_day": "rollover day"}.get(ctx.get("section"),
+                                                                                                ctx.get("section"))
+        if self.enabled and ed is not None:
+            ctx_txt = ed.context_text(ctx)
+            contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": (
+                f"[I'm replying to this slip]\n{ctx_txt}\n\n[My message]\n{text}")}]}]
+            system = SYSTEM.format(today=datetime.now(TZ).strftime("%A %d %B %Y, %H:%M")) + EDIT_RULES
+            try:
+                reply = await asyncio.wait_for(self._loop(contents, turn, tools=EDIT_TOOLS, system=system), timeout=75)
+            except Exception as exc:
+                log.warning("AI edit loop failed (%s): using the rule-based edit", exc.__class__.__name__)
+                reply = ""
+        if turn["edit"] is None and op is not None and ed is not None:
+            turn["tools"].append("rule_edit")
+            turn["edit"] = await ed.run(ctx, op)
+        out = turn["edit"]
+        if out is not None:
+            reply = (f"✏️ {out['change']}" if out.get("ok") else f"⚠️ {out['note']}")
+        elif not reply:
+            reply = ("I couldn't tell which change you want on this slip. Try \"change the 2nd selection\", "
+                     "\"remove Newcastle\", \"change leg 3 to over 1.5\" or \"make it safer\".")
+        self._save(chat_id, "user", f"[reply to {sec_label} slip] {text}")
+        self._save(chat_id, "model", reply)
+        return {"reply": reply, "slip": None, "code": None, "tools": turn["tools"], "model": self.model,
+                "analysis": None, "edit": out, "context_section": ctx.get("section")}
 
     async def narrate(self, facts: dict) -> str:
         """Short plain-English take on an analyzed slip, grounded only in the numbers given (no tools, no web)."""
@@ -375,6 +493,47 @@ class Analyst:
                 problems.append(f"{leg['match']} {leg['pick']} est {leg['est']:.0%}")
             out.append(leg)
         return out, problems
+
+    async def _tool_edit(self, a: dict, turn: dict) -> dict:
+        from slipedit import _team_index, parse_market
+        ed = getattr(self.s, "editor", None)
+        ctx = turn.get("ctx")
+        if ed is None or not ctx:
+            return {"error": "No slip in this conversation to edit."}
+        legs = ctx["legs"]
+        action = str(a.get("action") or "replace")
+        idx = None
+        if a.get("leg") not in (None, ""):
+            try:
+                idx = int(a["leg"]) - 1
+            except (TypeError, ValueError):
+                idx = None
+        if idx is None and a.get("team"):
+            idx = _team_index(str(a["team"]), legs)
+            if idx is None:
+                return {"error": f"No leg on this slip involves {a['team']}."}
+        if idx is not None and not 0 <= idx < len(legs):
+            return {"error": f"The slip has {len(legs)} legs; there is no leg {idx + 1}."}
+        market = parse_market("to " + str(a["market"])) if a.get("market") else None
+        op = {"action": action, "index": idx, "market": market, "same_match": action == "change_market"}
+        if action == "remove" and idx is None:
+            op["weakest"] = True
+        turn["edit_ops"] = turn.get("edit_ops", 0) + 1
+        if turn["edit_ops"] > 4:
+            return {"error": "Too many edits in one message; show the user what you have."}
+        out = await ed.run(ctx, op)
+        prev = turn.get("edit")
+        if out.get("ok") or not (prev and prev.get("ok")):
+            turn["edit"] = out
+        if out.get("ok"):          # later calls in this turn edit the result of this one
+            nref = ed.outcome_ref(out, ctx) or {}
+            turn["ctx"] = {**ctx, **nref, "legs": out["legs"]}
+            if out.get("section") == "rollover_preview":
+                turn["ctx"]["section"] = "rollover_preview"
+        return {"ok": out.get("ok"), "change": out.get("change"), "note": out.get("note"),
+                "total_odds": out.get("total_odds"), "est_hit_chance": _pct(out.get("est_prob")),
+                "legs": [f"{l.get('home', '')} v {l.get('away', '')}: {l.get('pick', '')} @{l.get('odds')}"
+                         for l in out.get("legs") or []]}
 
     async def run_tool(self, name: str, a: dict, turn: dict) -> dict:
         if name == "list_matches":
@@ -529,6 +688,8 @@ class Analyst:
             if res.get("ok"):
                 turn["analysis"] = res
             return Analyzer.compact(res)
+        if name == "edit_slip":
+            return await self._tool_edit(a, turn)
         if name == "recent_history":
             tr = getattr(self.s, "tracker", None)
             if not tr:
