@@ -312,7 +312,9 @@ class Analyst:
         reply = ""
         for _ in range(MAX_ROUNDS):
             dbg["rounds"] += 1
+            t0 = time.time()
             data = await self._generate(contents, system=system, tools=tools)
+            dbg.setdefault("gemini_s", []).append(round(time.time() - t0, 1))
             cand = (data.get("candidates") or [{}])[0]
             dbg["finish"].append(cand.get("finishReason") or (data.get("promptFeedback") or {}).get("blockReason") or "?")
             content = cand.get("content") or {"role": "model", "parts": []}
@@ -326,11 +328,13 @@ class Analyst:
             for c in calls:
                 name, args = c.get("name", ""), c.get("args") or {}
                 turn["tools"].append(name)
+                t0 = time.time()
                 try:
                     result = await self.run_tool(name, args, turn)
                 except Exception as exc:
                     log.warning("tool %s failed: %s", name, exc)
                     result = {"error": f"{name} failed: {exc.__class__.__name__}: {str(exc)[:160]}"}
+                dbg.setdefault("tool_s", []).append(f"{name} {time.time() - t0:.1f}")
                 responses.append({"functionResponse": {"name": name, "response": {"result": result}}})
             contents.append({"role": "user", "parts": responses})
         if not reply:

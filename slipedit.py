@@ -228,15 +228,18 @@ def _pick_best(singles: list[dict], need_mid: float) -> dict:
     return max(singles, key=lambda c: (round(float(c["est"]), 3), -abs(math.log(float(c["odds"]) / need_mid))))
 
 
-def _fill(kept: list[dict], pool: list[dict], rules: dict, max_new: int = 2) -> list[dict] | None:
+def _fill(kept: list[dict], pool: list[dict], rules: dict, max_new: int = 2,
+          better_than: float | None = None) -> list[dict] | None:
     """Best 1 (else 2) new legs from `pool` (distinct matches, not already in `kept`) so the total lands in the
-    window, maximising the combined estimate. None when nothing fits."""
+    window, maximising the combined estimate. better_than: the new leg(s) together must beat this estimate
+    ("make it safer"). None when nothing fits."""
     used = {l.get("event_id") for l in kept}
     pool = [c for c in pool if c.get("event_id") not in used]
     r = total_odds(kept)
     lo, hi = rules["lo"] / r, rules["hi"] / r
     target_mid = (rules.get("target") or math.sqrt(rules["lo"] * rules["hi"])) / r
-    singles = [c for c in pool if lo - 1e-9 <= float(c["odds"]) <= hi + 1e-9]
+    singles = [c for c in pool if lo - 1e-9 <= float(c["odds"]) <= hi + 1e-9
+               and (better_than is None or float(c["est"]) > better_than)]
     if singles:
         return [_pick_best(singles, max(target_mid, 1.01))]
     if max_new < 2 or hi < 1.02:
@@ -251,7 +254,7 @@ def _fill(kept: list[dict], pool: list[dict], rules: dict, max_new: int = 2) -> 
             o = float(a["odds"]) * float(b["odds"])
             if lo - 1e-9 <= o <= hi + 1e-9:
                 p = float(a["est"]) * float(b["est"])
-                if p > best_p:
+                if p > best_p and (better_than is None or p > better_than):
                     best, best_p = [a, b], p
     return best
 
@@ -312,9 +315,8 @@ def apply_edit(legs: list[dict], op: dict, cands: list[dict], rules: dict, now: 
                                f"{win} with {bar}. Your slip is unchanged.", action=action)
         else:
             others = [c for c in pool if c.get("event_id") != old.get("event_id")] if action == "replace" else pool
-            if action == "safer":
-                others = [c for c in others if float(c["est"]) > float(old.get("est") or 0) + 0.005]
-            new = _fill(kept, others, rules)
+            new = _fill(kept, others, rules,
+                        better_than=float(old.get("est") or 0) + 0.005 if action == "safer" else None)
             if not new:
                 if action == "safer":
                     return _result(False, legs, f"Leg {idx + 1} ({leg_short(old)}) is already the strongest pick that "

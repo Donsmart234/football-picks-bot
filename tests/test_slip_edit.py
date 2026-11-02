@@ -110,6 +110,10 @@ def unit_engine():
     # safer: weakest leg (Sassuolo 82%) replaced only by a stronger qualifying pick
     r = slipedit.apply_edit(SLIP, {"action": "safer", "index": None}, cands, RULES)
     assert r["ok"] and r["removed"][0]["home"] == "Sassuolo" and r["added"][0]["est"] > 0.82, r
+    # safer never swaps one leg for two weaker ones (0.86 x 0.86 < 0.82): no single stronger leg fits -> refused
+    pair_only = [L(32, "E", "F", 1.09, 0.86), L(33, "G", "H", 1.08, 0.86)]
+    r = slipedit.apply_edit(SLIP, {"action": "safer", "index": 1}, pair_only, dict(RULES, min_odds=1.05))
+    assert not r["ok"] and "already the strongest" in r["note"], r
     # change market on the same match (hint 'over 1.5')
     same = [L(3, "Lorient", "Brest", 1.12, 0.86, oid="12", spec="total=1.5", pick="Over 1.5", market="Over/Under")]
     r = slipedit.apply_edit(SLIP, slipedit.parse_edit("change leg 3 to over 1.5", SLIP), same + cands, RULES)
