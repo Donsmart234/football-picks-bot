@@ -668,7 +668,8 @@ class MiniApp:
     async def ai(self, request: web.Request) -> web.Response:
         data = await self._json(request)
         msg = str(data.get("message") or "").strip()[:1500]
-        if not msg:
+        img = data.get("image") if isinstance(data.get("image"), dict) else None
+        if not msg and not img:
             return web.json_response({"error": "Ask me something."}, status=400)
         ai = getattr(self.s, "ai", None)
         if not ai or not ai.enabled:
@@ -676,6 +677,8 @@ class MiniApp:
         chat = int(request["tg_user"].get("id") or 0)
         if request["tg_user"].get("admin") and data.get("chat") is not None:
             chat = int(data["chat"])        # diagnostics: keep test turns out of the owner's AI memory
+        if img:
+            return await self._ai_image(chat, msg, img)
         sctx = None
         cx = data.get("context") if isinstance(data.get("context"), dict) else None
         ed = getattr(self.s, "editor", None)
@@ -688,7 +691,8 @@ class MiniApp:
                                "slip_id": str(cx.get("slip_id") or "")},
                    "scan": {"section": "scan", "sid": str(cx.get("sid") or "")},
                    "ai": {"section": "ai", "sid": str(cx.get("sid") or "")},
-                   "history": {"section": "history", "slip_id": str(cx.get("slip_id") or "")}}.get(kind)
+                   "history": {"section": "history", "slip_id": str(cx.get("slip_id") or "")},
+                   "analysis": {"section": "analysis", "aid": str(cx.get("aid") or "")}}.get(kind)
             if ref:
                 try:
                     sctx = await ed.hydrate(ref)
@@ -702,10 +706,69 @@ class MiniApp:
                                      status=502)
         return self._gz(web.json_response(res))
 
+    async def _ai_image(self, chat: int, msg: str, img: dict) -> web.Response:
+        """Image from the Mini App AI tab: {"image": {"data": base64, "mime"}, "message": caption}. Same routing as a
+        Telegram photo (vision.py); nothing booked or saved."""
+        import base64
+        import binascii
+        import vision
+        raw = str(img.get("data") or "")
+        if "," in raw[:80] and raw.startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        if len(raw) > 9_000_000:
+            return web.json_response({"error": "That image is too large (max 5 MB)."}, status=413)
+        try:
+            blob = base64.b64decode(raw, validate=False)
+        except (binascii.Error, ValueError):
+            return web.json_response({"error": "That image couldn't be decoded."}, status=400)
+        try:
+            out = await asyncio.wait_for(vision.handle_image(self.s.ai, chat, blob, str(img.get("mime") or ""), msg),
+                                         timeout=150)
+        except asyncio.TimeoutError:
+            return web.json_response({"error": "Reading that image took too long. Nothing was booked; try again."},
+                                     status=504)
+        except Exception as exc:
+            log.warning("ai image failed: %s", exc, exc_info=True)
+            return web.json_response({"error": "I couldn't process that image right now."}, status=502)
+        sc = out.get("context") or {}
+        if out.get("kind") == "edit" and (out.get("edit") or {}).get("ok"):
+            sc = {}
+        app_ctx = None
+        sec = sc.get("section")
+        if sec == "rollover_preview" and sc.get("token"):
+            app_ctx = {"kind": "preview", "token": sc["token"], "slip_id": sc.get("slip_id"),
+                       "label": f"Rollover day {sc.get('day') or ''} preview"}
+        elif sec in ("rollover_day", "rollover_preview") and sc.get("slip_id"):
+            app_ctx = {"kind": "rollover", "slip_id": sc["slip_id"], "label": f"Rollover day {sc.get('day') or ''} slip"}
+        elif sec in ("scan", "ai") and sc.get("sid"):
+            app_ctx = {"kind": sec, "sid": sc["sid"], "label": "Scanner slip" if sec == "scan" else "AI slip"}
+        elif sec == "history" and sc.get("slip_id"):
+            app_ctx = {"kind": "history", "slip_id": sc["slip_id"], "label": f"Ticket {sc.get('code') or ''}"}
+        elif sec == "analysis" and sc.get("aid"):
+            app_ctx = {"kind": "analysis", "aid": sc["aid"], "label": f"Analyzed {sc.get('code') or 'slip'}"}
+        reply = out.get("reply") or ""
+        if out.get("kind") == "edit" and out.get("edit") is not None and not reply.startswith(("✏️", "⚠️")):
+            reply = reply or ("✏️ " + (out["edit"].get("change") or ""))
+        if "estimate" not in reply.lower() and "guarantee" not in reply.lower() and out.get("kind") in ("analysis",
+                                                                                                           "edit"):
+            reply += "\n\n_Estimates, not guarantees. 18+._"
+        slip = out.get("slip")
+        return self._gz(web.json_response({
+            "reply": reply, "image_kind": out.get("kind"), "read": out.get("read"), "tools": out.get("tools"),
+            "analysis": out.get("analysis"), "edit": out.get("edit"), "context": app_ctx,
+            "slip": slip if slip and slip.get("legs") and slip.get("tier") != "audit" else None, "code": None,
+            "model": getattr(self.s.ai, "model", None)}))
+
     async def ai_reset(self, request: web.Request) -> web.Response:
         ai = getattr(self.s, "ai", None)
         if ai:
-            ai.reset(int(request["tg_user"].get("id") or 0))
+            chat = int(request["tg_user"].get("id") or 0)
+            data = await self._json(request) if request.can_read_body else {}
+            if request["tg_user"].get("admin"):
+                if data.get("chat") is None:
+                    return web.json_response({"error": "admin reset needs an explicit test chat"}, status=400)
+                chat = int(data["chat"])
+            ai.reset(chat)
         return web.json_response({"ok": True})
 
     async def match_markets(self, request: web.Request) -> web.Response:
@@ -756,6 +819,7 @@ class MiniApp:
             out["gemini_model"] = ai.model
             out["gemini_last_errors"] = getattr(ai, "last_errors", None)
             out["gemini_last_turn"] = getattr(ai, "last_turn", None)
+            out["gemini_last_image"] = getattr(ai, "last_image", None)
         tr = getattr(self.s, "tracker", None)
         if tr:
             out["history_backend"] = tr.history.backend

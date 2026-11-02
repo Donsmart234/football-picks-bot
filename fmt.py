@@ -110,6 +110,12 @@ RATING_ICON = {"Strong": "🟢", "OK": "🔵", "Weak": "🟠", "Avoid": "🔴", 
 
 def analysis_leg(l: dict) -> str:
     i = l["idx"] + 1
+    if l.get("unmatched"):
+        io = l.get("image_odds")
+        return (f"{i}. ⚪ <b>{esc(l.get('match') or '?')}</b>\n    {esc(l.get('market') or '')}"
+                + (": " if l.get("market") and l.get("pick") else "") + f"<b>{esc(l.get('pick') or '')}</b>"
+                + (f" @ <code>{io:.2f}</code>" if io else "") + "\n    ⚠️ <i>couldn't match"
+                + (f" ({esc(l['unmatched_why'])})" if l.get("unmatched_why") else "") + ": not counted</i>")
     if l["state"] == "unavailable":
         return f"{i}. ⚪ <i>Selection no longer available on SportyBet ({esc(l['event_id'])})</i>"
     odds = l.get("odds")
@@ -147,13 +153,17 @@ def analysis_head(res: dict) -> str:
     rat = " · ".join(f"{RATING_ICON[k]} {v} {k}" for k, v in r.items() if v)
     approx = (f" <i>({s['approx_legs']} not-rated leg{'s' if s['approx_legs'] > 1 else ''} at the bookmaker's "
               f"de-margined price)</i>" if s["approx_legs"] else "")
-    lines = [f"🔍 <b>BET ANALYZER</b> · <code>{esc(res['code'])}</code>",
+    src = (f"<code>{esc(res['code'])}</code>" if res.get("code") else "📷 from your screenshot")
+    lines = [f"🔍 <b>BET ANALYZER</b> · {src}",
              (f"Grade <b>{g}</b> · " if g else "") + esc(res["verdict"]),
              f"{s['legs']} legs · total odds <b>"
              + (f"{s['total_odds']:.2f}" if s.get("odds_known", True) else "n/a") + f"</b> · est. hit chance <b>{pc(s['chance'])}</b>"
              + approx]
     if rat:
         lines.append(rat)
+    if s.get("unmatched"):
+        lines.append(f"⚠️ {s['unmatched']} leg(s) from the screenshot couldn't be matched to SportyBet: left out of "
+                     "the odds and the chance.")
     if s.get("started"):
         lines.append(f"<i>{s['started']} leg(s) started/finished: shown with their live score or result.</i>")
     return "\n".join(lines)

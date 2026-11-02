@@ -191,6 +191,65 @@ class SlipEditor:
             return None
         return await self.hydrate(ref)
 
+    async def match_screenshot(self, chat_id: int, legs: list[dict], header: str = "", code: str = "") -> dict | None:
+        """The slip a screenshot of one of our own messages shows (vision.py, kind bot_slip), hydrated like a reply
+        to it: the newest slip reference in this chat whose legs cover the teams read from the image, else a booked
+        code read from it (History), else the header text (rollover messages -> the plan's current day)."""
+        from matching import team_score
+        pairs = [(l.get("home") or "", l.get("away") or "") for l in legs or [] if l.get("home") or l.get("away")]
+        cands: dict[tuple, dict] = {}
+        for k, v in self._mem.items():
+            if k[0] == int(chat_id) and time.time() - v.get("ts", 0) < REF_TTL:
+                cands[k] = v
+        try:
+            rows = self.s.storage._exec("SELECT message_id, data FROM slip_refs WHERE chat_id=? AND ts>? ORDER BY ts "
+                                        "DESC LIMIT 80", (int(chat_id), time.time() - REF_TTL))
+            for mid, data in rows:
+                key = (int(chat_id), int(mid))
+                if key not in cands:
+                    try:
+                        cands[key] = json.loads(data)
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+
+        def covered(ref: dict) -> int:
+            n = 0
+            for h, a in pairs:
+                for l in ref.get("legs") or []:
+                    sh = team_score(h, l.get("home", "")) if h else 100.0
+                    sa = team_score(a, l.get("away", "")) if a else 100.0
+                    if min(sh, sa) >= 80 and (h or a):
+                        n += 1
+                        break
+            return n
+
+        best = None
+        if pairs:
+            for key, ref in cands.items():
+                n = covered(ref)
+                if n == 0 or n < max(1, round(0.6 * len(pairs))):
+                    continue
+                exact = len(ref.get("legs") or []) == len(pairs)
+                score = (n, exact, ref.get("ts", 0))
+                if best is None or score > best[0]:
+                    best = (score, ref)
+        ref = dict(best[1]) if best else None
+        if ref is None and code:
+            tr = getattr(self.s, "tracker", None)
+            try:
+                rec = await tr.history.find_code(code) if tr else None
+            except Exception:
+                rec = None
+            if rec and rec.get("kind", "slip") == "slip":
+                ref = {"section": "history", "slip_id": rec["id"]}
+        if ref is None:
+            ref = self.from_text(header)
+        if ref is None:
+            return None
+        return await self.hydrate(ref)
+
     async def hydrate(self, ref: dict) -> dict | None:
         """Fill legs / rules from the live objects (preview, history record, scan slip) when they still exist."""
         ctx = dict(ref)

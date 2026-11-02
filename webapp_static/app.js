@@ -613,34 +613,57 @@
     let h = `<div style="margin:4px 2px 12px"><div class="label">Gemini · function calling</div><h1>AI analyst</h1><div class="sub">Asks the scanner, stats and booking tools for real numbers</div></div><div class="chat" id="chat">`;
     if (!state.chat.length) h += `<div class="msg bot">Hi! Ask me to analyse a match, scan today's markets or build a booking code.</div><div class="suggest">${SUGGEST.map((s) => `<button data-act="suggest">${esc(s)}</button>`).join("")}</div>`;
     state.chat.forEach((m, i) => {
-      if (m.role === "me") h += `<div class="msg me">${esc(m.text)}</div>`;
+      if (m.role === "me") h += `<div class="msg me">${m.img ? `<img class="msgimg" src="${m.img}" alt="">` : ""}${esc(m.text)}</div>`;
       else {
         h += `<div class="msg bot">${mdLite(m.text)}${m.tools && m.tools.length ? `<span class="tools">⚙ ${esc([...new Set(m.tools)].join(" · "))}</span>` : ""}</div>`;
         if (m.edit && m.edit.ok) {
           h += `<div class="card" style="max-width:88%;margin:4px 0 8px">${(m.edit.legs || []).map((l, j) => `<div class="sub" style="margin:3px 0">${j + 1}. <b>${esc((l.home || "") + " v " + (l.away || ""))}</b> · ${esc(l.pick || "")} @ ${f2(l.odds)}${l.est != null ? " · est " + pct(l.est) : ""}</div>`).join("")}<div style="margin-top:6px"><b>${f2(m.edit.total_odds)}</b> total · est ${pct(m.edit.est_prob, 1)}</div></div>`;
           if (m.edit.section === "rollover_preview") h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="roconfirm" data-t="${esc(m.edit.token)}">✅ Confirm: book new code</button><button class="btn small secondary" data-act="aikeep">Keep current slip</button></div>`;
         }
+        if (m.analysis && m.analysis.summary) { const a = m.analysis, s2 = a.summary;
+          h += `<div class="card" style="max-width:88%;margin:4px 0 8px"><div class="sub">${a.code ? "Code " + esc(a.code) : "📷 From your screenshot"} · ${s2.legs} legs${s2.unmatched ? " · " + s2.unmatched + " couldn't match" : ""}</div><div style="margin:4px 0"><b>Grade ${esc(s2.grade || "–")}</b> · ${esc(a.verdict || "")}</div><div class="sub">Total odds ${s2.odds_known === false ? "n/a" : f2(s2.total_odds)} · est. hit chance ${pc(s2.chance)}</div></div><div class="btnrow" style="max-width:88%"><button class="btn small" data-act="aiaz" data-k="${i}">Open full analysis</button></div>`; }
         if (m.slip && m.slip.legs && m.slip.legs.length && !m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="bookslip" data-k="chat:${i}">Book this slip</button><button class="btn small secondary" data-act="slipall" data-k="chat:${i}">Add to slip</button></div>`;
         if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="openhub">Open SportyBet</button></div>`;
       }
     });
     if (state.aiBusy) h += `<div class="msg bot"><span class="typing"><i></i><i></i><i></i></span> <span class="sub">analysing… scans take ~30 s</span></div>`;
     if (state.aiCtx) h += `<div class="rules" style="margin:8px 2px">✏️ Editing: <b>${esc(state.aiCtx.label)}</b> · try “change the first selection”, “make it safer” <button class="btn small secondary" style="width:auto;margin:0 0 0 6px;padding:0 10px" data-act="aictxclear">✕</button></div>`;
-    h += `</div><div class="composer"><form id="aiForm"><input id="aiInput" placeholder="${state.aiCtx ? "What should I change on this slip?" : "Ask about matches, slips, codes…"}" autocomplete="off" ${state.aiBusy ? "disabled" : ""}>
+    if (state.aiImg) h += `<div class="rules imgchip" style="margin:8px 2px"><img src="${state.aiImg.data}" alt=""> 📷 Image attached · add a caption (optional) and send <button class="btn small secondary" style="width:auto;margin:0 0 0 6px;padding:0 10px" data-act="aiimgclear">✕</button></div>`;
+    h += `</div><div class="composer"><form id="aiForm"><button type="button" class="attach" data-act="aiattach" aria-label="Attach image" ${state.aiBusy ? "disabled" : ""}><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button><input type="file" id="aiFile" accept="image/*" hidden><input id="aiInput" placeholder="${state.aiImg ? "What should I do with this image?" : state.aiCtx ? "What should I change on this slip?" : "Ask about matches, slips, codes…"}" autocomplete="off" ${state.aiBusy ? "disabled" : ""}>
       <button type="submit" aria-label="Send" ${state.aiBusy ? "disabled" : ""}><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></form></div>`;
     $view.innerHTML = h;
-    document.getElementById("aiForm").addEventListener("submit", (ev) => { ev.preventDefault(); const v = document.getElementById("aiInput").value.trim(); if (v) askAI(v); });
+    document.getElementById("aiForm").addEventListener("submit", (ev) => { ev.preventDefault(); const v = document.getElementById("aiInput").value.trim(); if (v || state.aiImg) askAI(v); });
+    document.getElementById("aiFile").addEventListener("change", (ev) => { const f = ev.target.files && ev.target.files[0]; ev.target.value = ""; if (f) attachImage(f); });
     window.scrollTo(0, document.body.scrollHeight);
+  }
+  // image attach: camera or gallery, downscaled on the phone (longest side 1600 px, JPEG) before upload
+  function attachImage(file) {
+    if (!/^image\//.test(file.type || "image/")) { toast("That's not an image"); return; }
+    if (file.size > 25 * 1024 * 1024) { toast("Image too large"); return; }
+    const url = URL.createObjectURL(file), im = new Image();
+    im.onload = () => {
+      const k = Math.min(1, 1600 / Math.max(im.naturalWidth, im.naturalHeight));
+      const c = document.createElement("canvas"); c.width = Math.round(im.naturalWidth * k); c.height = Math.round(im.naturalHeight * k);
+      c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      let q = 0.85, d = c.toDataURL("image/jpeg", q);
+      while (d.length > 6.5e6 && q > 0.4) { q -= 0.15; d = c.toDataURL("image/jpeg", q); }
+      state.aiImg = { data: d }; hap("light"); renderAI(); const inp = document.getElementById("aiInput"); if (inp) inp.focus();
+    };
+    im.onerror = () => { URL.revokeObjectURL(url); toast("Couldn't open that image"); };
+    im.src = url;
   }
   async function askAI(text) {
     if (state.aiBusy) return;
-    state.chat.push({ role: "me", text }); state.aiBusy = true; hap("light"); renderAI();
+    const img = state.aiImg; state.aiImg = null;
+    state.chat.push({ role: "me", text: text || (img ? "" : ""), img: img ? img.data : null }); state.aiBusy = true; hap("light"); renderAI();
     try {
-      const body = { message: text }; if (state.aiCtx) body.context = state.aiCtx;
+      const body = { message: text }; if (state.aiCtx && !img) body.context = state.aiCtx;
+      if (img) body.image = { data: img.data.split(",")[1], mime: "image/jpeg" };
       const r = await api("/api/ai", body);
       const ed = r.edit || null;
       const eslip = ed && ed.ok && ed.slip && ed.slip.legs ? { ...ed.slip, slip_id: ed.sid } : null;
-      state.chat.push({ role: "bot", text: r.reply, slip: eslip || (r.slip && r.slip.legs ? r.slip : null), code: r.code, tools: r.tools, edit: ed });
+      state.chat.push({ role: "bot", text: r.reply, slip: eslip || (r.slip && r.slip.legs ? r.slip : null), code: r.code, tools: r.tools, edit: ed, analysis: r.analysis || null });
+      if (r.context) state.aiCtx = r.context;
       if (ed && ed.ok) state.aiCtx = ed.section === "rollover_preview" ? { kind: "preview", token: ed.token, slip_id: ed.slip_id, label: `Rollover day ${ed.day || ""} preview` } : { kind: ed.section === "scan" ? "scan" : "ai", sid: ed.sid, label: "Edited slip" };
       hapN("success");
     } catch (e) { state.chat.push({ role: "bot", text: "⚠ " + e.message }); hapN("error"); }
@@ -656,6 +679,7 @@
     add(c) { const a = this.get().filter((x) => x !== c); a.unshift(c); try { localStorage.setItem("fra_az_recent", JSON.stringify(a.slice(0, 6))); } catch (e) {} } };
   function azLeg(l) {
     const [h, a] = splitMatch(l);
+    if (l.unmatched) return `<div class="leg azleg dim"><div class="lg-meta"><span>Selection ${l.idx + 1}</span>${rchip("Not rated")}</div><div><b>${esc(l.match || "?")}</b></div><div class="mkt"><span class="ellip">${esc(l.market || "")}</span> <span class="pick">${esc(l.pick || "")}</span>${l.image_odds ? " @ " + f2(l.image_odds) : ""}</div><div class="why">⚠️ Couldn't match${l.unmatched_why ? " (" + esc(l.unmatched_why) + ")" : ""}: not counted</div></div>`;
     if (l.state === "unavailable") return `<div class="leg azleg dim"><div class="lg-meta"><span>Selection ${l.idx + 1}</span>${rchip("Not rated")}</div><div class="why">${esc(l.reason)}</div></div>`;
     const when = l.kickoff ? kickDay(l.kickoff) + " " + kickTime(l.kickoff) : "";
     const topc = l.flags && l.flags.length ? `<span class="rchip r-top" style="margin-left:6px">Outside top leagues</span>` : "";
@@ -684,7 +708,7 @@
     const s = r.summary, sg = r.suggestions, imp = sg.improved;
     const counts = Object.entries(s.ratings || {}).filter(([, v]) => v).map(([k, v]) => `<span class="rchip ${RCLS[k]}">${v} ${esc(k)}</span>`).join("");
     let h = `<div class="card port t-${s.grade === "A" ? "safe" : s.grade === "B" ? "mid" : s.grade ? "risk" : "audit"}">
-      <div class="head"><span class="label">Code <button class="codechip" data-act="copytext" data-t="${esc(r.code)}">${esc(r.code)}</button></span><span class="pill">${s.legs} legs</span></div>
+      <div class="head"><span class="label">${r.code ? `Code <button class="codechip" data-act="copytext" data-t="${esc(r.code)}">${esc(r.code)}</button>` : "📷 Screenshot slip"}</span><span class="pill">${s.legs} legs</span></div>
       <div class="az-sum" style="margin-top:12px"><div class="grade g-${s.grade || "none"}">${s.grade || "–"}</div><div><div class="verdict">${esc(r.verdict)}</div><div class="sub" style="margin-top:3px">Grade blends leg quality with the chance of landing</div></div></div>
       <div class="kpis"><div class="kpi"><b>${s.odds_known === false ? "n/a" : f2(s.total_odds)}</b><span>Total odds</span></div><div class="kpi"><b>${pc(s.chance)}</b><span>Est. hit chance</span></div><div class="kpi"><b>${s.rated}/${s.legs}</b><span>Rated legs</span></div></div>
       ${s.grade ? meter(s.chance) : ""}
@@ -1004,6 +1028,9 @@
     else if (a === "suggest") askAI(t.textContent);
     else if (a === "aiedit") { state.aiCtx = t.dataset.kind === "rollover" ? { kind: "rollover", slip_id: t.dataset.id, label: `Rollover day ${t.dataset.day || ""} slip` } : { kind: "scan", sid: t.dataset.sid, label: "Scanner slip" }; setTab("ai"); }
     else if (a === "aictxclear") { state.aiCtx = null; renderAI(); }
+    else if (a === "aiattach") { const f = document.getElementById("aiFile"); if (f) f.click(); }
+    else if (a === "aiimgclear") { state.aiImg = null; renderAI(); }
+    else if (a === "aiaz") { const m = state.chat[Number(t.dataset.k)]; if (m && m.analysis) { state.az = m.analysis; state.azErr = ""; state.azTake = null; state.azCode = m.analysis.code || ""; setTab("analyze"); } }
     else if (a === "aikeep") { toast("Kept your current slip"); }
     else if (a === "histrefresh") { state.hist = null; state.histFresh = 0; store.set("hist", null); renderHistory(); }
     else if (a === "histfilter") { state.histFilter = t.dataset.f; hapSel(); renderHistory(); }

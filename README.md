@@ -7,6 +7,30 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-02, latest): the AI reads images
+**Send a photo or an image file** (with or without a caption), or **reply to a photo** with a question; in the Mini App
+**AI tab** tap 📷 (camera or gallery). `vision.py`: the image is downscaled when needed (≤ 2048 px, ≤ 5 MB, Pillow) and
+sent to Gemini inline with one JSON reading prompt (kind, booking code, legs, matches, header, short answer; JSON mode,
+`finishReason` logged in `/api/admin/diag` → `gemini_last_image`). Then it is routed:
+- **Bookmaker betslip / booking-code screenshot** → code visible: the Bet Analyzer on that code (same output, grade and
+  verdict line, not saved to History). No code, or the code is invalid on SportyBet: every leg (teams, market, pick,
+  odds) is mapped to an upcoming SportyBet event (`services.search`) and its exact outcome (1X2, DC, DNB, O/U, team O/U,
+  GG/NG, halves, Asian / European handicap by key; other markets only by a strict text match) and the mapped legs are
+  analyzed the same way (`Analyzer.analyze_legs`); legs that can't be mapped show as **"couldn't match"** and are left
+  out of the odds and the chance.
+- **A screenshot of one of this bot's slips** → resolved like a reply to it (`SlipEditor.match_screenshot`: the newest
+  stored slip reference in the chat covering the teams read, else a booked code from History, else the header text →
+  the rollover's current day). With a caption the caption edits it in its own section (rollover → preview with
+  ✅ Confirm / Keep current slip); without one the bot says which slip it is and a reply to that message edits it.
+- **Fixture list / match card / odds board** → the normal tool loop with the image attached (predict, stats, scan under
+  the caption's constraints); the booking tool is not offered, so a slip only gets a code from an explicit Book tap.
+  If Gemini fails, a plain list from the predictor for the matches read.
+- **Anything else** → a brief, honest description / answer. Unreadable images are said to be unreadable. Matches, odds
+  and codes are only taken from what is visible (codes are checked on SportyBet, legs against its listings).
+Nothing is booked or written to History from an image. Mini App: `POST /api/ai {"message", "image": {"data": base64,
+"mime"}}` (same owner initData check; body limit 10 MB) → `{reply, image_kind, analysis, edit, context, slip, read}`;
+"Open full analysis" opens it in the Analyze tab. Tests: `tests/test_vision.py` (offline, mocked Gemini).
+
 ## What's new (2026-11-02, later): reply to a slip to edit it (AI slip edits in the same section)
 **Reply-context awareness** (`editflow.py`). Every bot message that shows a slip (rollover day push, rollover refresh
 preview, edited preview, new-code message, `/scan` result and its refreshes, AI slip, analyzer result) stores a *slip

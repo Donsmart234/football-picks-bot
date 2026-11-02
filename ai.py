@@ -254,10 +254,11 @@ class Analyst:
         return MODEL_PREFS
 
     async def _generate(self, contents: list[dict], system: str | None = None, tools=True,
-                        max_tokens: int = 8192, timeout: float | None = None) -> dict:
+                        max_tokens: int = 8192, timeout: float | None = None, gen_extra: dict | None = None) -> dict:
         body = {"systemInstruction": {"parts": [{"text": system or SYSTEM.format(
                     today=datetime.now(TZ).strftime("%A %d %B %Y, %H:%M"))}]},
-                "contents": contents, "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens}}
+                "contents": contents, "generationConfig": {"temperature": 0.4, "maxOutputTokens": max_tokens,
+                                                           **(gen_extra or {})}}
         if tools:
             body["tools"] = TOOLS if tools is True else tools
         last = None

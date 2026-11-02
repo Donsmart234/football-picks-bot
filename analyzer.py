@@ -353,7 +353,8 @@ def suggestions(legs: list[dict], rules: Constraints | None = None) -> dict:
     for l in legs:
         st = l.get("state")
         if st == "unavailable":
-            changes.append(f"drop unavailable selection {l['match']}")
+            changes.append(f"drop unmatched leg {l['match']}" if l.get("unmatched")
+                           else f"drop unavailable selection {l['match']}")
             continue
         if st != "upcoming":
             continue
@@ -508,11 +509,59 @@ class Analyzer:
         legs = parse_share(data)
         if not legs:
             return {"ok": False, "code": code, "kind": "empty", "error": "That code loads no selections."}
+        res = await self._score_all(code, legs, data, rules_text, await self._booked_odds(code))
+        res["elapsed_s"] = round(time.time() - t0, 1)
+        return res
+
+    async def analyze_legs(self, mapped: list[dict], unmatched: list[dict] | None = None, rules_text: str = "",
+                           details: dict | None = None) -> dict:
+        """Analyze a slip read from a screenshot (no booking code): `mapped` legs carry SportyBet ids
+        (event_id, market_id, specifier, outcome_id; see vision.map_leg), `unmatched` legs only the text read from
+        the image and are shown as "couldn't match" (left out of the odds and the chance). `details` = prefetched
+        {event_id: (Event, markets, header)}. Same scoring, grade and verdict as a code; not saved or tracked."""
+        t0 = time.time()
+        legs: list[dict] = []
+        now = datetime.now(timezone.utc)
+        for m in mapped[:MAX_LEGS]:
+            ev = ((details or {}).get(m["event_id"]) or (None,))[0]
+            start = ev.start if ev is not None else None
+            state = "upcoming" if start is None or start > now else "live"
+            legs.append({
+                "event_id": m["event_id"], "market_id": str(m["market_id"]), "specifier": m.get("specifier") or "",
+                "outcome_id": str(m["outcome_id"]),
+                "home": ev.home if ev else m.get("home", "?"), "away": ev.away if ev else m.get("away", "?"),
+                "match": f"{ev.home} vs {ev.away}" if ev else m.get("match", ""),
+                "league": ev.league_full if ev else "", "category": ev.category if ev else "",
+                "tournament_id": ev.tournament_id if ev else "", "category_id": ev.category_id if ev else "",
+                "sport": "sr:sport:1", "kickoff": start.isoformat() if start else "",
+                "market": m.get("market") or "", "pick": m.get("pick") or "", "odds": _f(m.get("odds")),
+                "feed_prob": None, "active": True, "group": "", "state": state, "match_status": "", "score": "",
+                "minute": "", "result": None, "image_odds": _f(m.get("image_odds")),
+            })
+        for u in (unmatched or [])[:MAX_LEGS]:
+            legs.append({"event_id": "", "market_id": "", "specifier": "", "outcome_id": "",
+                         "home": u.get("home") or "", "away": u.get("away") or "",
+                         "match": u.get("match") or " vs ".join(x for x in (u.get("home"), u.get("away")) if x) or "?",
+                         "league": "", "category": "", "tournament_id": "", "category_id": "", "sport": "",
+                         "kickoff": "", "market": u.get("market") or "", "pick": u.get("pick") or "", "odds": None,
+                         "image_odds": _f(u.get("odds")), "feed_prob": None, "active": False, "group": "",
+                         "state": "unavailable", "unmatched": True, "unmatched_why": u.get("why") or "",
+                         "match_status": "", "score": "", "minute": "", "result": None})
+        res = await self._score_all("", legs, {}, rules_text, {}, details=details)
+        res["source"] = "image"
+        res["summary"]["unmatched"] = sum(1 for l in legs if l.get("unmatched"))
+        res["elapsed_s"] = round(time.time() - t0, 1)
+        if res.get("ok"):
+            self._remember(res)
+        return res
+
+    async def _score_all(self, code: str, legs: list[dict], data: dict, rules_text: str, booked: dict,
+                         details: dict | None = None) -> dict:
+        bm = self.s.bookmaker
         rules = parse_text(rules_text) if rules_text else None
         if rules is not None:
             rules.tier = rules.target_odds = rules.day = None
             rules = None if rules.empty() else rules
-        booked = await self._booked_odds(code)
         for i, l in enumerate(legs):
             l["idx"] = i
             b = booked.get((l["event_id"], l["market_id"], l["specifier"], l["outcome_id"]))
@@ -527,8 +576,11 @@ class Analyzer:
         # started / finished legs: header only (team ids for crests), never re-priced
         ev_ids = list(dict.fromkeys(l["event_id"] for l in legs if l["sport"] == "sr:sport:1" and l["event_id"]
                                     and l["state"] != "unavailable"))
-        details = await asyncio.gather(*(bm.event_detail(e) for e in ev_ids), return_exceptions=True)
-        detail = {e: (d if not isinstance(d, Exception) else (None, None, {})) for e, d in zip(ev_ids, details)}
+        have = {e: d for e, d in (details or {}).items() if e in ev_ids and d and d[0] is not None and d[1]}
+        need = [e for e in ev_ids if e not in have]
+        got = await asyncio.gather(*(bm.event_detail(e) for e in need), return_exceptions=True)
+        detail = {e: (d if not isinstance(d, Exception) else (None, None, {})) for e, d in zip(need, got)}
+        detail.update(have)
         events = {e: d[0] for e, d in detail.items() if d[0] is not None}
         pre = {l["event_id"] for l in todo}
         up = {e: ev for e, ev in events.items() if e in pre}
@@ -541,6 +593,11 @@ class Analyzer:
             l.update(rated=False, est=None, fair_odds=None, value=None, rating=NOT_RATED, verdict="",
                      level="", reason="", why="", alternatives=[], p_market=None, p_stats=None,
                      home_uid=l.get("home_uid", ""), away_uid=l.get("away_uid", ""))
+            if l.get("unmatched"):
+                l["reason"] = ("Couldn't match this leg to a SportyBet market"
+                               + (f" ({l['unmatched_why']})" if l.get("unmatched_why") else "")
+                               + ": not counted in the odds or the chance.")
+                continue
             if l["state"] == "unavailable":
                 l["reason"] = "SportyBet no longer offers this selection; it won't load with the code."
                 continue
@@ -568,9 +625,7 @@ class Analyzer:
                 l.get("tournament_id"), l.get("category_id"), l.get("home", ""), l.get("away", "")))
             if l["state"] != "unavailable" and not l["top_league"]:
                 l["flags"] = ["outside top leagues"]
-        res = self.build(code, legs, data, rules)
-        res["elapsed_s"] = round(time.time() - t0, 1)
-        return res
+        return self.build(code, legs, data, rules)
 
     def _score_leg(self, l: dict, ev, mk: list[dict], form, news, rules) -> None:
         all_legs = self.s.scanner.event_legs(ev, mk, keep=10 ** 6, odds_range=(1.001, 1000.0))
@@ -700,7 +755,8 @@ class Analyzer:
         tr = getattr(self.s, "tracker", None)
         saved = None
         if tr and save:
-            saved = await tr.record(imp["legs"], code, "analyzer", "custom", f"Improved {res['code']}",
+            saved = await tr.record(imp["legs"], code, "analyzer", "custom",
+                                    f"Improved {res['code'] or 'screenshot slip'}",
                                     imp["total_odds"], imp["chance"])
         return {"code": code, "url": self.s.bookmaker.load_code_url, "legs": len(sels),
                 "loaded": check["legs"] if check else None, "total_odds": imp["total_odds"],
@@ -784,6 +840,8 @@ def _change_words(c: str) -> str:
     c = c.replace(" vs ", " v ")
     if c.startswith("drop unavailable"):
         return "removing the unavailable selection"
+    if c.startswith("drop unmatched"):
+        return "leaving out the leg I couldn't match"
     if c.startswith("drop "):
         m, _, pick = c[5:].partition(": ")
         return f"dropping {m} ({pick})"
@@ -812,7 +870,7 @@ def recommendation(res: dict) -> dict:
     imp = (res.get("suggestions") or {}).get("improved")
     if imp and imp.get("bookable") and imp.get("legs"):
         g = grade_slip(imp["legs"])["grade"]
-        n_chg = sum(1 for c in imp["changes"] if not c.startswith("drop unavailable"))
+        n_chg = sum(1 for c in imp["changes"] if not c.startswith(("drop unavailable", "drop unmatched")))
         if g in ("A", "B") and n_chg > max(1, len(open_) // 2):
             why = f"grade {s['grade']}, est. {_p(s['chance'])} to land"
             return {"kind": "skip", "icon": "❌",

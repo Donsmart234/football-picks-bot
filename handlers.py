@@ -32,6 +32,7 @@ HELP = (
     "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit). Filters: nounders, -corners, "
     "-cards, -props, only:1x2,dc, legs:4-8, minodds:1.2, league:epl, after:18:00, allleagues (top leagues by default)\n"
     "/ai question – ask the AI analyst (or just type any message)\n"
+    "📷 Send a screenshot (betslip, booking code, fixtures, one of my slips) and I'll read it; add a caption to say what you want\n"
     "/today – today's matches by league\n"
     "/upcoming – next 3 days\n"
     "/predict Team A vs Team B – analyse a match\n"
@@ -158,6 +159,10 @@ async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if code:                      # a pasted 6-character booking code: analyze it
         await _run_analysis(update, ctx, code, "")
         return
+    rt = update.effective_message.reply_to_message
+    if rt is not None and _image_ref(rt) is not None:   # a text reply to a photo: read the photo with this text
+        await _handle_image(update, ctx, rt, text)
+        return
     sctx = await _slip_context(update, ctx, text)
     ai = getattr(svc(ctx), "ai", None)
     if sctx is not None and ai is not None:
@@ -224,9 +229,16 @@ async def _run_analysis(update: Update, ctx, code: str, rules: str) -> None:
         await note.edit_text(f"{icon} <code>{esc(code)}</code>: {esc(res.get('error', 'could not load it'))}",
                              parse_mode=ParseMode.HTML)
         return
+    await _send_analysis(update, ctx, res, note)
+
+
+async def _send_analysis(update: Update, ctx, res: dict, note, lead: str = "") -> None:
+    """Analyzer result (code or screenshot) as Telegram messages, the first one edited into `note`."""
     msgs = analysis_messages(res)
+    if lead:
+        msgs[0] = lead + "\n" + msgs[0]
     kb = _analysis_kb(res)
-    await note.edit_text(msgs[0], parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+    await note.edit_text(msgs[0][:4096], parse_mode=ParseMode.HTML, disable_web_page_preview=True,
                          reply_markup=kb if len(msgs) == 1 else None)
     sent = [note]
     for i, m in enumerate(msgs[1:], 1):
@@ -276,6 +288,12 @@ async def _ask_ai(update: Update, ctx, text: str, sctx: dict | None = None) -> N
     if sctx is not None and res.get("edit") is not None:
         await _send_edit(update, ctx, res["edit"], sctx)
         return
+    await _deliver_ai(update, ctx, res)
+
+
+async def _deliver_ai(update: Update, ctx, res: dict, note=None) -> None:
+    """Send an AI answer (text + Book / Rebook / code buttons) and remember the slip it shows."""
+    s = svc(ctx)
     kb = None
     rows = []
     an_res = res.get("analysis")
@@ -293,9 +311,14 @@ async def _ask_ai(update: Update, ctx, text: str, sctx: dict | None = None) -> N
     html_text = md_to_html(res["reply"])
     sent = None
     for i in range(0, len(html_text), 3900):
+        chunk_kb = kb if i + 3900 >= len(html_text) else None
+        if i == 0 and note is not None:
+            await note.edit_text(html_text[i:i + 3900], parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                                 reply_markup=chunk_kb)
+            sent = note
+            continue
         sent = await update.effective_message.reply_text(html_text[i:i + 3900], parse_mode=ParseMode.HTML,
-                                                         disable_web_page_preview=True,
-                                                         reply_markup=kb if i + 3900 >= len(html_text) else None)
+                                                         disable_web_page_preview=True, reply_markup=chunk_kb)
     sl = res.get("slip")
     if sl and sl.get("slip_id") and sl.get("legs") and not res.get("code"):
         _remember(ctx, sent, {"section": "scan" if sl.get("tier") in ("safe", "mid", "risk", "high") else "ai",
@@ -304,6 +327,91 @@ async def _ask_ai(update: Update, ctx, text: str, sctx: dict | None = None) -> N
     elif an_res and an_res.get("id"):
         _remember(ctx, sent, {"section": "analysis", "aid": an_res["id"], "code": an_res.get("code"),
                               "legs": [l for l in an_res.get("legs") or [] if l.get("event_id")]})
+
+
+# ---------------------------------------------------------------- images (vision.py)
+def _image_ref(msg) -> tuple[str, int, str] | None:
+    """(file_id, size, mime) of the image a message carries (largest photo size, or an image document)."""
+    if msg is None:
+        return None
+    photos = getattr(msg, "photo", None) or ()
+    if photos:
+        p = max(photos, key=lambda x: (x.width or 0) * (x.height or 0))
+        return p.file_id, int(p.file_size or 0), "image/jpeg"
+    doc = getattr(msg, "document", None)
+    if doc is not None and (doc.mime_type or "").startswith("image/"):
+        return doc.file_id, int(doc.file_size or 0), doc.mime_type
+    return None
+
+
+async def on_image(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    await _handle_image(update, ctx, msg, (msg.caption or "").strip())
+
+
+async def _handle_image(update: Update, ctx, img_msg, caption: str) -> None:
+    import asyncio
+    import vision
+    s = svc(ctx)
+    msg = update.effective_message
+    ref = _image_ref(img_msg)
+    if ref is None:
+        return
+    file_id, size, mime = ref
+    if size and size > vision.MAX_DOWNLOAD:
+        await msg.reply_text("⚠️ That file is over 20 MB; send a screenshot or a smaller photo.")
+        return
+    ai = getattr(s, "ai", None)
+    if ai is None:
+        await msg.reply_text("The AI analyst isn't available right now.")
+        return
+    note = await msg.reply_text("📷 Reading your image…")
+    stop = asyncio.Event()
+    typer = asyncio.create_task(_typing_loop(update.effective_chat, stop))
+    try:
+        f = await ctx.bot.get_file(file_id)
+        data = bytes(await f.download_as_bytearray())
+        out = await asyncio.wait_for(vision.handle_image(ai, update.effective_chat.id, data, mime, caption),
+                                     timeout=150)
+    except asyncio.TimeoutError:
+        out = {"kind": "error", "reply": "Reading that image took too long, so I stopped. Nothing was booked. Send it "
+                                         "again, or paste the booking code as text."}
+    except Exception as exc:
+        log.warning("image handling failed: %s", exc, exc_info=True)
+        out = {"kind": "error", "reply": "I couldn't process that image on my side. Nothing was booked. Send it again "
+                                         "in a minute."}
+    finally:
+        stop.set()
+        await typer
+    await _send_image_result(update, ctx, out, note)
+
+
+async def _send_image_result(update: Update, ctx, out: dict, note) -> None:
+    kind = out.get("kind")
+    if kind == "analysis" and out.get("analysis"):
+        res = out["analysis"]
+        lead = (f"📷 Read <code>{esc(out['code_read'])}</code> from your screenshot." if out.get("code_read")
+                else "📷 " + esc(out["reply"].split("\n")[0]))
+        await _send_analysis(update, ctx, res, note, lead)
+        return
+    if kind == "edit":
+        ed_out, sctx = out.get("edit"), out.get("context") or {}
+        if ed_out is not None:
+            await note.edit_text("📷 That's one of my slips: " + esc(out.get("reply") or ""), parse_mode=ParseMode.HTML)
+            await _send_edit(update, ctx, ed_out, sctx)
+            return
+        await note.edit_text(md_to_html(out.get("reply") or "")[:4096], parse_mode=ParseMode.HTML)
+        _remember(ctx, note, sctx)
+        return
+    if kind == "bot_slip":
+        await note.edit_text(md_to_html(out["reply"])[:4096], parse_mode=ParseMode.HTML)
+        _remember(ctx, note, out.get("context"))     # a reply to this message edits that slip
+        return
+    if kind == "answer" and out.get("slip"):
+        await _deliver_ai(update, ctx, {"reply": out["reply"], "slip": out["slip"], "code": None}, note)
+        return
+    await note.edit_text(md_to_html(out.get("reply") or "I couldn't read that image.")[:4096], parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True)
 
 
 def _edit_html(out: dict) -> tuple[str, Kb | None]:
@@ -1114,6 +1222,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await q.answer()
 
 
+def _az_src(res: dict) -> str:
+    return f"<code>{esc(res['code'])}</code>" if res.get("code") else "your screenshot"
+
+
 async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
     s = svc(ctx)
     an = getattr(s, "analyzer", None)
@@ -1129,7 +1241,7 @@ async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
             await q.message.reply_text(f"No AI take right now ({esc(str(exc)[:100])}).", parse_mode=ParseMode.HTML)
             return
         tag = "🧠 <b>AI take</b>" if out["source"] == "ai" else "🧠 <b>Summary</b>"
-        await q.message.reply_text(f"{tag} · <code>{esc(res['code'])}</code>\n{esc(out['text'])}",
+        await q.message.reply_text(f"{tag} · {_az_src(res)}\n{esc(out['text'])}",
                                    parse_mode=ParseMode.HTML)
         return
     imp = (res.get("suggestions") or {}).get("improved")
@@ -1138,7 +1250,7 @@ async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
         return
     if kind == "AZR":            # step 1: show exactly what would be booked
         await q.answer()
-        lines = [f"♻️ <b>Improved slip</b> from <code>{esc(res['code'])}</code>"]
+        lines = [f"♻️ <b>Improved slip</b> from {_az_src(res)}"]
         lines += [f"• {esc(c)}" for c in imp["changes"]]
         lines.append(RULE)
         for i, l in enumerate(imp["legs"], 1):
@@ -1212,5 +1324,6 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("rollover", rollover_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text))
     app.add_error_handler(on_error)

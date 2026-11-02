@@ -68,7 +68,7 @@ async def run() -> None:
     log.info("Owner: %s", "fixed by OWNER_TELEGRAM_ID" if config.OWNER_TELEGRAM_ID else
              ("claimed" if services.storage.get_owner() else "unclaimed – first /start becomes owner"))
 
-    web_app = web.Application()
+    web_app = web.Application(client_max_size=10 * 1024 ** 2)   # Mini App image uploads (base64, <= 5 MB)
     web_app.router.add_get("/health", health)
     web_app.router.add_get("/", health)
 
