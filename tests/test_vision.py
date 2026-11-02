@@ -364,7 +364,7 @@ async def flow_bot_slip():
     ai._generate = FakeGemini([read(kind="bot_slip", legs=shot, header=hdr, booking_code="YNAP2N")])
     out = await vision.handle_image(ai, 1, jpeg(), "image/jpeg", "")
     assert out["kind"] == "bot_slip" and out["context"]["section"] == "rollover_preview", out
-    assert out["context"]["slip_id"] == day_id and "rollover preview" in out["reply"] and "Genclerbirligi" in out["reply"]
+    assert out["context"]["slip_id"] == day_id and "rollover day" in out["reply"] and "preview" in out["reply"] and "Genclerbirligi" in out["reply"]
     # caption "change the first selection" -> edit in the same section (preview with Confirm), Gemini edit fails -> rules
     ai._generate = FakeGemini([read(kind="bot_slip", legs=shot, header=hdr), RuntimeError("down")])
     out = await vision.handle_image(ai, 1, jpeg(), "image/jpeg", "Change the first selection")

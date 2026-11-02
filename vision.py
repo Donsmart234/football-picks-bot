@@ -555,16 +555,16 @@ async def _route(ai, chat_id, data, mime, caption, info, tools) -> dict:
                 "current slip.")}
         tools.append("resolve_slip")
         from slipedit import leg_name
-        from editflow import SECTION_LABEL
-        label = SECTION_LABEL.get(ctx.get("section"), "slip")
-        if ctx.get("section") in ("rollover_preview", "rollover_day") and ctx.get("day"):
-            label += f" {ctx['day']}"
+        day = f" {ctx['day']}" if ctx.get("day") else ""
+        label = {"rollover_preview": f"rollover day{day} preview", "rollover_day": f"rollover day{day} slip",
+                 "scan": "scanner slip", "ai": "AI slip", "analysis": "analyzed slip",
+                 "history": "booked ticket"}.get(ctx.get("section"), "slip")
         if caption:
             res = await ai._ask_edit(chat_id, caption, ctx)
             tools.extend(res.get("tools") or [])
             return {"kind": "edit", "reply": res["reply"], "edit": res.get("edit"), "context": ctx, "tools": tools}
         legs = ctx.get("legs") or []
-        lines = [f"📷 That's your **{label}** slip ({len(legs)} legs"
+        lines = [f"📷 That's your **{label}** ({len(legs)} legs"
                  + (f", code `{ctx['code']}`" if ctx.get("code") else "") + "):"]
         lines += [f"{i}. {leg_name(l)} · {l.get('pick', '')} @{float(l.get('odds') or 0):.2f}"
                   for i, l in enumerate(legs[:12], 1)]

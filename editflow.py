@@ -242,8 +242,10 @@ class SlipEditor:
                 rec = await tr.history.find_code(code) if tr else None
             except Exception:
                 rec = None
-            if rec and rec.get("kind", "slip") == "slip":
-                ref = {"section": "history", "slip_id": rec["id"]}
+            rlegs = ((rec or {}).get("data") or {}).get("legs") or []
+            if rec and rec.get("kind", "slip") == "slip" and (
+                    not pairs or covered({"legs": rlegs}) >= max(1, round(0.6 * len(pairs)))):
+                ref = {"section": "history", "slip_id": rec["id"]}     # the code's own legs are what the image shows
         if ref is None:
             ref = self.from_text(header)
         if ref is None:
