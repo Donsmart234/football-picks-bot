@@ -380,3 +380,4 @@ body { min-height: var(--vh-stable, var(--tg-viewport-stable-height, 100vh)); }
 .verdict-card.v-go { border-color: rgba(0,229,143,.45); background: linear-gradient(180deg, rgba(0,229,143,.08), var(--card)); }
 .verdict-card.v-fix { border-color: rgba(255,176,32,.45); background: linear-gradient(180deg, rgba(255,176,32,.08), var(--card)); }
 .verdict-card.v-skip { border-color: rgba(255,77,94,.45); background: linear-gradient(180deg, rgba(255,77,94,.08), var(--card)); }
+.hcard.dim { opacity: .6; } .row[data-act] { cursor: pointer; } .tix .hstats span { white-space: nowrap; }

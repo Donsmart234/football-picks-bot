@@ -129,7 +129,7 @@
     legs.forEach((l, i) => { const d = l.kickoff ? kickDay(l.kickoff) : ""; if (d && d !== last) { out += `<div class="grp">${esc(d)}</div>`; last = d; } out += render(l, i); });
     return out;
   }
-  const STATUS = { won: ["✓", "Won", "st-won"], lost: ["✕", "Lost", "st-lost"], void: ["–", "Void", "st-void"], check: ["?", "Check", "st-check"], live: ["●", "Live", "st-live"], pending: ["", "Pending", "st-pend"] };
+  const STATUS = { won: ["✓", "Won", "st-won"], lost: ["✕", "Lost", "st-lost"], void: ["–", "Void", "st-void"], check: ["?", "Check", "st-check"], live: ["●", "Live", "st-live"], pending: ["", "Pending", "st-pend"], replaced: ["↻", "Replaced", "st-void"], no_slip: ["⏸", "No slip", "st-void"], skipped: ["⏭", "Skipped", "st-void"] };
 
   const tierOfOdds = (o) => (o >= 2 ? "red" : o >= 1.6 ? "amber" : "");
   const sel = (l) => ({ event_id: l.event_id, market_id: l.market_id, specifier: l.specifier || "", outcome_id: l.outcome_id });
@@ -217,6 +217,8 @@
       ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
       ${s.legs.length ? `<div class="btnrow"><button class="btn" data-act="bookslip" data-k="${esc(key)}">Book on SportyBet</button>
         <button class="btn secondary" style="flex:.7" data-act="slipall" data-k="${esc(key)}">Add to slip</button></div>` : ""}
+      ${key === "scan" ? `<div class="btnrow"><button class="btn small secondary" data-act="scanrefresh" data-x="0" ${state.scanRefreshing ? "disabled" : ""}>${state.scanRefreshing ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="scanrefresh" data-x="1" ${state.scanRefreshing ? "disabled" : ""}>🔀 Different picks</button></div>
+        <div class="sub" style="text-align:center;margin-top:6px">Not saved to History until you book a code</div>` : ""}
     </div>`;
   }
 
@@ -285,10 +287,26 @@
     if (inp) state.target = parseFloat(inp.value.replace(",", ".")) || TIERS[state.tier].target;
     state.scanning = true; state.scanErr = ""; state.scan = null; state.viewSlip = null; hap("medium"); renderHome();
     try {
-      state.scan = await api("/api/scan", { tier: state.tier, target: state.tier === "audit" ? null : state.target, day: state.day, exclude_markets: state.ex, all_leagues: state.allLg });
+      state.scanReq = { tier: state.tier, target: state.tier === "audit" ? null : state.target, day: state.day, exclude_markets: state.ex, all_leagues: state.allLg };
+      state.scan = await api("/api/scan", state.scanReq);
       hapN("success");
     } catch (e) { state.scanErr = e.message; hapN("error"); }
     state.scanning = false;
+    if (state.tab === "home") renderHome();
+  }
+  const selKey = (l) => `${l.event_id}|${l.market_id}|${l.specifier || ""}|${l.outcome_id}`;
+  async function refreshScan(different) {
+    const old = state.scan; if (!old || !state.scanReq || state.scanRefreshing) return;
+    const prev = (old.legs || []).map(selKey);
+    state.scanRefreshing = true; hap("medium"); renderHome(); toast("Re-reading prices… ~30 s");
+    try {
+      const r = await api("/api/scan", { ...state.scanReq, refresh: true, exclude: different ? prev : [] });
+      const now = (r.legs || []).map(selKey);
+      if (!now.length) { hapN("warning"); toast("No different valid slip under the same rules right now"); }
+      else if (now.length === prev.length && now.every((k) => prev.includes(k))) { hapN("warning"); toast("Same picks are still the strongest · try 🔀 Different picks"); }
+      else { state.scan = r; hapN("success"); const kept = now.filter((k) => prev.includes(k)).length; toast(`Refreshed · ${now.length - kept} new, ${kept} kept`); }
+    } catch (e) { hapN("error"); toast(e.message); }
+    state.scanRefreshing = false;
     if (state.tab === "home") renderHome();
   }
 
@@ -750,7 +768,8 @@
     const d = r.data, legs = d.legs || [];
     const won = legs.filter((l) => l.status === "won").length, lost = legs.filter((l) => l.status === "lost").length, live = legs.filter((l) => l.status === "live").length;
     const open = !!state.histOpen[r.id];
-    const tag = d.rollover_id ? `Rollover · day ${d.rollover_day}` : (d.label || d.tier || "Slip");
+    const early = legs.filter((l) => l.early && l.early.min).map((l) => l.early.min);
+    const tag = (d.rollover_id ? `Rollover · day ${d.rollover_day}` : (d.label || d.tier || "Slip")) + (early.length && r.status === "won" ? ` · won early (${Math.max(...early)}')` : "");
     const seg = legs.map((l) => `<i class="${(STATUS[l.status] || STATUS.pending)[2]}"></i>`).join("");
     return `<div class="card hcard s-${r.status}">
       <div class="hhead"><div class="grow"><div class="label">${esc(tag)}${d.test ? " · test" : ""}</div><div class="hcode">${d.code ? `<button class="codechip" data-act="copytext" data-t="${esc(d.code)}">${esc(d.code)}</button>` : `<span class="sub">no code</span>`}<span class="sub">${esc(fmtWhen(r.created_at))}</span></div></div>
@@ -766,7 +785,7 @@
     try { state.hist = await api("/api/history?limit=60"); store.set("hist", { at: Date.now(), json: state.hist }); state.histFresh = Date.now(); } catch (e) { if (!state.hist) state.histErr = e.message; }
   }
   async function renderHistory() {
-    let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Tracked codes</div><h1>History</h1><div class="sub">Results update every 5 min · Telegram ping when a slip lands</div></div><button class="iconbtn" data-act="histrefresh" aria-label="Refresh">↻</button></div>`;
+    let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Tracked codes</div><h1>History</h1><div class="sub">Results every 2–5 min · early wins locked from the live score · Telegram ping when a slip lands</div></div><button class="iconbtn" data-act="histrefresh" aria-label="Refresh">↻</button></div>`;
     if (!state.hist) { const c = store.get("hist"); if (c) state.hist = c.json; }   // instant: last copy on this phone
     if (!state.hist && !state.histErr) { $view.innerHTML = h + `<div class="card">${[0, 1, 2].map(() => `<div class="sk sk-line"></div>`).join("")}</div>`; await loadHistory(); if (state.tab !== "history") return; }
     else if (!state.histFresh || Date.now() - state.histFresh > 60000) { state.histFresh = Date.now(); loadHistory(true).then(() => { if (state.tab === "history") { const y = window.scrollY; renderHistory().then(() => window.scrollTo(0, y)); } }); }
@@ -799,7 +818,59 @@
     }
     return h + `</div>`;
   }
+  function ticketsHtml(tix, d) {
+    if (!tix.length) return "";
+    let h = `<div class="section"><span class="label">Tickets</span><span class="sub">${tix.filter((t) => t.status !== "replaced").length} day${tix.length > 1 ? "s" : ""}${d && d.stake ? " · bankroll " + Number(d.value || 0).toLocaleString("en-GB", { maximumFractionDigits: 0 }) : ""}</span></div>`;
+    for (const t of tix.slice().reverse()) {
+      const open = !!state.histOpen["t:" + (t.slip_id || t.day + t.date + t.status)];
+      const legs = t.legs || [];
+      const seg = legs.map((l) => `<i class="${(STATUS[l.status] || STATUS.pending)[2]}"></i>`).join("");
+      const odds = t.effective_odds || t.total_odds;
+      h += `<div class="card hcard tix s-${t.status}${t.status === "replaced" ? " dim" : ""}">
+        <div class="hhead"><div class="grow"><div class="label">Day ${t.day} · ${esc(t.date || "")}${t.refreshed ? " · refreshed" : ""}${t.won_early ? ` · won early (${t.won_early}')` : ""}</div>
+          <div class="hcode">${t.code ? `<button class="codechip" data-act="copytext" data-t="${esc(t.code)}">${esc(t.code)}</button>` : `<span class="sub">${t.status === "no_slip" || t.status === "skipped" ? esc((t.note || "").slice(0, 70)) : "no code"}</span>`}</div></div>
+          <div class="hright">${odds ? `<div class="num hbig">${f2(odds)}</div>` : ""}${statusPill(t.status)}</div></div>
+        ${legs.length ? `<div class="segbar">${seg}</div>` : ""}
+        <div class="hstats">${t.stake != null && t.status !== "replaced" ? `<span>Stake ${Math.round(t.stake).toLocaleString("en-GB")} → ${Math.round(t.expected_return).toLocaleString("en-GB")}</span>` : ""}${t.bankroll != null && ["won", "lost", "void"].includes(t.status) ? `<span>Bankroll ${Math.round(t.bankroll).toLocaleString("en-GB")}</span>` : ""}${t.status === "replaced" ? `<span>Replaced by a refresh · not a loss</span>` : ""}
+          ${legs.length ? `<button class="linkbtn" data-act="histtoggle" data-id="t:${esc(t.slip_id || t.day + t.date + t.status)}" data-ro="1">${open ? "Hide legs" : `${legs.filter((l) => l.status === "won").length}/${legs.length} legs`}</button>` : ""}</div>
+        ${open ? `<div class="hlegs">${legs.map(histLeg).join("")}</div>` : ""}</div>`;
+    }
+    return h;
+  }
+  function renderPlan() {
+    const p = state.roPlan, d = p.plan.data;
+    let h = `<button class="back" data-act="roplanback">‹ Rollover</button><div style="margin:4px 2px 12px"><div class="label">Plan · ${esc(fmtWhen(p.plan.created_at))}</div><h1>${d.target}× · ${d.days} days</h1><div class="sub">${esc({ completed: "Completed", busted: "Busted", stopped: "Stopped", active: "Running" }[p.plan.status] || p.plan.status)} · reached day ${Math.min(d.current_day, d.days)}${d.stake ? ` · stake ${Number(d.stake).toLocaleString("en-GB")} → ${Math.round(p.plan.status === "busted" ? 0 : d.value || 0).toLocaleString("en-GB")}` : ""}</div></div>`;
+    h += roSteps(d) + ticketsHtml(p.tickets, null);
+    if (!p.tickets.length) h += `<div class="empty">No tickets in this plan.</div>`;
+    h += `<div class="disc">Estimates, not guarantees. 18+.</div>`;
+    $view.innerHTML = h;
+  }
+  async function openPlan(id) {
+    state.roPlan = { plan: (state.ro.past || []).find((r) => r.id === id) || { data: {} }, tickets: [], loading: true };
+    $view.innerHTML = `<div class="card">${[0, 1, 2].map(() => `<div class="sk sk-line"></div>`).join("")}</div>`;
+    try { const r = await api("/api/rollover/tickets?id=" + encodeURIComponent(id)); state.roPlan = r; renderPlan(); window.scrollTo(0, 0); }
+    catch (e) { state.roPlan = null; toast(e.message); renderRollover(); }
+  }
+  async function refreshPicks(id, different, booked) {
+    if (state.roPicking) return;
+    state.roPicking = true; hap("medium"); renderRollover(); toast("Re-reading today's top-league prices… ~30–60 s");
+    try {
+      const r = await api("/api/rollover", { action: "refresh", id, exclude_prev: different });
+      if (r.status === "preview") {
+        const s = r.slip;
+        openSheet(`<div class="label" style="text-align:center">New picks · preview</div>
+          <div class="big num" style="text-align:center">${f2(s.total_odds)}<small> total odds · est ${pct(s.est_prob, 1)}</small></div>
+          <div class="note">Your current slip is booked as <b>${esc(r.old_code)}</b>. Confirm to book a new code; the old one is marked replaced (not a loss) and stops being tracked.</div>
+          <div class="hlegs">${(s.legs || []).map(histLeg).join("")}</div>
+          <div class="btnrow"><button class="btn" data-act="roconfirm" data-t="${esc(r.token)}">Confirm: book new code</button><button class="btn secondary" data-act="closesheet">Keep current</button></div>`);
+      } else if (r.status === "replaced") { hapN("success"); toast("Picks refreshed · old slip marked replaced"); }
+      else { hapN("warning"); toast(r.note || "No different slip"); }
+    } catch (e) { hapN("error"); toast(e.message); }
+    state.roPicking = false; state.ro = null; state.hist = null; store.set("ro", null); store.set("hist", null);
+    if (state.tab === "rollover") renderRollover();
+  }
   async function renderRollover() {
+    if (state.roPlan && !state.roPlan.loading) { renderPlan(); return; }
     let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Daily compounding plan</div><h1>Rollover</h1><div class="sub">Top leagues · stats-confirmed legs ≥80% each</div></div><button class="iconbtn" data-act="rorefresh" aria-label="Refresh">↻</button></div>`;
     if (!state.ro && !state.roBusy) { const c = store.get("ro"); if (c) state.ro = c.json; }
     if (!state.ro && !state.roErr) { $view.innerHTML = h + `<div class="card">${[0, 1, 2].map(() => `<div class="sk sk-line"></div>`).join("")}</div>`; await loadRollover(); if (state.tab !== "rollover") return; }
@@ -820,8 +891,10 @@
         const dd = ds.data;
         h += `<div class="section"><span class="label">Day ${dd.rollover_day} slip</span>${statusPill(ds.status)}</div>
           <div class="card"><div class="hhead"><div class="grow">${dd.code ? `<button class="codechip" data-act="copytext" data-t="${esc(dd.code)}">${esc(dd.code)}</button>` : `<button class="btn small" style="margin:0;width:auto;padding:0 14px" data-act="robook" data-id="${esc(ds.id)}">Book code</button>`}</div><div class="hright"><div class="num hbig">${f2(dd.total_odds)}</div><span class="sub">est ${pct(dd.est_prob, 1)}</span></div></div>
-          <div class="hlegs">${(dd.legs || []).map(histLeg).join("")}</div></div>`;
+          <div class="hlegs">${(dd.legs || []).map(histLeg).join("")}</div>
+          ${ds.can_refresh ? `<div class="btnrow"><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="0" ${state.roPicking ? "disabled" : ""}>${state.roPicking ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="1" ${state.roPicking ? "disabled" : ""}>🔀 Different picks</button></div><div class="sub" style="text-align:center;margin-top:6px">Same rules · only before the first kick-off${dd.code ? " · a new code only after you confirm" : ""}</div>` : ""}</div>`;
       }
+      h += ticketsHtml(state.ro.tickets || [], d);
       const notes = (d.log || []).filter((x) => x.status === "no_slip" || x.status === "skipped").slice(-3);
       if (notes.length) h += notes.map((x) => `<div class="note">${x.status === "skipped" ? "⏭" : "⏸"} Day ${x.day} · ${esc(x.date)}: ${esc(x.note)}</div>`).join("");
     } else {
@@ -836,7 +909,7 @@
         <button class="btn" data-act="rostart" ${state.roBusy ? "disabled" : ""}>Start rollover</button></div>`;
     }
     const past = (state.ro.past || []).filter((r) => !act || r.id !== act.id);
-    if (past.length) h += `<div class="section"><span class="label">Past plans</span></div><div class="card flush">${past.map((r) => `<div class="row"><div class="grow"><b>${r.data.target}× · ${r.data.days} days</b><div class="sub">${esc(fmtWhen(r.created_at))} · reached day ${Math.min(r.data.current_day, r.data.days)}</div></div><span class="spill ${{ completed: "st-won", busted: "st-lost" }[r.status] || "st-void"}">${esc({ completed: "Completed", busted: "Busted", stopped: "Stopped" }[r.status] || r.status)}</span></div>`).join("")}</div>`;
+    if (past.length) h += `<div class="section"><span class="label">Past plans</span><span class="sub">tap for tickets</span></div><div class="card flush">${past.map((r) => `<div class="row" data-act="roplan" data-id="${esc(r.id)}" role="button"><div class="grow"><b>${r.data.target}× · ${r.data.days} days</b><div class="sub">${esc(fmtWhen(r.created_at))} · reached day ${Math.min(r.data.current_day, r.data.days)}</div></div><span class="spill ${{ completed: "st-won", busted: "st-lost" }[r.status] || "st-void"}">${esc({ completed: "Completed", busted: "Busted", stopped: "Stopped" }[r.status] || r.status)}</span></div>`).join("")}</div>`;
     h += `<div class="disc">Each leg is an estimate, not a guarantee; a rollover multiplies the risk of every day. 18+. Stake only what you can afford to lose.</div>`;
     $view.innerHTML = h;
   }
@@ -921,7 +994,7 @@
     else if (a === "suggest") askAI(t.textContent);
     else if (a === "histrefresh") { state.hist = null; state.histFresh = 0; store.set("hist", null); renderHistory(); }
     else if (a === "histfilter") { state.histFilter = t.dataset.f; hapSel(); renderHistory(); }
-    else if (a === "histtoggle") { state.histOpen[t.dataset.id] = !state.histOpen[t.dataset.id]; renderHistory(); }
+    else if (a === "histtoggle") { state.histOpen[t.dataset.id] = !state.histOpen[t.dataset.id]; if (t.dataset.ro) renderRollover(); else renderHistory(); }
     else if (a === "rorefresh") { state.ro = null; state.roFresh = 0; store.set("ro", null); renderRollover(); }
     else if (a === "rotarget") { state.roForm.target = Number(t.dataset.v); hapSel(); renderRollover(); }
     else if (a === "rodays") { const inp = document.getElementById("rostake"); if (inp) state.roForm.stake = inp.value; state.roForm.days = Math.max(3, Math.min(15, state.roForm.days + Number(t.dataset.v))); hapSel(); renderRollover(); }
@@ -929,6 +1002,17 @@
     else if (a === "ronow") roAction({ action: "now" }, true);
     else if (a === "roskip") roAction({ action: "skip" });
     else if (a === "rostop") { const doIt = () => roAction({ action: "stop" }); if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast("6.2")) tg.showConfirm("Stop this rollover plan?", (ok) => ok && doIt()); else if (confirm("Stop this rollover plan?")) doIt(); }
+    else if (a === "scanrefresh") refreshScan(t.dataset.x === "1");
+    else if (a === "ropicks") refreshPicks(t.dataset.id, t.dataset.x === "1");
+    else if (a === "roconfirm") {
+      t.disabled = true; t.textContent = "Booking…";
+      try { const r = await api("/api/rollover", { action: "refresh_confirm", token: t.dataset.t }); hapN("success"); state.hist = null; store.set("hist", null);
+        openSheet(`<div class="label" style="text-align:center">New booking code</div><div class="code" id="codeText">${esc(r.code)}</div><div class="sub" style="text-align:center">${esc(r.old_code || "")} is marked replaced · not a loss</div><div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="openhub">Open SportyBet</button></div>`); }
+      catch (e) { hapN("error"); openSheet(`<div class="label" style="text-align:center">Refresh failed</div><div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="closesheet">Close</button>`); }
+      state.ro = null; store.set("ro", null); if (state.tab === "rollover") renderRollover();
+    }
+    else if (a === "roplan") openPlan(t.dataset.id);
+    else if (a === "roplanback") { state.roPlan = null; renderRollover(); window.scrollTo(0, 0); }
     else if (a === "robook") { try { const r = await api("/api/history/book", { id: t.dataset.id }); hapN("success"); toast(`Code ${r.code} created`); } catch (e) { toast(e.message); } state.ro = null; renderRollover(); }
   });
   document.querySelectorAll(".tabbtn").forEach((b) => b.addEventListener("click", () => {

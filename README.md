@@ -7,6 +7,46 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-02): rollover tickets, refresh picks, early "Entered" settlement
+**Rollover tickets.** Every rollover day's slip is a `slip` record in `fra_records` (`data.rollover_id` = plan id,
+`rollover_day`, legs, odds, code if booked, est.), and the plan's `log` keeps per day: status, `stake`, `expected_return`,
+`bankroll` after a win, `won_early` minute, `replaced_by`. `Tracker.rollover_tickets(plan)` joins them (PostgREST
+`data->>rollover_id=eq.<plan>`, oldest first): day, date, status **pending / live / won / lost / check / void / replaced /
+no_slip / skipped**, code, total (effective) odds, legs with results, stake → expected return, running bankroll, `can_refresh`.
+Past days and past plans stay viewable after the plan advances or ends. Telegram: `/rollover tickets` (also `view`), 🎟 buttons
+for the current plan and up to 3 past plans. Mini App Rollover tab: **Tickets** list (tap for legs), **Past plans** rows open
+their tickets. API: `GET /api/rollover` now carries `tickets` + `day_slip.can_refresh`; `GET /api/rollover/tickets?id=<plan>`.
+
+**Refresh picks.** 🔄 **Refresh picks** re-reads today's top-league prices (scanner pool forced fresh unless < 60 s old) and
+rebuilds the day under the same rules (target, top-league allowlist, stats-confirmed legs ≥80% calibrated est., no unders
+unless the plan allows them). 🔀 **Different picks** also leaves out every previous selection, so the slip really changes.
+Only the current day, only while the slip is pending and **before its first kick-off**; legs kicking off within 5 min are never
+picked. If fresh prices give the same picks it says so; if no different valid slip exists it says so and keeps the slip.
+Old slip unbooked → replaced at once. Old slip **booked** → preview first; a new booking code is created only on an explicit
+✅ Confirm (Telegram `RC|token`, app confirm sheet; token single-use, 15 min). The old record becomes status `replaced`
+(`replaced_by`, kept in History and Tickets, never counted as a loss, no longer tracked); the new one has `replaces`.
+API: `POST /api/rollover {"action":"refresh","id","exclude_prev"}` → `{status: replaced|preview|same|none, …}`,
+`{"action":"refresh_confirm","token"}` → `{code, record}`. Telegram buttons `RF|<slip>` / `RF|<slip>|x` under each day's slip,
+`/rollover` and the tickets view. **/scan and the Mini App Scanner** have the same two buttons (`SR|<id>[|x]`,
+`POST /api/scan {…, "refresh": true, "exclude": ["event|market|spec|outcome", …]}`); a refreshed scan is not saved.
+
+**History = booked slips only.** `Tracker.record()` refuses any slip without a booking code except rollover days, so scanner,
+AI and app slips are saved only when a code is requested. (Checked 2026-11-02: all 20 records in `fra_records` had codes; 0
+unbooked scans to clean up.)
+
+**Early settlement ("Entered" before full time)** (`settle.early_settle`). While a match is in play (Sportradar status
+1st half / Halftime / 2nd half only; never in extra time, penalties or interruptions) a leg is called as soon as its result
+can't change: **won early** — Over x.5 / team Over x.5 passed, GG Yes after both scored, multigoals "n+" reached; **lost
+early** — Under x.5 / team Under passed, GG No after both scored, exact goals / multigoal range / correct score exceeded;
+1st-half markets settle in full at half time; 2nd-half totals count only 2nd-half goals. 1X2, Double Chance, DNB, handicaps,
+odd/even, corners and cards always wait for the final whistle. A call must be seen on **two looks ≥60 s apart** (the tracker
+polls every 2 min while a tracked leg is live, 5 min while pending, 15 min idle), so a goal ruled out quickly is never locked.
+Leg note "Won early (63')" / "Lost early (70')" + `early {min, score, verified}`. When every leg is won the slip pings
+**"✅ Entered!"** at once (one ping per slip, as before; ❌ goes out as soon as a leg is lost). After full time each early call
+is re-checked against the final score; in the rare case it differs (VAR / feed correction) the leg and slip are corrected and
+one ⚠️ Correction message is sent (a rollover day corrected to lost busts the plan). History and tickets show
+"won early (63')". Tests: `tests/test_early_settle.py` (40 market cases + tracker / rollover / refresh flows, offline).
+
 ## What's new (2026-11-01, later): Bet analyzer + top-leagues default
 **Bet analyzer** (`analyzer.py`). Paste any SportyBet NG booking code: `/analyze N6RXGP` (optional rules for the swaps:
 `/analyze N6RXGP no unders`), or just send the bare 6-character code in chat (a message that is only 6 letters/digits with a
@@ -222,7 +262,8 @@ button, safe-area insets.
 | `POST /api/book {"slip_id"}` or `{"selections":[…], "legs":[meta…]}` | `{code, url, requested, loaded, history_id}`; saved to history |
 | `GET /api/history?limit=` | Saved slips (newest first) + current rollover |
 | `POST /api/history/book {"id"}` | Book a saved slip that has no code yet (rollover day) |
-| `GET /api/rollover` · `POST /api/rollover {"action": start\|now\|skip\|stop\|mark, target, days, stake, result}` | Rollover plan |
+| `GET /api/rollover` · `POST /api/rollover {"action": start\|now\|skip\|stop\|mark\|refresh\|refresh_confirm, …}` | Rollover plan (+ `tickets`), refresh picks |
+| `GET /api/rollover/tickets?id=<plan>` | Every day's ticket of one plan (active or past) |
 | `POST /api/admin/tick {"id"?}` · `POST /api/admin/test_settle {"legs"}` · `POST /api/admin/delete_test {"id"}` | Admin only: run the tracker now, settle a TEST slip of finished matches (pings once, marked TEST), delete TEST records |
 | `POST /api/analyze {"code", "rules"?}` | Bet analyzer result (legs, summary, suggestions, improved slip, recommendation, `id`); not saved |
 | `POST /api/analyze/rebook {"id"}` | Book the improved slip of analysis `id` (explicit tap only); saved to History |
@@ -255,7 +296,7 @@ It forwards to `https://www.sportybet.com<p>` with browser headers, only for pat
 | `/reset` | Clear the AI chat memory |
 | `/analyze CODE [rules]` or paste a bare code | Bet analyzer: rating per leg, grade, suggestions, verdict, Rebook / AI take buttons |
 | `/history` | Last 12 booked codes with results + the latest running slip |
-| `/rollover [2-5] [3-15] [stake] [unders]` · `/rollover now\|skip\|stop\|won\|lost` | Start / manage a rollover plan (no unders unless `unders`) |
+| `/rollover [2-5] [3-15] [stake] [unders]` · `/rollover tickets\|now\|skip\|stop\|won\|lost` | Start / manage a rollover plan (no unders unless `unders`); `tickets` = every day's ticket |
 
 Bot menu (set on start): /start, /scan, /ai, /analyze, /today, /rollover, /history, /slip, /help. Profile photo, description and short description were set via
 the Bot API (`setMyProfilePhoto` with an `InputProfilePhotoStatic` upload, `setMyDescription`, `setMyShortDescription`).
@@ -332,6 +373,7 @@ python tests/test_webapp.py --live # + local server: /app, 403s, /api/events, /a
 python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/book
 python tests/test_constraints.py   # offline: Under tagging, rule parsing, scanner/rollover enforcement, AI rule merge + booking refusals
 python tests/test_analyzer.py      # offline: code detection, share parsing (fixtures), ratings, grade, swaps, verdict, top-leagues ids, no history writes
+python tests/test_early_settle.py  # offline: 40 early-settlement cases, Entered ping once, corrections, rollover tickets, refresh picks
 python tests/test_tracker.py       # 26 settlement cases + tracker run on real finished matches (SQLite, fake bot, 1 ping per slip)
 ```
 

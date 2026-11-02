@@ -38,7 +38,7 @@ HELP = (
     "/slip – your picks · /book – booking code · /clear – empty slip\n"
     "/analyze CODE – analyze any SportyBet booking code (or just paste the 6-character code)\n"
     "/history – booked codes and results (pinged when a slip lands)\n"
-    "/rollover 2 7 – rollover plan: daily target 2–5, 3–15 days (+ optional stake)\n"
+    "/rollover 2 7 – rollover plan: daily target 2–5, 3–15 days (+ optional stake) · /rollover tickets – every day's ticket\n"
     "/reset – clear the AI chat memory"
 )
 
@@ -318,12 +318,64 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         parts.append("\n<i>Estimates, not guarantees. 18+.</i>")
         await note.edit_text("\n".join(parts)[:4000], parse_mode=ParseMode.HTML, reply_markup=Kb(rows) if rows else None)
         return
+    res["scan_args"] = {"tier": tier, "target": target, "day": day, "constraints": c.to_dict() if c else None}
     sid = ai.remember_slip(res) if ai else None
-    kb = Kb([[Btn("📒 Book on SportyBet", callback_data=f"SB|{sid}")]]) if sid and res["legs"] else None
-    text = format_slip(res)
+    await note.edit_text(_scan_msg(res), parse_mode=ParseMode.HTML, reply_markup=_scan_kb(sid, res))
+
+
+def _scan_msg(res: dict, head: str = "") -> str:
+    text = head + format_slip(res)
     if len(text) > 4000:
-        text = format_slip(res, why=False)
-    await note.edit_text(text[:4096], parse_mode=ParseMode.HTML, reply_markup=kb)
+        text = head + format_slip(res, why=False)
+    return text[:4096]
+
+
+def _scan_kb(sid: str | None, res: dict) -> Kb | None:
+    if not sid:
+        return None
+    rows = [[Btn("📒 Book on SportyBet", callback_data=f"SB|{sid}")]] if res["legs"] else []
+    rows.append([Btn("🔄 Refresh picks", callback_data=f"SR|{sid}"), Btn("🔀 Different picks", callback_data=f"SR|{sid}|x")])
+    return Kb(rows)
+
+
+async def _scan_refresh(q, ctx, sid: str, exclude_prev: bool) -> None:
+    """Re-run a /scan slip with fresh prices and the same rules; nothing is saved until the user books."""
+    from constraints import Constraints
+    from scanner import sel_key
+    s = svc(ctx)
+    ai = getattr(s, "ai", None)
+    entry = ai.slips.get(sid) if ai else None
+    args = (entry or {}).get("slip", {}).get("scan_args")
+    if not entry or not args:
+        await q.answer("That slip expired. Run /scan again.", show_alert=True)
+        return
+    await q.answer("Refreshing picks… ~30 s")
+    old = entry["slip"]
+    prev = {sel_key(l) for l in old.get("legs") or []}
+    c = Constraints.from_dict(args["constraints"]) if args.get("constraints") else None
+    if c is not None:
+        c.tier, c.target_odds = None, None
+    try:
+        res = await s.scanner.scan(args["tier"], args.get("target"), args["day"], None, c,
+                                   exclude=prev if exclude_prev else None, fresh=True)
+    except Exception as exc:
+        log.warning("scan refresh failed: %s", exc, exc_info=True)
+        await q.message.reply_text("The refresh failed (SportyBet didn't answer). Try again in a minute.")
+        return
+    new = {sel_key(l) for l in res["legs"]}
+    if not res["legs"]:
+        await q.message.reply_text("🔄 No different valid slip exists right now under the same rules"
+                                   + (" without the previous picks" if exclude_prev else "") + ". The last slip stands.")
+        return
+    if new == prev:
+        await q.message.reply_text("🔄 Fresh prices give the same picks: they're still the strongest. "
+                                   "Tap 🔀 Different picks to leave them out.")
+        return
+    res["scan_args"] = args
+    nsid = ai.remember_slip(res)
+    kept = len(new & prev)
+    head = f"🔄 <b>Refreshed</b> · {len(new) - kept} new pick(s), {kept} kept · not saved until you book\n"
+    await q.message.reply_text(_scan_msg(res, head), parse_mode=ParseMode.HTML, reply_markup=_scan_kb(nsid, res))
 
 
 async def slip_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -552,7 +604,10 @@ def _hist_line(r: dict) -> str:
     except Exception:
         pass
     tag = f"Rollover d{d['rollover_day']}" if d.get("rollover_id") else (d.get("label") or d.get("tier") or "Slip")
-    return (f"{STATUS_ICON.get(r['status'], '⏳')} <b>{esc(tag)}</b> · <code>{esc(d.get('code') or '—')}</code> · "
+    early = [l["early"]["min"] for l in legs if (l.get("early") or {}).get("min")]
+    if early and r["status"] == "won":
+        tag += f" · won early ({max(early)}')"
+    return (f"{({'replaced': '♻️'}).get(r['status']) or STATUS_ICON.get(r['status'], '⏳')} <b>{esc(tag)}</b> · <code>{esc(d.get('code') or '—')}</code> · "
             f"<b>{d.get('total_odds') or 0:.2f}</b> · {won}/{len(legs)} legs won · <i>{esc(when)}</i>")
 
 
@@ -599,6 +654,9 @@ def _ro_text(rec: dict | None) -> str:
         st = {"no_slip": "⏸", "skipped": "⏭"}.get(x["status"], STATUS_ICON.get(x["status"], ""))
         lines.append(f"{st} Day {x['day']} · {esc(x['date'])}" + (f" · <code>{esc(x['code'])}</code>" if x.get("code") else "")
                      + (f" · {x['total_odds']:.2f}" if x.get("total_odds") else "")
+                     + (f" · won early ({x['won_early']}')" if x.get("won_early") else "")
+                     + (" · replaced" if x["status"] == "replaced" else "")
+                     + (f" · bankroll {x['bankroll']:,.0f}" if x.get("bankroll") else "")
                      + (f" · <i>{esc(x['note'][:90])}</i>" if x.get("note") and x["status"] in ("no_slip", "skipped") else ""))
     if not d.get("log"):
         lines.append("No day generated yet: the first slip comes at ~09:00.")
@@ -608,10 +666,151 @@ def _ro_text(rec: dict | None) -> str:
 
 def _ro_kb(rec: dict | None) -> Kb:
     if not rec or rec["status"] != "active":
-        return Kb([[Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (2, 3)],
-                   [Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (4, 5)]])
-    return Kb([[Btn("⚡ Build today's slip now", callback_data="RO|now")],
-               [Btn("⏭ Skip today", callback_data="RO|skip"), Btn("⏹ Stop plan", callback_data="RO|stop")]])
+        rows = [[Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (2, 3)],
+                [Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (4, 5)]]
+        if rec:
+            rows.insert(0, [Btn("🎟 Tickets of this plan", callback_data=f"RO|tix|{rec['id']}")])
+        return Kb(rows)
+    rows = [[Btn("🎟 Tickets", callback_data=f"RO|tix|{rec['id']}"), Btn("⚡ Build today's slip now", callback_data="RO|now")]]
+    last = next((x for x in reversed(rec["data"].get("log") or []) if x.get("slip_id")), None)
+    if last and last.get("status") == "pending":
+        rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{last['slip_id']}"),
+                     Btn("🔀 Different picks", callback_data=f"RF|{last['slip_id']}|x")])
+    rows.append([Btn("⏭ Skip today", callback_data="RO|skip"), Btn("⏹ Stop plan", callback_data="RO|stop")])
+    return Kb(rows)
+
+
+TICKET_ICON = {**STATUS_ICON, "live": "🔴", "replaced": "♻️", "no_slip": "⏸", "skipped": "⏭"}
+
+
+def _tickets_msgs(plan: dict, tickets: list[dict]) -> list[str]:
+    """Day-by-day tickets of one rollover plan (Telegram HTML, split under the 4096 limit)."""
+    d = plan["data"]
+    head = [f"🎟 <b>Rollover tickets</b> · {d['target']:g}× a day · {d['days']} days · {esc(plan['status'])}"]
+    if d.get("stake"):
+        head.append(f"Bankroll {d['stake']:,.0f} → now <b>{(d.get('value') or 0):,.0f}</b>"
+                    + ("" if plan["status"] != "busted" else " (plan busted: 0)"))
+    parts = ["\n".join(head), RULE]
+    if not tickets:
+        parts.append("No tickets yet.")
+    for t in tickets:
+        st = t["status"]
+        ln = (f"{TICKET_ICON.get(st, '')} <b>Day {t['day']}</b> · {esc(t['date'])} · {esc(st.replace('_', ' '))}"
+              + (f" · won early ({t['won_early']}')" if t.get("won_early") else "")
+              + (f" · <code>{esc(t['code'])}</code>" if t.get("code") else "")
+              + (f" · <b>{(t.get('effective_odds') or t['total_odds'] or 0):.2f}</b>" if t.get("total_odds") else "")
+              + (f" · {t['n_legs']} legs" if t.get("n_legs") else ""))
+        if st == "replaced":
+            ln += "\n    <i>Replaced by a refresh: not a loss" + (", that code isn't tracked" if t.get("code") else "") + "</i>"
+        elif st in ("no_slip", "skipped"):
+            ln += f"\n    <i>{esc((t.get('note') or '')[:120])}</i>"
+        if t.get("stake") is not None and st not in ("replaced", "no_slip", "skipped"):
+            ln += (f"\n    Stake {t['stake']:,.0f} → {t['expected_return']:,.0f}"
+                   + (f" · bankroll {t['bankroll']:,.0f}" if st in ("won", "lost", "void") else ""))
+        for l in t.get("legs") or []:
+            ic = STATUS_ICON.get(l.get("status") or "pending", "⏳")
+            ln += (f"\n    {ic} {esc(l.get('home', ''))} v {esc(l.get('away', ''))} · {esc(l.get('pick', ''))} "
+                   f"@ {(l.get('odds') or 0):.2f}"
+                   + (f" · {esc(l['score'])}" if l.get("score") else "")
+                   + (f" · <i>{esc(l['note'][:40])}</i>" if l.get("note") and l.get("status") != "pending" else ""))
+        parts.append(ln)
+    parts.append("<i>Estimates, not guarantees. 18+.</i>")
+    msgs, cur = [], ""
+    for p in parts:
+        if len(cur) + len(p) + 1 > 3900 and cur:
+            msgs.append(cur)
+            cur = ""
+        cur += ("\n" if cur else "") + p
+    return msgs + ([cur] if cur else [])
+
+
+async def _send_tickets(msg, ctx, plan_id: str | None) -> None:
+    tr = svc(ctx).tracker
+    plan = await tr.history.get(plan_id) if plan_id else (await tr.active_rollover()
+                                                           or next(iter(await tr.rollovers(1)), None))
+    if not plan or plan.get("kind") != "rollover":
+        await msg.reply_text("No rollover plan yet. Start one with /rollover 2 7.")
+        return
+    tickets = await tr.rollover_tickets(plan)
+    msgs = _tickets_msgs(plan, tickets)
+    url = app_url()
+    for i, m in enumerate(msgs):
+        kb = None
+        if i == len(msgs) - 1:
+            rows = []
+            cur = next((t for t in reversed(tickets) if t.get("can_refresh")), None)
+            if cur:
+                rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{cur['slip_id']}"),
+                             Btn("🔀 Different picks", callback_data=f"RF|{cur['slip_id']}|x")])
+            past = [r for r in await tr.rollovers(6) if r["id"] != plan["id"]][:3]
+            for r in past:
+                rows.append([Btn(f"🎟 {r['data']['target']:g}× · {r['data']['days']} days · {r['status']} "
+                                 f"({(r.get('created_at') or '')[:10]})", callback_data=f"RO|tix|{r['id']}")])
+            if url:
+                rows.append([Btn("📱 Open Rollover in the app", web_app=WebAppInfo(url + "#rollover"))])
+            kb = Kb(rows) if rows else None
+        await msg.reply_text(m, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+
+
+async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
+    from fmt import leg_lines
+    from tracker import day_markup
+    tr = svc(ctx).tracker
+    await q.answer("Refreshing picks… ~30–60 s")
+    note = await q.message.reply_text("🔄 Re-reading today's top-league prices for this rollover day… ~30–60 s")
+    try:
+        out = await tr.refresh_day(slip_id, exclude_prev=exclude_prev)
+    except ValueError as exc:
+        await note.edit_text(f"⚠️ {esc(str(exc))}", parse_mode=ParseMode.HTML)
+        return
+    except Exception as exc:
+        log.warning("rollover refresh failed: %s", exc, exc_info=True)
+        await note.edit_text("The refresh failed (scanner or history store didn't answer). Your slip is unchanged.")
+        return
+    if out["status"] in ("none", "same"):
+        kb = None
+        if out["status"] == "same":
+            kb = Kb([[Btn("🔀 Different picks", callback_data=f"RF|{slip_id}|x")]])
+        await note.edit_text(("🔄 " if out["status"] == "same" else "⚠️ ") + esc(out["note"]), parse_mode=ParseMode.HTML,
+                             reply_markup=kb)
+        return
+    res = out["slip"]
+    body = "\n".join([leg_lines(l, i, why=False) for i, l in enumerate(res["legs"], 1)])
+    tail = (f"{RULE}\n<b>Total odds <code>{res['total_odds']:.2f}</code></b> · est. hit chance <b>{res['est_prob']:.0%}</b>"
+            "\n<i>Same rules: top leagues, every leg ≥80% est. Estimates, not guarantees. 18+.</i>")
+    if out["status"] == "preview":
+        await note.edit_text(
+            f"🔄 <b>New picks for today</b> (preview)\nYour current slip is booked as <code>{esc(out['old_code'])}</code>. "
+            "Confirm to book a <b>new code</b>; the old one is marked <i>replaced</i> (not counted as a loss) and "
+            f"stops being tracked.\n{RULE}\n{body}\n{tail}", parse_mode=ParseMode.HTML,
+            reply_markup=Kb([[Btn("✅ Confirm: book new code", callback_data=f"RC|{out['token']}")],
+                             [Btn("Keep current slip", callback_data="NOOP")]]))
+        return
+    rec = out["record"]
+    await note.edit_text(f"🔄 <b>Picks refreshed</b> · Rollover day {rec['data']['rollover_day']}\n"
+                         f"The previous slip is marked replaced.\n{RULE}\n{body}\n{tail}", parse_mode=ParseMode.HTML,
+                         reply_markup=day_markup(rec["id"], bool(rec["data"].get("code"))))
+
+
+async def _ro_refresh_confirm(q, ctx, token: str) -> None:
+    from tracker import day_markup
+    tr = svc(ctx).tracker
+    await q.answer("Booking the new slip…")
+    try:
+        out = await tr.refresh_confirm(token)
+    except (ValueError, BookingError) as exc:
+        await q.message.reply_text(f"⚠️ {esc(str(exc))}", parse_mode=ParseMode.HTML)
+        return
+    rec = out["record"]
+    try:
+        await q.edit_message_reply_markup(None)
+    except Exception:
+        pass
+    await q.message.reply_text(
+        f"📒 <b>New code: <code>{esc(out['code'])}</code></b> · Rollover day {rec['data']['rollover_day']} · "
+        f"{len(rec['data']['legs'])} legs · total odds {rec['data']['total_odds']:.2f}\n"
+        f"<code>{esc(out.get('old_code') or '')}</code> is marked replaced (not a loss). Tracking the new one.",
+        parse_mode=ParseMode.HTML, reply_markup=day_markup(rec["id"], True))
 
 
 async def rollover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -624,6 +823,9 @@ async def rollover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             rec = await tr.active_rollover() or next(iter(await tr.rollovers(1)), None)
             await msg.reply_text(_ro_text(rec), parse_mode=ParseMode.HTML, reply_markup=_ro_kb(rec))
             return
+        if args[0] in ("tickets", "view", "ticket", "history"):
+            await _send_tickets(msg, ctx, None)
+            return
         if args[0] in ("stop", "skip", "now", "won", "lost"):
             await _ro_action(msg, ctx, args[0])
             return
@@ -633,7 +835,7 @@ async def rollover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         target, days = float(args[0].rstrip("x×")), int(args[1]) if len(args) > 1 else 5
         stake = float(args[2].replace(",", "")) if len(args) > 2 else None
     except (ValueError, IndexError):
-        await msg.reply_text("Usage: /rollover <target 2|3|4|5> <days 3–15> [stake] [unders] · /rollover stop|skip|now")
+        await msg.reply_text("Usage: /rollover <target 2|3|4|5> <days 3–15> [stake] [unders] · /rollover tickets|stop|skip|now")
         return
     await _ro_start(msg, ctx, target, days, stake, allow_unders)
 
@@ -749,9 +951,17 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"{entry['slip']['total_odds']:.2f} · est. hit chance {entry['slip']['est_prob']:.0%}\n"
             f"Saved to /history: I'll ping you when it lands.\n\n{RG_NOTE}",
             parse_mode=ParseMode.HTML, reply_markup=Kb([[Btn("Open SportyBet code hub", url=url)]]))
+    elif kind == "RF":
+        await _ro_refresh(q, ctx, parts[1], len(parts) > 2 and parts[2] == "x")
+    elif kind == "RC":
+        await _ro_refresh_confirm(q, ctx, parts[1])
+    elif kind == "SR":
+        await _scan_refresh(q, ctx, parts[1], len(parts) > 2 and parts[2] == "x")
     elif kind == "RO":
         await q.answer()
-        if parts[1] == "start":
+        if parts[1] == "tix":
+            await _send_tickets(q.message, ctx, parts[2] if len(parts) > 2 else None)
+        elif parts[1] == "start":
             await _ro_start(q.message, ctx, float(parts[2]), int(parts[3]), None)
         else:
             await _ro_action(q.message, ctx, parts[1])

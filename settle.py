@@ -30,6 +30,7 @@ HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
            "Referer": "https://www.sportybet.com/", "Origin": "https://www.sportybet.com"}
 ENDED = {100, 110, 120}            # Ended, AET, AP
 VOIDED = {"cancelled", "canceled", "abandoned", "walkover", "coverage canceled", "removed"}
+LIVE_PHASE = {6: "1h", 31: "ht", 7: "2h"}   # Sportradar status ids; anything else in play = "other" (no early calls)
 POSTPONED = {"postponed", "delayed", "interrupted", "suspended", "start delayed"}
 
 
@@ -41,6 +42,9 @@ class MatchResult:
     ht: tuple[int, int] | None = None
     live: tuple[int, int] | None = None
     corners: dict = field(default_factory=dict)   # {"ft": (h,a), "h1": (h,a)}
+    status_id: int = -1
+    minute: int | None = None          # live: minute of play (from timeinfo.played seconds)
+    phase: str = ""                    # live: 1h | ht | 2h | other (extra time, penalties, interruptions)
     cards: dict = field(default_factory=dict)     # {"y": (h,a), "r": (h,a), "yr": (h,a), "y_h1": .., "r_h1": ..}
 
     @property
@@ -64,6 +68,16 @@ def _split(v: str) -> tuple[int, int] | None:
         return int(a), int(b)
     except (ValueError, TypeError):
         return None
+
+
+def _minute(played, phase: str) -> int | None:
+    try:
+        sec = int(played)
+    except (TypeError, ValueError):
+        return 45 if phase == "ht" else None
+    if phase == "ht":
+        return 45
+    return max(1, sec // 60 + 1)
 
 
 class ResultsClient:
@@ -106,8 +120,11 @@ class ResultsClient:
                 res.state = "notstarted"
             else:
                 res.state = "live"
+                res.status_id = sid
                 res.live = _pair(m.get("result"))
                 res.ht = _pair(periods.get("p1"))
+                res.phase = LIVE_PHASE.get(sid, "other")
+                res.minute = _minute((m.get("timeinfo") or {}).get("played"), res.phase)
         if res.state == "ended" and res.ft is None:
             res.state = "unknown"       # ended but no score yet: try again next tick
         if res.state == "ended" and need_stats:
@@ -308,3 +325,73 @@ def effective_odds(legs: list[dict]) -> float:
         if l.get("status") != "void":
             t *= l.get("odds") or 1.0
     return round(t, 2)
+
+
+# ------------------------------------------------------------------ early settlement (live score)
+def _lock_goals(kind: str, side: str | None, spec: str, o: str, i: int, j: int) -> str | None:
+    """Outcome already certain from a running score that can only go up? 'won' / 'lost' / None (not yet)."""
+    if kind in ("total", "team_total"):
+        line = float(spec_value(spec, "total") or "nan")
+        if line != line:
+            return None
+        t = i + j if kind == "total" else (i if side == "home" else j)
+        if t > line:                      # line already passed: over has landed, under is gone
+            return "won" if o == "12" else "lost" if o == "13" else None
+        return None
+    if kind == "btts":
+        if i > 0 and j > 0:
+            return "won" if o == "74" else "lost" if o == "76" else None
+        return None
+    return None                           # 1X2, DC, DNB, handicaps: a later goal can still flip them
+
+
+def early_settle(leg: dict, r: MatchResult) -> tuple[str, str] | None:
+    """Mathematically certain result of a leg while its match is still in play, or None.
+
+    Only goal counts that can't go back down are used (regular time only: no calls in extra time / penalties /
+    interruptions). Won early: Over x.5 / team Over x.5 passed, GG Yes after both scored, a range "n+" reached.
+    Lost early: Under x.5 / team Under passed, GG No after both scored, exact goals / multigoals / correct score
+    already exceeded. 1st-half markets are settled in full once half time is reached. 1X2, Double Chance, DNB,
+    handicaps, odd/even, corners and cards always wait for the final whistle."""
+    if r.state != "live" or r.live is None or r.phase not in ("1h", "ht", "2h"):
+        return None
+    i, j = r.live
+    mid = leg.get("market_id", "")
+    tag = f"({r.minute}')" if r.minute else ("(HT)" if r.phase == "ht" else "")
+    out: str | None = None
+    try:
+        if mid in FAMILIES:
+            fam = FAMILIES[mid]
+            o, spec = leg.get("outcome_id", ""), leg.get("specifier") or ""
+            if fam.period == "ft":
+                out = _lock_goals(fam.kind, fam.side, spec, o, i, j)
+            elif fam.period == "h1":
+                if r.phase in ("ht", "2h") and r.ht is not None:
+                    full = _goals_family(leg, *r.ht)        # first half is over: its score is final
+                    out = full if full in ("won", "lost") else None
+                    tag = f"(HT {r.ht[0]}-{r.ht[1]})"
+                elif r.phase == "1h":
+                    out = _lock_goals(fam.kind, fam.side, spec, o, i, j)
+            elif fam.period == "h2" and r.phase == "2h" and r.ht is not None:
+                out = _lock_goals(fam.kind, fam.side, spec, o, i - r.ht[0], j - r.ht[1])
+        else:
+            market = (leg.get("market") or "").lower()
+            pick = (leg.get("pick") or "").strip()
+            half = "1st half" in market or "2nd half" in market
+            if market == "correct score" and re.fullmatch(r"\d+:\d+", pick):
+                a, b = (int(x) for x in pick.split(":"))
+                out = "lost" if (i > a or j > b) else None
+            elif market in ("exact goals", "multigoals", "goal range", "total goals range") and not half:
+                m = _RANGE.match(pick)
+                if m:
+                    lo = int(m.group(1))
+                    hi = None if m.group(3) else (int(m.group(2)) if m.group(2) else lo)
+                    if hi is None:
+                        out = "won" if i + j >= lo else None
+                    else:
+                        out = "lost" if i + j > hi else None
+    except (TypeError, ValueError):
+        return None
+    if out is None:
+        return None
+    return out, f"{'Won' if out == 'won' else 'Lost'} early {tag}".strip()

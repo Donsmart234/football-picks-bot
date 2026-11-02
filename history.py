@@ -162,6 +162,24 @@ class HistoryStore:
                 return {"id": r[0], "kind": r[1], "status": r[2], "created_at": r[3], "updated_at": r[4], "data": d}
         return None
 
+    async def list_field(self, kind: str, field: str, value: str, limit: int = 100) -> list[dict]:
+        """Records of `kind` whose data->>field equals `value` (e.g. every ticket of one rollover plan), oldest first."""
+        if self.remote:
+            r = await self._http().get(f"/{TABLE}", params={"kind": f"eq.{kind}", f"data->>{field}": f"eq.{value}",
+                                                            "order": "created_at.asc", "limit": str(limit), "select": "*"})
+            r.raise_for_status()
+            return r.json()
+        if self.storage is None:
+            return []
+        rows = self.storage._exec(f"SELECT id, kind, status, created_at, updated_at, data FROM {TABLE} WHERE kind=? "
+                                  "AND data LIKE ? ORDER BY created_at ASC LIMIT ?", (kind, f"%{value}%", limit))
+        out = []
+        for r in rows:
+            d = json.loads(r[5] or "{}")
+            if str(d.get(field) or "") == value:
+                out.append({"id": r[0], "kind": r[1], "status": r[2], "created_at": r[3], "updated_at": r[4], "data": d})
+        return out
+
     async def delete(self, rid: str) -> None:
         if self.remote:
             await self._http().delete(f"/{TABLE}", params={"id": f"eq.{rid}"})

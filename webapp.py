@@ -197,6 +197,7 @@ class MiniApp:
         app.router.add_get("/api/admin/diag", self.diag)
         app.router.add_get("/api/history", self.history)
         app.router.add_get("/api/rollover", self.rollover_get)
+        app.router.add_get("/api/rollover/tickets", self.rollover_tickets)
         app.router.add_post("/api/history/book", self.history_book)
         app.router.add_post("/api/rollover", self.rollover_post)
         app.router.add_post("/api/admin/tick", self.admin_tick)
@@ -467,13 +468,33 @@ class MiniApp:
             past = await tr.rollovers(6)
         except Exception:
             return web.json_response({"error": "The history store didn't answer just now."}, status=502)
-        day_slip = None
+        day_slip, tickets = None, []
         if act:
             last = next((x for x in reversed(act["data"]["log"]) if x.get("slip_id")), None)
             if last:
                 day_slip = await tr.history.get(last["slip_id"])
-        return web.json_response({"active": act, "past": past, "day_slip": day_slip,
-                                  "targets": [2, 3, 4, 5], "days": [3, 15]})
+            try:
+                tickets = await tr.rollover_tickets(act)
+            except Exception:
+                tickets = []
+            if day_slip:
+                cur = next((t for t in tickets if t["slip_id"] == day_slip["id"]), None)
+                day_slip["can_refresh"] = bool(cur and cur.get("can_refresh"))
+        return self._gz(web.json_response({"active": act, "past": past, "day_slip": day_slip, "tickets": tickets,
+                                           "targets": [2, 3, 4, 5], "days": [3, 15]}))
+
+    async def rollover_tickets(self, request: web.Request) -> web.Response:
+        """Every day's ticket of one plan (active or past): legs, status, stake / return, running bankroll."""
+        tr = self.s.tracker
+        pid = str(request.query.get("id") or "")[:40]
+        try:
+            plan = await tr.history.get(pid) if pid else None
+            if not plan or plan.get("kind") != "rollover":
+                return web.json_response({"error": "plan not found"}, status=404)
+            tickets = await tr.rollover_tickets(plan)
+        except Exception:
+            return web.json_response({"error": "The history store didn't answer just now."}, status=502)
+        return self._gz(web.json_response({"plan": plan, "tickets": tickets}))
 
     async def rollover_post(self, request: web.Request) -> web.Response:
         data = await self._json(request)
@@ -498,6 +519,16 @@ class MiniApp:
                 return web.json_response({"ok": True, "rollover": await tr.skip_day()})
             if act == "mark":
                 return web.json_response({"ok": True, "rollover": await tr.mark_day(str(data.get("result")))})
+            if act == "refresh":
+                out = await tr.refresh_day(str(data.get("id") or ""), exclude_prev=bool(data.get("exclude_prev")))
+                return web.json_response({"ok": True, **{k: v for k, v in out.items() if k != "record"},
+                                          "record": out.get("record")})
+            if act == "refresh_confirm":
+                try:
+                    out = await tr.refresh_confirm(str(data.get("token") or ""))
+                except BookingError as exc:
+                    return web.json_response({"error": f"Booking failed: {exc}"}, status=502)
+                return web.json_response({"ok": True, **out})
             if act == "now":
                 rec = await tr.active_rollover()
                 if not rec:
@@ -572,8 +603,11 @@ class MiniApp:
             c.exclude_markets.append("under")
         if data.get("all_leagues"):
             c.all_leagues = True        # lift the default top-leagues allowlist
+        prev = {str(x)[:120] for x in (data.get("exclude") or []) if isinstance(x, str)}
+        prev = prev if len(prev) <= 40 else set()
         try:
-            res = await self.s.scanner.scan(tier, target, day, leagues, c if not c.empty() else None)
+            res = await self.s.scanner.scan(tier, target, day, leagues, c if not c.empty() else None,
+                                            exclude=prev or None, fresh=bool(data.get("refresh")))
         except Exception as exc:
             log.warning("scan failed: %s", exc, exc_info=True)
             return web.json_response({"error": "The market scan failed (SportyBet didn't answer). Try again shortly."},

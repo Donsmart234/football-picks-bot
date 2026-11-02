@@ -23,7 +23,7 @@ FLAGS = {
     "ecuador": "🇪🇨", "paraguay": "🇵🇾", "bolivia": "🇧🇴", "venezuela": "🇻🇪", "kenya": "🇰🇪", "tunisia": "🇹🇳",
     "algeria": "🇩🇿", "iran": "🇮🇷", "india": "🇮🇳", "indonesia": "🇮🇩", "thailand": "🇹🇭", "vietnam": "🇻🇳",
 }
-STATUS_ICON = {"won": "✅", "lost": "❌", "void": "➖", "check": "❔", "live": "🔴", "pending": "⏳"}
+STATUS_ICON = {"won": "✅", "lost": "❌", "void": "➖", "check": "❔", "live": "🔴", "pending": "⏳", "replaced": "♻️"}
 
 
 def esc(s) -> str:

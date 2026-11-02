@@ -51,6 +51,7 @@ ROLLOVER_MIN_P = 0.80
 ROLLOVER_MIN_ODDS = 1.12   # 1.03-1.10 legs add bookmaker margin and leg count for almost no odds
 STATS_EVENTS = 40
 POOL_TTL = 600
+FRESH_TTL = 60          # a refresh re-reads prices unless the pool is younger than this
 
 # Major / reliable competitions first (category, tournament name). Everything else ordered by market depth.
 PRIORITY = [
@@ -76,6 +77,20 @@ def _prio(e: Event) -> tuple:
             return (0, i, -e.market_count)
     penalty = 2 if ("friendl" in lg or "women" in lg or "u19" in lg or "u21" in lg or "u23" in lg) else 1
     return (penalty, 0, -e.market_count)
+
+
+def sel_key(l) -> str:
+    """Identity of one selection (Leg or leg dict): event|market|specifier|outcome."""
+    g = (lambda k: getattr(l, k, None)) if not isinstance(l, dict) else l.get
+    return f"{g('event_id')}|{g('market_id')}|{g('specifier') or ''}|{g('outcome_id')}"
+
+
+def not_started(l, soon: datetime) -> bool:
+    """Kick-off still ahead of `soon` (legs from a pool up to 10 min old can belong to a match that just began)."""
+    try:
+        return datetime.fromisoformat(str(l.kickoff).replace("Z", "+00:00")) > soon
+    except (ValueError, TypeError):
+        return True
 
 
 def uid_of(competitor_id: str) -> str:
@@ -245,20 +260,21 @@ class Scanner:
 
     # ---- pool -------------------------------------------------------------
     async def pool(self, day: str = "today", leagues: list[str] | None = None, cap: int = MAX_EVENTS,
-                   rules: Constraints | None = None) -> Pool:
+                   rules: Constraints | None = None, fresh: bool = False) -> Pool:
         """Scanned matches for a window. `rules` = match-level constraints (leagues/countries/teams/kick-off):
         when set, the 80 matches are chosen among those that satisfy them (separate cache entry)."""
         day = day if day in DAYS else "today"
         mkey = rules.match_key() if rules is not None else ""
         rules = rules if mkey else None
         key = f"{day}|{','.join(sorted(x.lower() for x in leagues or []))}|{cap}|{mkey}"
+        ttl = FRESH_TTL if fresh else POOL_TTL      # refresh = re-read prices unless the copy is under a minute old
         p = self._pools.get(key)
-        if p and time.time() - p.created < POOL_TTL:
+        if p and time.time() - p.created < ttl:
             return p
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             p = self._pools.get(key)
-            if p and time.time() - p.created < POOL_TTL:
+            if p and time.time() - p.created < ttl:
                 return p
             t0 = time.time()
             events = self.select(await self.window_events(day), leagues, cap, rules)
@@ -417,19 +433,21 @@ class Scanner:
                 max_legs = min(max_legs, c.max_legs) if tier != "safe" else c.max_legs
         return min_p, lo, hi, max_legs
 
-    def allowed(self, legs: list[Leg], tier: str, c: Constraints | None) -> list[Leg]:
+    def allowed(self, legs: list[Leg], tier: str, c: Constraints | None, exclude: set | None = None) -> list[Leg]:
         min_p, lo, hi, _ = self.tier_rules(tier, c)
-        ok = [l for l in legs if lo <= l.odds <= hi and l.est >= min_p and l.verdict != "dropped"]
+        soon = datetime.now(timezone.utc) + timedelta(minutes=5)
+        ok = [l for l in legs if lo <= l.odds <= hi and l.est >= min_p and l.verdict != "dropped"
+              and not_started(l, soon) and not (exclude and sel_key(l) in exclude)]
         if tier == "high":
             ok = [l for l in ok if l.verdict != "demoted" and l.ev >= 0.97]
         if c:
             ok = [l for l in ok if c.leg_ok(l, min_p)]
         return ok
 
-    def candidates(self, pool: Pool, tier: str, c: Constraints | None = None) -> list[Leg]:
+    def candidates(self, pool: Pool, tier: str, c: Constraints | None = None, exclude: set | None = None) -> list[Leg]:
         best: list[Leg] = []
         for legs in pool.legs.values():
-            ok = self.allowed(legs, tier, c)
+            ok = self.allowed(legs, tier, c, exclude)
             if ok:
                 best.append(max(ok, key=lambda l: self._rank(l, tier)))
         best.sort(key=lambda l: -self._rank(l, tier))
@@ -463,13 +481,13 @@ class Scanner:
         return legs
 
     def build_slip(self, pool: Pool, tier: str, target: float | None = None,
-                   c: Constraints | None = None) -> dict:
+                   c: Constraints | None = None, exclude: set | None = None) -> dict:
         t = TIERS[tier]
         target = float(target or (c.target_odds if c else None) or t["target"])
         target = max(1.2, min(target, 100000.0))
         min_p, lo, hi, max_legs = self.tier_rules(tier, c)
         min_legs = (c.min_legs or 1) if c else 1
-        cands = self.candidates(pool, tier, c)
+        cands = self.candidates(pool, tier, c, exclude)
         legs = self._greedy(cands, tier, target, max_legs)
         g_total = math.prod(l.odds for l in legs) if legs else 1.0
         g_ok = legs and target * TOTAL_LO <= g_total <= target * TOTAL_HI and len(legs) >= min_legs
@@ -477,7 +495,7 @@ class Scanner:
             # exhaustive-ish search: the combination with the highest combined estimate that lands on the target
             pool_legs = []
             for ls in pool.legs.values():
-                ok = self.allowed(ls, tier, c)
+                ok = self.allowed(ls, tier, c, exclude)
                 bands: dict[int, Leg] = {}
                 for l in ok:
                     b = 0 if l.odds < 1.12 else 1 if l.odds < 1.2 else 2 if l.odds < 1.35 else 3 if l.odds < 1.55 \
@@ -544,7 +562,8 @@ class Scanner:
                 "slips": {k: self.build_slip(pool, k, None, c) for k in TIERS}}
 
     async def scan(self, tier: str = "safe", target: float | None = None, day: str = "today",
-                   leagues: list[str] | None = None, constraints: Constraints | None = None) -> dict:
+                   leagues: list[str] | None = None, constraints: Constraints | None = None,
+                   exclude: set | None = None, fresh: bool = False) -> dict:
         """constraints: structured user rules (see constraints.py), enforced at the candidate stage and
         re-verified on the finished slip (`constraint_check`)."""
         c = constraints if constraints is not None and not constraints.empty() else None
@@ -553,8 +572,8 @@ class Scanner:
             day = c.day
         if c and target is None:
             target = c.target_odds
-        pool = await self.pool(day, leagues, rules=c)
-        out = self.audit(pool, c) if tier == "audit" else self.build_slip(pool, tier, target, c)
+        pool = await self.pool(day, leagues, rules=c, fresh=fresh)
+        out = self.audit(pool, c) if tier == "audit" else self.build_slip(pool, tier, target, c, exclude)
         out["generated"] = datetime.fromtimestamp(pool.created, timezone.utc).isoformat()
         out["disclaimer"] = ("Estimates from prices + team stats, not guarantees. 'Safe' means lower-risk, never "
                              "certain. Combined probability assumes independent legs. 18+.")
@@ -572,14 +591,16 @@ class Scanner:
                 apply_stats(leg, pool.forms[e.event_id])
 
     async def rollover_slip(self, target: float, min_p: float = ROLLOVER_MIN_P, day: str = "today",
-                            allow_unders: bool = False, constraints: Constraints | None = None) -> dict:
+                            allow_unders: bool = False, constraints: Constraints | None = None,
+                            exclude: set | None = None, fresh: bool = False) -> dict:
         """Fewest, strongest stats-confirmed legs from allowlisted leagues whose total odds land on the target
         (between 0.97x and 1.20x of it). Every leg est >= min_p. Maximises the combined estimate.
         Under selections of every kind are excluded at the candidate stage unless allow_unders=True."""
         c = Constraints(**{**(constraints.to_dict() if constraints else {})}) if constraints else Constraints()
         if not allow_unders and "under" not in c.exclude_markets:
             c.exclude_markets.append("under")
-        pool = await self.pool(day)
+        pool = await self.pool(day, fresh=fresh)
+        soon = datetime.now(timezone.utc) + timedelta(minutes=5)
         allowed = [e for e in pool.events if rollover_allowed(e)]
         await self.ensure_stats(pool, allowed)
         ids = {e.event_id for e in allowed}
@@ -587,7 +608,8 @@ class Scanner:
         per_match: list[Leg] = []
         for eid in ids:
             legs = [l for l in pool.legs.get(eid) or [] if l.verdict == "confirmed" and l.est >= min_p
-                    and ROLLOVER_MIN_ODDS <= l.odds <= hi_t and c.leg_ok(l, min_p)]
+                    and ROLLOVER_MIN_ODDS <= l.odds <= hi_t and c.leg_ok(l, min_p)
+                    and not_started(l, soon) and not (exclude and sel_key(l) in exclude)]
             # keep the strongest leg in each odds band so the search can mix short and longer prices
             bands: dict[int, Leg] = {}
             for l in legs:
