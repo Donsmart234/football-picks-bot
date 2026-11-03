@@ -82,6 +82,83 @@ LEAGUE_ALIASES = {
     "npfl": "Nigeria · NPFL", "saudi pro league": "Saudi Arabia · Saudi Pro League",
 }
 
+# Named competitions matched by Sportradar unique-tournament id (leagues.py), never by a loose substring:
+# "champions league" must not pull in AFC Champions League Elite / Gulf Club Champions League / UCL SRL.
+# key -> (label, utids, aliases). A name with an empty utid set is matched by its exact name instead.
+COMPETITIONS: dict[str, tuple[str, frozenset, tuple]] = {
+    "ucl": ("UEFA Champions League", frozenset({7}), (
+        "ucl", "champions league", "uefa champions league", "uefa cl", "champions-league", "champions leag",
+        "champion league", "champions leauge")),
+    "uel": ("UEFA Europa League", frozenset({679}), (
+        "uel", "europa", "europa league", "uefa europa league", "europa-league")),
+    "uecl": ("UEFA Conference League", frozenset({34480}), (
+        "uecl", "conference", "conference league", "uefa conference league", "europa conference league",
+        "uefa europa conference league", "ecl")),
+    "uefa cups": ("UEFA club competitions", frozenset({7, 679, 34480}), (
+        "uefa cups", "european cups", "uefa competitions", "european competitions", "european football")),
+    "epl": ("Premier League (England)", frozenset({17}), (
+        "epl", "premier league", "english premier league", "england premier league", "the prem", "prem",
+        "barclays premier league", "pl games")),
+    "championship": ("Championship (England)", frozenset({18}), (
+        "championship", "efl championship", "english championship")),
+    "fa cup": ("FA Cup", frozenset({19}), ("fa cup", "emirates fa cup")),
+    "efl cup": ("EFL Cup", frozenset({21}), ("efl cup", "carabao cup", "carabao")),
+    "laliga": ("LaLiga", frozenset({8}), ("la liga", "laliga", "spanish league", "spanish la liga", "liga")),
+    "copa del rey": ("Copa del Rey", frozenset({329}), ("copa del rey",)),
+    "serie a": ("Serie A (Italy)", frozenset({23}), ("serie a", "italian serie a", "italian league", "seria a")),
+    "coppa italia": ("Coppa Italia", frozenset({328}), ("coppa italia",)),
+    "bundesliga": ("Bundesliga", frozenset({35}), ("bundesliga", "german bundesliga", "german league")),
+    "dfb pokal": ("DFB Pokal", frozenset({217}), ("dfb pokal", "dfb-pokal", "german cup")),
+    "ligue 1": ("Ligue 1", frozenset({34}), ("ligue 1", "french ligue 1", "french league", "ligue un")),
+    "coupe de france": ("Coupe de France", frozenset({335}), ("coupe de france",)),
+    "eredivisie": ("Eredivisie", frozenset({37}), ("eredivisie", "dutch league")),
+    "liga portugal": ("Liga Portugal", frozenset({238}), (
+        "liga portugal", "primeira liga", "portuguese league")),
+    "scottish premiership": ("Scottish Premiership", frozenset({36}), ("scottish premiership", "spfl")),
+    "super lig": ("Super Lig", frozenset({52}), ("super lig", "süper lig", "turkish league", "turkish super lig")),
+    "belgian pro league": ("Belgian Pro League", frozenset({38}), (
+        "belgian pro league", "jupiler pro league", "belgian league")),
+    "mls": ("MLS", frozenset({242}), ("mls", "major league soccer")),
+    "brasileirao": ("Brasileiro Serie A", frozenset({325}), ("brasileirao", "brazilian serie a", "brazil serie a")),
+    "nations league": ("UEFA Nations League", frozenset({23755}), ("nations league", "uefa nations league")),
+    # name-matched (no allowlist id): kept so their longer names win over the UEFA aliases inside them
+    "afc champions league": ("AFC Champions League", frozenset(), (
+        "afc champions league", "afc champions league elite", "asian champions league")),
+    "caf champions league": ("CAF Champions League", frozenset(), ("caf champions league",)),
+    "2. bundesliga": ("2. Bundesliga", frozenset(), ("2. bundesliga", "2 bundesliga", "bundesliga 2")),
+    "uefa youth league": ("UEFA Youth League", frozenset(), ("uefa youth league", "youth league")),
+    "npfl": ("NPFL", frozenset(), ("npfl", "nigeria premier league", "nigerian league")),
+    "saudi pro league": ("Saudi Pro League", frozenset(), ("saudi pro league", "saudi league", "spl")),
+}
+_COMP_ALIAS: dict[str, str] = {}
+for _k, (_lab, _ids, _al) in COMPETITIONS.items():
+    _COMP_ALIAS[_lab.lower()] = _k
+    for _a in _al:
+        _COMP_ALIAS[_a] = _k
+for _k in ("ucl", "uel", "uecl"):                # the labels Gemini tends to pass
+    _COMP_ALIAS[COMPETITIONS[_k][0].lower().replace("uefa ", "")] = _k
+# words too generic to be read as a league when they appear on their own in free text (still fine as tool args)
+_FREE_TEXT_SKIP = {"liga", "prem", "conference", "spl", "ecl", "pl games", "carabao", "european football",
+                   "youth league"}
+
+
+def competition(q: str) -> str | None:
+    """Canonical competition key for a league name / alias ('UCL', 'Champions League', 'uefa europa league')."""
+    s = re.sub(r"\s+", " ", str(q or "").lower().replace("’", "'").replace("_", " ")).strip()
+    s = re.sub(r"^(the|only|just)\s+", "", s)
+    s = re.sub(r"\s+(games?|matches|fixtures|picks?|selections?|only)$", "", s).strip()
+    if s in _COMP_ALIAS:
+        return _COMP_ALIAS[s]
+    s2 = re.sub(r"[^a-z0-9. ]+", " ", s)
+    s2 = re.sub(r"\s+", " ", s2).strip()
+    return _COMP_ALIAS.get(s2)
+
+
+def competition_label(q: str) -> str:
+    k = competition(q)
+    return COMPETITIONS[k][0] if k else str(q)
+
+
 DAYS = {"today", "tomorrow", "24h", "48h"}
 TOTAL_LO, TOTAL_HI = 0.97, 1.25     # a slip "hits" a target when total odds land in [0.97x, 1.25x]
 
@@ -310,8 +387,12 @@ class Constraints:
             for x in getattr(user, k):
                 if x not in cur:
                     cur.append(x)
-        for k in ("include_markets", "include_leagues", "include_countries", "include_teams"):
-            if getattr(user, k) and not getattr(self, k):
+        if user.include_markets and not self.include_markets:
+            self.include_markets = list(user.include_markets)
+        # a league / country / team the user named is the whole scope: the user's words replace the model's list
+        # (the model widening "champions league" to other competitions, or adding teams, is never allowed)
+        for k in ("include_leagues", "include_countries", "include_teams"):
+            if getattr(user, k):
                 setattr(self, k, list(getattr(user, k)))
         for k in ("tier", "target_odds", "min_leg_prob", "min_legs", "max_legs", "min_leg_odds", "max_leg_odds",
                   "day", "kickoff_after", "kickoff_before"):
@@ -322,6 +403,7 @@ class Constraints:
         self.all_leagues = self.all_leagues or user.all_leagues
         # an include that the user excluded makes no sense: the exclusion wins
         self.include_markets = [m for m in self.include_markets if m not in self.exclude_markets]
+        self.include_leagues = [x for x in self.include_leagues if not _has_league(self.exclude_leagues, x)]
         return self
 
     # ---- leg checks -------------------------------------------------------
@@ -424,11 +506,15 @@ class Constraints:
             parts.append(f"leg odds ≥{self.min_leg_odds:g}")
         if self.max_leg_odds:
             parts.append(f"leg odds ≤{self.max_leg_odds:g}")
-        for k, lab in (("include_leagues", "leagues"), ("include_countries", "countries"),
-                       ("include_teams", "teams")):
+        lab_ = lambda xs: ", ".join(dict.fromkeys(competition_label(x) for x in xs))
+        if self.include_leagues:
+            parts.append("only " + lab_(self.include_leagues))
+        for k, lab in (("include_countries", "countries"), ("include_teams", "teams")):
             if getattr(self, k):
                 parts.append(f"{lab}: " + ", ".join(getattr(self, k)))
-        for k, lab in (("exclude_leagues", "not"), ("exclude_countries", "not"), ("exclude_teams", "not")):
+        if self.exclude_leagues:
+            parts.append("not " + lab_(self.exclude_leagues))
+        for k, lab in (("exclude_countries", "not"), ("exclude_teams", "not")):
             if getattr(self, k):
                 parts.append(f"{lab} " + ", ".join(getattr(self, k)))
         if self.kickoff_after:
@@ -452,6 +538,25 @@ def _league_match(q: str, league: str, leg=None) -> bool:
     if q == TOP_LEAGUES_KEY:
         import leagues
         return leg is not None and leagues.is_top(leg)
+    k = competition(q)
+    if k:
+        label, ids, _ = COMPETITIONS[k]
+        if ids:
+            tid = None
+            if leg is not None:
+                get = (lambda n: leg.get(n)) if isinstance(leg, dict) else (lambda n: getattr(leg, n, None))
+                tid = get("tournament_id") or get("utid")
+            ut = str(tid or "").rsplit(":", 1)[-1]
+            if ut.isdigit():
+                return int(ut) in ids          # by Sportradar id: exact, never a look-alike competition
+            # no id on the leg: exact competition name (last segment), never a substring like "... SRL"
+            seg = league.rsplit(" · ", 1)[-1].strip()
+            names = {label.lower(), label.lower().split(" (")[0]}
+            names |= {COMPETITIONS[k][0].lower().replace("uefa ", "")}
+            return seg in names or seg.replace("uefa ", "") in names
+        seg = league.rsplit(" · ", 1)[-1].strip()
+        return any(seg == a or seg.startswith(a + " ") and not seg.endswith("srl") for a in
+                   [label.lower()] + list(COMPETITIONS[k][2]))
     q = LEAGUE_ALIASES.get(q, q).lower()
     if " · " in q:
         cat, _, lg = q.partition(" · ")
@@ -461,15 +566,26 @@ def _league_match(q: str, league: str, leg=None) -> bool:
 
 
 def _team_match(q: str, team: str) -> bool:
+    """Same club: equal names / aliases, or one name is the other plus at most one word ("Bayern" ~ "Bayern Munich",
+    "Man Utd" ~ "Manchester United"), never a different club that merely shares a word ("Inter" is not
+    "Inter Club de Escaldes", "Real Madrid" is not "Real Sociedad")."""
     if not q or not team:
         return False
-    if q.lower() in team.lower():
-        return True
     try:
-        from matching import team_score
-        return team_score(q, team) >= 85
+        from matching import normalize
+        from rapidfuzz import fuzz
     except Exception:
+        return q.lower() == team.lower()
+    a, b = normalize(q), normalize(team)
+    if not a or not b:
         return False
+    if a == b:
+        return True
+    wa, wb = a.split(), b.split()
+    short, long_ = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
+    if all(w in long_ for w in short) and len(long_) - len(short) <= 1:
+        return True
+    return fuzz.ratio(a, b) >= 88
 
 
 def _parse_iso(s) -> datetime | None:
@@ -543,13 +659,35 @@ _STOPWORDS = r"(?:with|only|from|in|for|at|legs?|odds|today|tomorrow|tonight|ple
              r"booking|between|max|min|each|per|after|before|that|which|where|but|then|so)"
 _ALIAS_KEYS = sorted(MARKET_ALIASES, key=len, reverse=True)
 _ALIAS_RE = re.compile(r"(?<![a-z0-9])(" + "|".join(re.escape(k) for k in _ALIAS_KEYS) + r")(?![a-z0-9])")
-_LEAGUE_KEYS = sorted(list(LEAGUE_ALIASES) + [TOP_LEAGUES_KEY, "top league", "big leagues", "major leagues"],
-                      key=len, reverse=True)
+_LEAGUE_KEYS = sorted(set(LEAGUE_ALIASES) | (set(_COMP_ALIAS) - _FREE_TEXT_SKIP) |
+                      {TOP_LEAGUES_KEY, "top league", "big leagues", "major leagues"}, key=len, reverse=True)
 _LEAGUE_RE = re.compile(r"(?<![a-z0-9])(" + "|".join(re.escape(k) for k in _LEAGUE_KEYS) + r")(?![a-z0-9])")
 
 
 def _league_key(k: str) -> str:
     return TOP_LEAGUES_KEY if k in ("top league", "big leagues", "major leagues") else k
+
+
+def _same_league(a: str, b: str) -> bool:
+    return a == b or (competition(a) is not None and competition(a) == competition(b))
+
+
+def _has_league(lst: list[str], k: str) -> bool:
+    return any(_same_league(x, k) for x in lst)
+
+
+def _negated(t: str, pos: int) -> bool:
+    """True when the words just before `pos` negate it ('no premier league', 'not interested in epl',
+    "i don't want la liga", 'avoid the ucl'), without a clause break in between."""
+    before = t[max(0, pos - 45):pos]
+    negs = list(re.finditer(r"(?<![a-z])(?:" + _NEG[3:-1] + r"|don'?t|dont|do not|no go)(?![a-z])", before))
+    if not negs:
+        return False
+    between = before[negs[-1].end():]
+    between = re.sub(r"\b(interested in|want|wan|need|like|include|including|any|from|in|games? from|"
+                     r"matches from|picks from|the|me)\b", " ", between)
+    return not re.search(r"(?<![a-z])" + _STOPWORDS + r"(?![a-z])|[.!?;,]", between) and \
+        not re.search(r"\b(only|just)\b", between)
 
 
 def parse_text(text: str) -> Constraints:
@@ -631,6 +769,7 @@ def parse_text(text: str) -> Constraints:
     if m:
         c.target_odds = _num(m.group(1), 1.01, 100000)
 
+    neg_spans: list[tuple[int, int]] = []
     # negated market words: "without unders and corners", "no under selections", "exclude cards, props"
     for nm in re.finditer(r"\b" + _NEG + r"\b\s+((?:(?:any|the|all|a|single|more|of)\s+)*)(.{0,60})", t):
         chunk = nm.group(2)
@@ -640,10 +779,11 @@ def parse_text(text: str) -> Constraints:
             mk = MARKET_ALIASES[am.group(1)]
             if mk not in c.exclude_markets:
                 c.exclude_markets.append(mk)
-        for lm in _LEAGUE_RE.finditer(chunk):
+        for lm in _LEAGUE_RE.finditer(chunk.split(",")[0]):
             k = _league_key(lm.group(1))
-            if k not in c.exclude_leagues:
+            if not _has_league(c.exclude_leagues, k):
                 c.exclude_leagues.append(k)
+            neg_spans.append(lm.span())
     # "only overs", "overs only", "just double chance"
     for om in re.finditer(r"\b(?:only|just|strictly)\s+(.{0,40})", t):
         chunk = om.group(1)
@@ -655,7 +795,7 @@ def parse_text(text: str) -> Constraints:
                 c.include_markets.append(mk)
         for lm in _LEAGUE_RE.finditer(chunk):
             k = _league_key(lm.group(1))
-            if k not in c.include_leagues:
+            if not _has_league(c.include_leagues, k):
                 c.include_leagues.append(k)
     for om in re.finditer(r"(?<![a-z0-9])(" + "|".join(re.escape(k) for k in _ALIAS_KEYS) + r")\s+only\b", t):
         mk = MARKET_ALIASES[om.group(1)]
@@ -665,8 +805,23 @@ def parse_text(text: str) -> Constraints:
                           r"(?![a-z0-9])|(?<![a-z0-9])(" + "|".join(re.escape(k) for k in _LEAGUE_KEYS) +
                           r")\s+(?:only|games|matches)\b", t):
         k = _league_key(lm.group(1) or lm.group(2))
-        if k not in c.exclude_leagues and k not in c.include_leagues:
+        if _negated(t, lm.start(1) if lm.group(1) else lm.start(2)):
+            if not _has_league(c.exclude_leagues, k):
+                c.exclude_leagues.append(k)
+            continue
+        if not _has_league(c.exclude_leagues, k) and not _has_league(c.include_leagues, k):
             c.include_leagues.append(k)
+    # any other named competition is a hard filter too ("champions league selections", "ucl picks", "only europa",
+    # "give me EPL and La Liga games"): a named league is never a suggestion.
+    for lm in _LEAGUE_RE.finditer(t):
+        k = _league_key(lm.group(1))
+        if k == TOP_LEAGUES_KEY or _has_league(c.exclude_leagues, k) or _has_league(c.include_leagues, k):
+            continue
+        if _negated(t, lm.start()):
+            if not _has_league(c.exclude_leagues, k):
+                c.exclude_leagues.append(k)
+            continue
+        c.include_leagues.append(k)
 
     # legs
     m = re.search(r"\b(\d{1,2})\s*(?:-|to)\s*(\d{1,2})\s*(?:legs?|games|matches|selections)\b", t)
@@ -694,6 +849,17 @@ def parse_text(text: str) -> Constraints:
                   r"selection)\s*(?:above|over|higher than)\s*(\d+(?:\.\d+)?)", t)
     if m:
         c.max_leg_odds = _num(m.group(1) or m.group(2), 1.0, 1000)
+    # leg odds range: "odds 1.2 to 1.5 each", "leg odds between 1.20 and 1.50", "each leg 1.3-1.6"
+    m = re.search(r"(?:(?:leg|each|per leg|every leg)\s*)?odds\s*(?:between|from|of)?\s*(\d+(?:\.\d+)?)\s*(?:-|to|and)\s*"
+                  r"(\d+(?:\.\d+)?)(\s*(?:each|per leg|a leg|per game|per selection))?"
+                  r"|(?:each|every|per)\s*(?:leg|game|selection)\s*(?:between|from)?\s*(\d+(?:\.\d+)?)\s*(?:-|to|and)\s*"
+                  r"(\d+(?:\.\d+)?)", t)
+    if m:
+        a_, b_ = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(5))
+        lo_, hi_ = sorted((_num(a_, 1.0, 1000) or 0, _num(b_, 1.0, 1000) or 0))
+        explicit = bool(m.group(3) or m.group(4) or re.search(r"(leg|each)\s*odds", m.group(0)))
+        if lo_ and hi_ and (explicit or hi_ <= 5):
+            c.min_leg_odds, c.max_leg_odds = c.min_leg_odds or lo_, c.max_leg_odds or hi_
     # leg probability
     m = re.search(r"(?:at least|min(?:imum)?|above|over|>=?)\s*(\d{2})\s*%", t)
     if m:
@@ -717,3 +883,67 @@ def parse_text(text: str) -> Constraints:
         c.stats_confirmed_only = True
     c.include_markets = [x for x in c.include_markets if x not in c.exclude_markets]
     return c
+
+
+# ------------------------------------------------------------------ team names in free text
+_TEAM_GENERIC = {"city", "united", "real", "sporting", "athletic", "atletico", "club", "inter", "fc", "town", "rovers",
+                 "county", "albion", "wanderers", "olympic", "olympique", "racing", "union", "dynamo", "national",
+                 "royal", "young", "boys", "stars", "star", "rangers", "celtic", "hearts", "academy", "sport",
+                 "the", "all", "safe", "sure", "home", "away", "over", "under", "win", "draw", "goal", "goals",
+                 "odds", "today", "tomorrow", "games", "picks", "legs", "slip", "code", "league", "cup", "milan",
+                 "madrid", "london", "manchester", "paris", "lyon", "roma", "porto", "benfica", "ajax", "liverpool"}
+_PICK_INTENT = re.compile(r"\b(picks?|selections?|slip|code|odds|games?|matches|tips?|legs?|acca|accumulator|"
+                          r"predictions?|bets?|scan|banker|sure|safe|rollover|fixtures?)\b")
+_TEAM_KEEP = {"liverpool", "ajax", "benfica", "porto", "roma", "lyon", "milan", "madrid", "celtic", "rangers",
+              "hearts", "inter"}
+
+
+def _team_forms(name: str) -> set[str]:
+    from matching import _ALIASES, normalize
+    n = normalize(name)
+    forms = {n} if len(n) >= 3 else set()
+    words = n.split()
+    for w in words:      # a distinctive single word ("arsenal", "bayern", "villarreal") also names the team
+        if len(w) >= 5 and w not in _TEAM_GENERIC or w in _TEAM_KEEP and len(words) == 1:
+            forms.add(w)
+    for a, full in _ALIASES.items():
+        if full == n or full in n.split(" ", 1)[0:1] or n.startswith(full):
+            forms.add(a)
+    return {f for f in forms if f and f not in {"city", "united"}}
+
+
+def detect_teams(text: str, team_names) -> tuple[list[str], list[str]]:
+    """Teams named in a picks request ('only Arsenal games', 'picks with Barcelona and Bayern', 'avoid Man Utd'),
+    matched against today's / the next days' real team names. Returns (include, exclude) as bookmaker names.
+    Only for picks requests: a plain question about a team isn't a scope rule."""
+    raw = " " + (text or "").lower().replace("’", "'") + " "
+    if not _PICK_INTENT.search(raw):
+        return [], []
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode().lower()
+    t = " " + re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]+", " ", plain)) + " "
+    # league aliases are not team names ("real madrid" fine, "premier league" not a team)
+    from matching import normalize
+    inc, exc, seen = [], [], []
+    names = sorted({str(n) for n in team_names if n and not re.search(r"\b(srl|simulated)\b", str(n), re.I)},
+                   key=len, reverse=True)
+    # pass 1: whole team names ("real madrid", "aston villa"); pass 2: one distinctive word / alias ("bayern")
+    for full_pass in (True, False):
+        for name in names:
+            if name in inc or name in exc:
+                continue
+            n = normalize(name)
+            forms = [n] if full_pass else sorted(_team_forms(name) - {n}, key=len, reverse=True)
+            hit = None
+            for f in forms:
+                if not f:
+                    continue
+                m = re.search(r"(?<![a-z0-9])" + re.escape(f) + r"(?![a-z0-9])", t)
+                if m and not any(m.start() < e and m.end() > b for b, e in seen):
+                    hit = m
+                    break
+            if not hit:
+                continue
+            seen.append(hit.span())
+            (exc if _negated(t, hit.start()) else inc).append(name)
+    return inc, exc

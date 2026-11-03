@@ -14,7 +14,7 @@ import httpx
 
 from bookmakers import BookingError, Selection
 from markets import valid_token
-from constraints import MARKET_TYPES, Constraints, parse_text, verify
+from constraints import MARKET_TYPES, Constraints, detect_teams, parse_text, verify
 from scanner import TIER_ALIASES, apply_stats
 from services import TZ, Services
 
@@ -51,6 +51,15 @@ Rules:
   one short line. If target_reached is false or no legs qualify, say plainly that the rules can't be met at the
   safety bar right now (give what it reached) and offer options (lower target, relax a rule, another day). Never
   break or quietly drop a rule the user gave, and never swap in weaker legs to hit the odds.
+- SPECIFIC INSTRUCTIONS ARE HARD RULES. A league/competition the user names ("Champions League", "UCL", "only
+  Europa", "EPL", "La Liga"...), a team, a market, odds per leg, a number of legs, a day or a time window must be
+  obeyed exactly: pass them to the tool (include_leagues=["UEFA Champions League"], include_teams=[...], ...) and
+  present ONLY legs that satisfy them. "Champions League" means the UEFA Champions League, never the AFC/CAF one or
+  Youth League. Never pad, swap or "top up" with other leagues, teams or markets, even if few or no matches qualify.
+  If not enough qualify (e.g. no UCL games today), say so plainly in one line and offer the nearest day with such
+  fixtures (the tool's scope.next_days) or fewer legs / a lower target; do not build a substitute slip.
+  Every slip reply starts with one short line of the rules you applied, e.g. "Rules: UCL only · safe · ~5 odds".
+  The server re-checks every leg against the user's own words and removes any that break them.
 - Scans use only the TOP LEAGUES by default (big-5 leagues + cups, UEFA club cups, Eredivisie, Primeira Liga,
   Championship, Scottish Prem, Süper Lig, Belgian Pro League, MLS, Brasileirão, Argentine Primera, major national-team
   competitions). Widen only when the user names a league/country/team (include_leagues/countries/teams) or explicitly
@@ -381,7 +390,7 @@ class Analyst:
         if not self.enabled:
             return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
         contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]
-        turn = {"slip": None, "code": None, "tools": [], "hard": parse_text(text), "analysis": None}
+        turn = {"slip": None, "code": None, "tools": [], "hard": await self.hard_rules(text), "analysis": None}
         reply = await self._loop(contents, turn)
         if not reply:
             reply = self._slip_summary(turn["slip"]) if turn.get("slip") and turn["slip"].get("tier") != "audit" else ""
@@ -399,6 +408,32 @@ class Analyst:
         return {"reply": reply, "slip": turn["slip"], "code": turn["code"], "tools": turn["tools"],
                 "model": self.model, "analysis": an}
 
+    async def hard_rules(self, text: str) -> Constraints:
+        """Rules in the user's own words, parsed without the model: leagues, markets, odds, legs, day / time, and
+        teams named in a picks request (matched against SportyBet's real team names for the next 48 h)."""
+        c = parse_text(text)
+        try:
+            evs = await asyncio.wait_for(self.s.bookmaker.list_events(48), timeout=12)
+            names = {n for e in evs for n in (e.home, e.away)
+                     if "srl" not in e.league_full.lower() and "simulated" not in e.league_full.lower()}
+            inc, exc = detect_teams(text, names)
+            for t in inc:
+                if t not in c.include_teams:
+                    c.include_teams.append(t)
+            for t in exc:
+                if t not in c.exclude_teams:
+                    c.exclude_teams.append(t)
+        except Exception as exc:
+            log.info("team detection skipped: %s", exc.__class__.__name__)
+        return c
+
+    def _in_scope(self, e, turn: dict) -> bool:
+        """A match against the match-level rules the user stated (league / team / kick-off)."""
+        hard = turn.get("hard")
+        if hard is None or not hard.match_key():
+            return True
+        return hard.event_ok(e)
+
     async def _ask_edit(self, chat_id: int, text: str, ctx: dict) -> dict:
         """Edit of the slip the user replied to. Gemini gets the slip and the edit_slip tool (no scan / booking
         tools); if it fails or doesn't edit, a rule-based parse of the message does the edit. Never falls back to
@@ -406,6 +441,11 @@ class Analyst:
         from slipedit import parse_edit
         ed = getattr(self.s, "editor", None)
         op = parse_edit(text, ctx["legs"])
+        us = parse_text(text)
+        scope = {k: v for k, v in us.to_dict().items() if k in (
+            "include_leagues", "exclude_leagues", "include_countries", "exclude_countries", "include_markets",
+            "exclude_markets", "min_leg_odds", "max_leg_odds", "kickoff_after", "kickoff_before")}
+        ctx = {**ctx, "user_scope": scope} if scope else ctx
         turn = {"slip": None, "code": None, "tools": [], "hard": None, "analysis": None, "edit": None,
                 "ctx": dict(ctx), "edit_ops": 0}
         reply = ""
@@ -471,10 +511,12 @@ class Analyst:
         if not chk.get("ok"):
             return ("\n\n⚠️ Rules check failed on this slip: " + "; ".join(chk.get("violations", [])[:3]) +
                     ". Don't use it; ask me to rebuild.")
+        scope_note = (sl.get("scope") or {}).get("note")
         if not sl.get("legs"):
-            return ""
+            return f"\n\nℹ️ {scope_note}" if scope_note else ""
         return (f"\n\n✅ Rules check: {sl.get('constraints_text') or 'ok'} · {len(sl['legs'])} legs · total "
-                f"{sl['total_odds']:.2f}" + ("" if chk.get("target_reached") else " (short of target)"))
+                f"{sl['total_odds']:.2f}" + ("" if chk.get("target_reached") else " (short of target)")
+                + (f"\nℹ️ {scope_note}" if scope_note else ""))
 
     # ---- tools ------------------------------------------------------------
     async def _find(self, match: str):
@@ -562,12 +604,13 @@ class Analyst:
             else:
                 evs = await self.s.events("t")
             if a.get("league"):
-                q = a["league"].lower()
-                evs = [e for e in evs if q in e.league_full.lower()]
+                lc = Constraints(include_leagues=[str(a["league"])])
+                evs = [e for e in evs if lc.event_ok(e)]      # by competition id / exact name, not substring
             if a.get("team"):
                 from matching import team_score
                 evs = [e for e in evs if max(team_score(a["team"], e.home), team_score(a["team"], e.away)) >= 80]
             evs = [e for e in evs if "srl" not in e.league_full.lower() and "simulated" not in e.league_full.lower()]
+            evs = [e for e in evs if self._in_scope(e, turn)]     # the user's own league / team / time rules
             from scanner import _prio
             evs.sort(key=lambda e: (_prio(e)[:2], e.start))
             lim = max(1, min(int(a.get("limit") or 20), 40))
@@ -579,6 +622,12 @@ class Analyst:
             e = await self._find(a.get("match", ""))
             if not e:
                 return {"error": "Match not found in SportyBet's next 3 days."}
+            hard = turn.get("hard")
+            if hard is not None and (hard.include_leagues or hard.exclude_leagues) and not hard.include_teams \
+                    and not Constraints(include_leagues=hard.include_leagues,
+                                        exclude_leagues=hard.exclude_leagues).event_ok(e):
+                return {"error": f"{e.name} ({e.league_full}) is outside the competitions the user asked for "
+                                 f"({hard.match_rules().describe()}). Leave it out."}
             form = await self.s.match_form(e)
             out = {"event_id": e.event_id, "match": e.name, "league": e.league_full,
                    "kickoff": e.start.astimezone(TZ).strftime("%a %d %b %H:%M"),
@@ -607,6 +656,10 @@ class Analyst:
                                           "stats_check": l.verdict} for l in strong]
             return out
         if name == "scan_markets":
+            a = dict(a)
+            if a.get("leagues") and not a.get("include_leagues"):
+                a["include_leagues"] = a["leagues"]       # legacy arg -> a real (id-matched) league rule
+            a.pop("leagues", None)
             c = Constraints.from_dict(a)
             hard = turn.get("hard")
             if hard is not None:
@@ -615,7 +668,7 @@ class Analyst:
             c.tier = tier
             day = c.day or (a.get("day") if a.get("day") in ("today", "tomorrow", "24h", "48h") else "today")
             c.day = day
-            res = await self.s.scanner.scan(tier, c.target_odds, day, a.get("leagues") or None, c)
+            res = await self.s.scanner.scan(tier, c.target_odds, day, None, c)
             if tier == "audit":
                 for sl in res["slips"].values():
                     self.remember_slip(sl)
@@ -635,6 +688,7 @@ class Analyst:
                     "applied_constraints": res.get("constraints"), "rules_text": res.get("constraints_text"),
                     "constraint_check": res.get("constraint_check"),
                     "unmapped_market_words": c.unknown or None,
+                    "scope": res.get("scope"),
                     "legs": [compact_leg(l) for l in res["legs"]]}
         if name == "build_booking_code":
             sels, legs, meta = [], [], {}

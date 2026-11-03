@@ -491,6 +491,14 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # country:england / team:arsenal / after:18:00 / before:21:00 / minp:85 (or plain words: "no unders")
     c = parse_text(" ".join(args))
     c.tier, c.target_odds = None, None
+    ai_ = getattr(svc(ctx), "ai", None)
+    if ai_ is not None and args:
+        try:     # team names typed after /scan ("/scan safe 5 arsenal bayern") are a hard scope too
+            hr = await ai_.hard_rules("picks " + " ".join(a for a in args if ":" not in a))
+            c.include_teams = c.include_teams or hr.include_teams
+            c.exclude_teams = c.exclude_teams or hr.exclude_teams
+        except Exception:
+            pass
     if c.day:
         day = c.day
     c = c if not c.empty() else None

@@ -7,6 +7,26 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-03): named leagues / teams are hard filters
+Bug: "Champions League selections" returned picks from other leagues. **Cause:** the deterministic parser only read a
+league after "only / from / in" (or before "only / games / matches"), so "champions league selections", "ucl picks",
+"only Europa" set no rule and the scan fell back to every top league; and league text was matched as a substring, so a
+model call with "Champions League" (or the legacy `leagues` arg / `list_matches(league=…)`) also pulled in AFC Champions
+League Elite and Gulf Club Champions League. **Now** (`constraints.py`): `COMPETITIONS` maps names and aliases (UCL /
+Champions League, UEL / Europa, UECL / Conference, EPL / Premier League / prem, La Liga, Serie A, Bundesliga, Ligue 1,
+cups, Eredivisie, Primeira Liga, MLS…) to Sportradar tournament ids and matches legs **by id** (exact name when no id);
+"AFC / CAF Champions League", "UEFA Youth League", "2. Bundesliga" are separate. `parse_text` reads any named
+competition anywhere in the message (negated → excluded: "no premier league", "not interested in epl"), leg-odds ranges
+("odds 1.2 to 1.5 each"); `detect_teams` reads team names in a picks request against SportyBet's real team names
+(48 h) ("picks from Barcelona and Bayern", "avoid Man Utd"); team matching = same club only ("Inter" ≠ "Inter Club
+de Escaldes"). The user's named leagues / teams **replace** whatever the model passed (`merge_hard`). Enforced in AI
+scans, `list_matches`, `predict_match` (out-of-scope match refused), `/scan` (incl. team words), Mini App
+(`leagues` legacy → id rule), slip edits (rules in the edit message filter replacements). When the scope can't fill
+the slip, `scan()` adds `scope` {matches_in_window, next_days[]} and a plain note ("No matches today in your scope
+(only UEFA Champions League)… I won't fill it with other leagues. Nearest: tomorrow (n matches, first HH:MM)") or
+offers fewer legs / a lower target; never pads. System prompt: specific instructions are hard rules; each slip
+reply starts with a "Rules:" line; the server footer repeats the check. Tests: `tests/test_scope.py`.
+
 ## What's new (2026-11-02, latest): the AI reads images
 **Send a photo or an image file** (with or without a caption), or **reply to a photo** with a question; in the Mini App
 **AI tab** tap 📷 (camera or gallery). `vision.py`: the image is downscaled when needed (≤ 2048 px, ≤ 5 MB, Pillow) and

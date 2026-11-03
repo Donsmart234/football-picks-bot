@@ -567,6 +567,13 @@ class Scanner:
         """constraints: structured user rules (see constraints.py), enforced at the candidate stage and
         re-verified on the finished slip (`constraint_check`)."""
         c = constraints if constraints is not None and not constraints.empty() else None
+        if leagues:
+            # legacy league text filters become real league rules (matched by Sportradar id, never by substring:
+            # "champions league" must not pull in AFC / Gulf / SRL competitions). A league the user named wins.
+            c = c or Constraints()
+            if not [x for x in c.include_leagues if x.lower().strip() != "top leagues"]:
+                c.include_leagues = [str(x) for x in leagues if x]
+            leagues = None
         tier = TIER_ALIASES.get((tier or (c.tier if c else None) or "safe").lower().strip(), "safe")
         if c and c.day:
             day = c.day
@@ -574,10 +581,64 @@ class Scanner:
             target = c.target_odds
         pool = await self.pool(day, leagues, rules=c, fresh=fresh)
         out = self.audit(pool, c) if tier == "audit" else self.build_slip(pool, tier, target, c, exclude)
+        if c is not None and tier != "audit" and c.match_key() and (
+                not out.get("legs") or not out.get("reached") or (c.min_legs and len(out["legs"]) < c.min_legs)):
+            try:
+                out["scope"] = await self.scope_report(c, day, pool, out)
+                if out["scope"].get("note"):
+                    out["note"] = (out["scope"]["note"] + " " + (out.get("note") or "")).strip()
+            except Exception as exc:          # the report is a courtesy: never fail the scan for it
+                log.info("scope report failed: %s", exc)
         out["generated"] = datetime.fromtimestamp(pool.created, timezone.utc).isoformat()
         out["disclaimer"] = ("Estimates from prices + team stats, not guarantees. 'Safe' means lower-risk, never "
                              "certain. Combined probability assumes independent legs. 18+.")
         return out
+
+    async def scope_report(self, c: Constraints, day: str, pool: Pool, out: dict) -> dict:
+        """When a named scope (league / team / time window) can't fill the slip: how many matches it has in this
+        window, and the nearest days that do have matches in scope (next 7 days). Never substitutes other leagues."""
+        rules = c.match_rules()
+        n_in = len(pool.events)
+        upcoming = await self.bm.list_events(168)
+        now = datetime.now(timezone.utc) + timedelta(minutes=5)
+        window_ids = {e.event_id for e in pool.events}
+        days: dict = {}
+        for e in upcoming:
+            if e.start <= now or e.event_id in window_ids or _excluded(e):
+                continue
+            if not rules.event_ok(e) or (not c.widens_leagues() and not top_league(e)):
+                continue
+            d = e.start.astimezone(TZ).date()
+            days.setdefault(d, []).append(e)
+        today = datetime.now(TZ).date()
+        win_label = {"today": "today", "tomorrow": "tomorrow", "24h": "in the next 24 h", "48h": "in the next 48 h"}.get(
+            day, day)
+        nxt = []
+        for d in sorted(days)[:3]:
+            evs = days[d]
+            lab = "today" if d == today else "tomorrow" if d == today + timedelta(days=1) else d.strftime("%a %d %b")
+            nxt.append({"date": d.isoformat(), "label": lab, "matches": len(evs),
+                        "first": min(evs, key=lambda e: e.start).start.astimezone(TZ).strftime("%H:%M"),
+                        "day_arg": "today" if d == today else "tomorrow" if d == today + timedelta(days=1) else None})
+        scope = c.describe() or "your rules"
+        mr = c.match_rules().describe() or scope
+        if n_in == 0:
+            note = (f"No matches {win_label} in your scope ({mr}), so there's no slip. I won't fill it with other "
+                    "leagues or teams.")
+        elif not out.get("legs"):
+            note = (f"{n_in} match{'es' if n_in != 1 else ''} {win_label} in your scope ({mr}), but none has a leg "
+                    "that passes the other rules. I won't fill it with other leagues or teams.")
+        else:
+            note = (f"Only {n_in} match{'es' if n_in != 1 else ''} {win_label} in your scope ({mr}): {len(out['legs'])} "
+                    f"qualifying leg{'s' if len(out['legs']) != 1 else ''}. I kept to them rather than add other "
+                    "leagues; fewer legs or a lower target is the option.")
+        if nxt:
+            note += " Nearest with matches in scope: " + ", ".join(
+                f"{x['label']} ({x['matches']} match{'es' if x['matches'] != 1 else ''}, first {x['first']})"
+                for x in nxt[:2]) + "."
+        elif n_in == 0:
+            note += " None listed on SportyBet in the next 7 days either."
+        return {"matches_in_window": n_in, "window": day, "next_days": nxt, "note": note}
 
     # ---- rollover ---------------------------------------------------------
     async def ensure_stats(self, pool: Pool, events: list[Event]) -> None:

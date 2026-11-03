@@ -392,6 +392,20 @@ class SlipEditor:
             return self._fail(ctx, str(exc))
 
     @staticmethod
+    def _scope(ctx: dict) -> Constraints | None:
+        """Rules stated in the edit message itself ('swap leg 2 for a UCL game', 'replace it, no unders'): a hard
+        filter on replacement candidates, on top of the section's own rules."""
+        raw = ctx.get("user_scope")
+        if not raw:
+            return None
+        c = Constraints.from_dict(raw)
+        return None if c.empty() else c
+
+    def _scoped(self, ctx: dict, cands: list) -> list:
+        c = self._scope(ctx)
+        return cands if c is None else [x for x in cands if c.leg_ok(x)]
+
+    @staticmethod
     def _fail(ctx: dict, note: str) -> dict:
         legs = ctx.get("legs") or []
         return {"ok": False, "section": ctx.get("section"), "note": note, "change": "", "legs": legs,
@@ -411,7 +425,8 @@ class SlipEditor:
                  "top_only": True, "strict": True, "label": "rollover"}
         if op.get("action") == "rebuild":
             prev = {slipedit.sel_key(l) for l in base} | {slipedit.sel_key(l) for l in slip["data"]["legs"]}
-            res = await self.s.scanner.rollover_slip(target, allow_unders=allow_unders, exclude=prev, fresh=True)
+            res = await self.s.scanner.rollover_slip(target, allow_unders=allow_unders, exclude=prev, fresh=True,
+                                                     constraints=self._scope(ctx))
             if not res["legs"]:
                 return self._fail(ctx, "No different valid slip exists right now under the same rules (top leagues, "
                                        f"every leg ≥80% est., ~{target:g} odds" + ("" if allow_unders else ", no unders")
@@ -419,7 +434,7 @@ class SlipEditor:
             r = {"ok": True, "legs": res["legs"], "change": "New picks for the whole day", "note": "",
                  "total_odds": res["total_odds"], "est_prob": res["est_prob"]}
         else:
-            cands = await self.s.scanner.edit_candidates("rollover", allow_unders=allow_unders)
+            cands = self._scoped(ctx, await self.s.scanner.edit_candidates("rollover", allow_unders=allow_unders))
             r = slipedit.apply_edit(base, op, cands, rules)
             if not r["ok"]:
                 return {**self._fail({**ctx, "legs": base}, r["note"]), "plan_id": plan["id"], "slip_id": slip["id"]}
@@ -456,6 +471,10 @@ class SlipEditor:
                  "hi": target * 1.20, "target": target, "min_p": min_p, "min_odds": float(lo_o),
                  "max_odds": float(hi_o), "no_unders": bool(c and "under" in (c.exclude_markets or [])),
                  "strict": reached, "label": f"{sl.get('label', 'scan')} slip", "top_only": not (c and c.widens_leagues())}
+        us = self._scope(ctx)
+        if us is not None:
+            c = (c or Constraints()).merge_hard(us)
+            rules["top_only"] = not c.widens_leagues()
         if op.get("action") == "rebuild":
             prev = {slipedit.sel_key(l) for l in base}
             new = await self.s.scanner.scan(tier, args.get("target") or sl.get("target"), day, None, c, exclude=prev,
@@ -464,7 +483,7 @@ class SlipEditor:
                 return self._fail(ctx, "No different valid slip exists right now under the same rules. The last slip stands.")
             r = {"ok": True, "legs": new["legs"], "change": "New picks for the whole slip", "note": ""}
         else:
-            cands = await self.s.scanner.edit_candidates("scan", day, tier=tier, c=c)
+            cands = self._scoped(ctx, await self.s.scanner.edit_candidates("scan", day, tier=tier, c=c))
             r = slipedit.apply_edit(base, op, cands, rules)
             if not r["ok"]:
                 return self._fail(ctx, r["note"])
@@ -506,7 +525,7 @@ class SlipEditor:
             eid = base[idx].get("event_id")
             if not any(c.get("event_id") == eid for c in cands):
                 cands += await self._event_cands(eid)
-        r = slipedit.apply_edit(base, op, cands, rules)
+        r = slipedit.apply_edit(base, op, self._scoped(ctx, cands), rules)
         if not r["ok"]:
             return self._fail(ctx, r["note"])
         new = {"tier": "custom", "label": "Edited slip", "target": None, "legs": r["legs"],
