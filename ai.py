@@ -397,7 +397,7 @@ class Analyst:
         if not reply:
             reply = ("I didn't get an answer back from the AI model this time, so nothing was built or booked. "
                      "Send it again, or use /scan safe 5 for a slip right away.")
-        reply += self._rules_footer(turn)
+        reply += self._rules_footer(turn, reply)
         if turn["code"] and turn["code"] not in reply:
             reply += f"\n\nBooking code: `{turn['code']}`"
         if "estimate" not in reply.lower() and "guarantee" not in reply.lower():
@@ -502,21 +502,30 @@ class Analyst:
         return text
 
     @staticmethod
-    def _rules_footer(turn: dict) -> str:
+    def _rules_footer(turn: dict, reply: str = "") -> str:
         """Server-side check line appended when the user stated rules and a slip came back."""
         sl = turn.get("slip")
         if not sl or sl.get("tier") == "audit" or not sl.get("constraints"):
             return ""
         chk = sl.get("constraint_check") or {}
-        if not chk.get("ok"):
-            return ("\n\n⚠️ Rules check failed on this slip: " + "; ".join(chk.get("violations", [])[:3]) +
+        scope_note = (sl.get("scope") or {}).get("note") or ""
+        if scope_note and scope_note.split(".")[0] in (reply or ""):
+            scope_note = ""            # the model already said it; don't repeat
+        viol = chk.get("violations", [])
+        short_only = bool(viol) and all(re.search(r"^\d+ legs < min \d+$", v) for v in viol)
+        if not chk.get("ok") and not short_only:
+            return ("\n\n⚠️ Rules check failed on this slip: " + "; ".join(viol[:3]) +
                     ". Don't use it; ask me to rebuild.")
-        scope_note = (sl.get("scope") or {}).get("note")
         if not sl.get("legs"):
             return f"\n\nℹ️ {scope_note}" if scope_note else ""
-        return (f"\n\n✅ Rules check: {sl.get('constraints_text') or 'ok'} · {len(sl['legs'])} legs · total "
-                f"{sl['total_odds']:.2f}" + ("" if chk.get("target_reached") else " (short of target)")
-                + (f"\nℹ️ {scope_note}" if scope_note else ""))
+        line = (f"\n\n✅ Rules check: {sl.get('constraints_text') or 'ok'} · {len(sl['legs'])} legs · total "
+                f"{sl['total_odds']:.2f}" + ("" if chk.get("target_reached") else " (short of target)"))
+        if short_only:
+            mn = (sl.get("constraints") or {}).get("min_legs")
+            line = (f"\n\nℹ️ Rules check: {sl.get('constraints_text') or 'ok'} · only {len(sl['legs'])} leg"
+                    f"{'s' if len(sl['legs']) != 1 else ''} qualif{'y' if len(sl['legs']) != 1 else 'ies'}"
+                    f"{f' (you asked for {mn})' if mn else ''}; every leg obeys your rules, nothing padded.")
+        return line + (f"\nℹ️ {scope_note}" if scope_note else "")
 
     # ---- tools ------------------------------------------------------------
     async def _find(self, match: str):

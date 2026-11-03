@@ -309,6 +309,13 @@ def test_ai():
     res = asyncio.run(an.ask(5, "champions league selections today"))
     check(not res["slip"]["legs"] and "tomorrow" in res["reply"] and "other leagues" in res["reply"],
           f"AI no-UCL reply: {res['reply'][-300:]}")
+    check(res["reply"].count("No matches today in your scope") <= 1, "scope note not repeated")
+    # fewer legs than asked: honest info line, not a "failed" warning
+    an = analyst(sc, bm, [call("scan_markets", {"tier": "safe", "target_odds": 1.3}), text("ok (estimates)")])
+    res = asyncio.run(an.ask(6, "ucl picks, 9 legs"))
+    sl = res["slip"]
+    check(ucl_only(sl["legs"]) and len(sl["legs"]) < 9 and "nothing padded" in res["reply"] and
+          "failed" not in res["reply"], f"short legs footer: {res['reply'][-250:]}")
     check(not bm.booked and not bm2.booked, "nothing booked")
 
 
