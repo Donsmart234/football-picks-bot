@@ -142,7 +142,8 @@ def analysis_leg(l: dict) -> str:
            f"    {esc(l.get('market', ''))}: <b>{esc(l.get('pick', ''))}</b>{price}\n")
     if l["state"] in ("ended", "cancelled"):
         res = {"won": "✅ Won", "lost": "❌ Lost", "void": "➖ Void"}.get(l.get("result") or "", "⏳ Result pending")
-        out += f"    {res}" + (f" · {esc(l['score'].replace(':', '-'))}" if l.get("score") else "")
+        out += f"    {res}" + (f" · FT {esc(l['score'].replace(':', '-'))}" if l.get("score") and l["state"] == "ended"
+                               else f" · {esc(l['score'].replace(':', '-'))}" if l.get("score") else "")
         return out
     if l["state"] == "live":
         out += (f"    🔴 Live {esc(l.get('score', '').replace(':', '-'))} {esc(l.get('minute', ''))}"

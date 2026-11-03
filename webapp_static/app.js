@@ -547,6 +547,11 @@
       <div class="lscore num">${esc((m.score || "0–0").split("–")[0])}<br>${esc((m.score || "0–0").split("–")[1] || "0")}</div>
       <div class="odds3 v">${[0, 1, 2].map((i) => `<span>${f2(m.odds[i])}</span>`).join("")}</div></button>`;
   }
+  function endedRow(m) {
+    return `<button class="row mrow lrow ended" data-act="livematch" data-id="${esc(m.id)}"><div class="time"><span class="lbadge fin">${esc(m.badge || "FT")}</span></div>
+      <div class="grow">${teamsBlock(m, "sm")}<div class="sub ellip" style="margin-top:3px">${flag(m)} ${esc(leagueShort(m.league))}</div></div>
+      <div class="lscore num">${esc((m.score || "–").split("–")[0])}<br>${esc((m.score || "–").split("–")[1] || "")}</div></button>`;
+  }
   async function renderLiveList() {
     stopLive();
     const draw = () => {
@@ -561,6 +566,7 @@
         h += `<div class="section"><span class="label">${L.matches.length} in play</span><span class="sub">updates every 20 s</span></div>`;
         h += `<div class="card flush">${L.matches.map(liveRow).join("")}</div>`;
       }
+      if (L && L.ended && L.ended.length) h += `<div class="section"><span class="label">Ended</span><span class="sub">final scores · last 45 min</span></div><div class="card flush">${L.ended.map(endedRow).join("")}</div>`;
       h += `<div class="disc">Live scores, tracker and odds from SportyBet and the Sportradar feed. No unofficial streams: video only from official free channels or SportyBet's own page. 18+.</div>`;
       $view.innerHTML = h; return true;
     };
@@ -600,13 +606,13 @@
       <div class="label" style="margin-top:12px">Momentum <span class="sub">(${esc(h.home || "home")} up · ${esc(h.away || "away")} down)</span></div>${momentumSvg(f.momentum)}</div>`;
     if (f.stats && f.stats.length) out += `<div class="card"><div class="label">Match stats</div>${f.stats.map((x) => { const t = (x.home + x.away) || 1; return `<div class="sbar"><b>${x.home}</b><span>${esc(x.label)}</span><b>${x.away}</b><div class="trk"><i style="width:${(x.home / t * 100).toFixed(1)}%"></i></div></div>`; }).join("")}</div>`;
     if (d.markets && d.markets.length) out += `<div class="section"><span class="label">Live odds · SportyBet</span><span class="sub">fair % = de-margined</span></div>` + d.markets.map((m) => `<div class="card"><div class="label">${esc(m.title)}</div><div class="outs">${m.outcomes.map((o) => `<div class="out ro"><div class="l">${esc(o.desc)}</div><div class="p">${o.prob != null ? pct(o.prob) : "–"}</div><div class="o">${o.odds ? f2(o.odds) : "🔒"}</div></div>`).join("")}</div></div>`).join("");
-    else if (h.live === false) out += `<div class="note">This match isn't in play on SportyBet any more.</div>`;
+    else if (h.live === false) out += `<div class="note">${h.ended ? `Full time${h.badge && h.badge !== "FT" ? " (" + esc(h.badge) + ")" : ""}: ${esc(String(h.score || "").replace("–", "-"))}. This match isn't in play any more.` : "This match isn't in play on SportyBet any more."}</div>`;
     if (f.events && f.events.length) out += `<div class="section"><span class="label">Timeline</span></div><div class="card flush">${f.events.map((e) => `<div class="tl t-${esc(e.team)}"><span class="tmin num">${e.min != null && e.min >= 0 ? e.min + "'" : ""}</span><span class="tic ${e.type === "card" ? "c-" + esc(e.card || "yellow") : ""}">${e.type === "card" && e.card === "red" ? "🟥" : TL_ICON[e.type] || "•"}</span><div class="grow"><b>${esc(e.name)}${e.score ? " " + esc(e.score) : ""}</b>${e.player ? `<div class="sub">${esc(e.player)}${e.note ? " · " + esc(e.note) : ""}</div>` : ""}</div><span class="tteam sub">${e.team === "home" ? esc(h.home || "") : e.team === "away" ? esc(h.away || "") : ""}</span></div>`).join("")}</div>`;
     out += `<div class="disc">Tracker drawn from Sportradar's free event feed (not video). Odds move fast; estimates, not guarantees. 18+.</div>`;
     return out;
   }
   function liveHeroHtml(h) {
-    return `<div class="card hero lv"><div class="sub hl">${flag(h)}<span class="ellip">${esc(h.league || "")}</span><span class="lbadge">${h.live === false ? "ENDED" : "LIVE"}</span></div>
+    return `<div class="card hero lv"><div class="sub hl">${flag(h)}<span class="ellip">${esc(h.league || "")}</span><span class="lbadge${h.live === false ? " fin" : ""}">${h.live === false ? esc(h.badge || "FT") : (h.badge === "HT" ? "HT" : "LIVE")}</span></div>
       <div class="vs"><div class="side">${crest(h.home_uid, h.home, "xl")}<b>${esc(h.home)}</b></div><div class="mid"><span class="bigscore num" id="lscore">${esc(h.score || "0–0")}</span><small id="lmin" class="lmin">${esc(h.minute || "")}</small>${h.ht ? `<small class="sub">HT ${esc(String(h.ht).replace(":", "–"))}</small>` : ""}</div><div class="side">${crest(h.away_uid, h.away, "xl")}<b>${esc(h.away)}</b></div></div></div>`;
   }
   function videoHtml(d) {
@@ -729,7 +735,7 @@
     let body = "";
     if (l.state === "ended" || l.state === "cancelled") {
       const [ic, t, c] = STATUS[l.result] || STATUS.pending;
-      body = `<div class="state ${c === "st-won" ? "c-acc" : c === "st-lost" ? "c-red" : ""}">${ic} ${t || "Result pending"}${l.score ? " · " + esc(String(l.score).replace(":", "-")) : ""}</div>`;
+      body = `<div class="state ${c === "st-won" ? "c-acc" : c === "st-lost" ? "c-red" : ""}">${ic} ${t || "Result pending"}${l.score ? " · " + (l.state === "ended" ? "FT " : "") + esc(String(l.score).replace(":", "-")) : ""}</div>`;
     } else if (l.state === "live") {
       body = `<div class="state c-live">● Live ${esc(String(l.score || "").replace(":", "-"))} ${esc(l.minute || "")} · not rated in play</div>`;
     } else if (l.rated) {

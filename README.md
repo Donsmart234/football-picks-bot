@@ -227,6 +227,22 @@ choice. Lines without a historical price (O/U 0.5/1.5/3.5/4.5, BTTS, team totals
 fit to 1X2 + O/U 2.5, corners/cards/props aren't backtested and keep their market estimate. Estimates, not guarantees.
 Re-run: `python backtest/fetch.py` (in a data dir) then `python backtest/backtest.py <data dir>`.
 
+**Live status (2026-11-03, `matchstate.py`).** One reading of "in play" for the Live list, the match view, analyzer legs
+and settlement. SportyBet `status` 0 not started · 1/2 in play · 3/4 ended · 9 = betting closed while the clock still runs
+(higher numbers are read from `matchStatus` only); `matchStatus` words win over the number (Ended → FT, AET, AP → PEN,
+Abandoned/Cancelled/Walkover/Retired → ABD/CANC, Postponed/Start delayed → PPD, Interrupted/Suspended → INT). Sportradar ids
+100/110/120 ended, 70/90–93 void, 60/61 postponed, 80/81 interrupted, `timeinfo.ended` = ended. Facts behind the rules
+(observed 2026-11-03): SportyBet drops a match from `liveOrPrematchEvents` around 90' when betting closes, but its own
+(Bet Genius, 15-digit `sr:match:1111…` ids, no Sportradar feed) event pages keep `status 1, H2` and a clock that keeps
+ticking after the final whistle (98' and counting) for ~10 min before flipping to `3 Ended`. So: a match that leaves the
+feed is re-checked (event page + Sportradar `match_info`) and moves to an **Ended** section (FT/AET/PEN/ABD/PPD + final
+score, 45 min) unless it is still in play and moving; off the list and 10 min past `estimateStopTime` → ended; a 2nd-half
+clock past 105' (1st half 60', extra time 135') is never live; past kickoff + 150 min a match stays live only if its
+clock/score/status changed in the last 5 min or Sportradar's clock is running; past kickoff + 5 h only on Sportradar's word;
+a failed list refresh reuses the last list for 60 s at most. Settlement reads the same Sportradar mapping (retired → void,
+suspended → waits, AP without a regular-time score → waits) and, for Bet Genius matches only, SportyBet's event page
+(regular-time halves from `gameScore`; never early calls from that feed). `GET /api/live` returns `matches` + `ended`.
+
 **Live view** (`live.py`, Matches → Live). In-play list from SportyBet `factsCenter/liveOrPrematchEvents` (score, minute, live
 1X2, LIVE badges, "N matches in play" banner), per match: live odds from `factsCenter/event?productId=1` (1X2, next goal, O/U
 lines nearest 50/50, rest of match, DC, GG/NG, DNB, with de-margined %), our own animated tracker drawn from the free Sportradar
@@ -370,7 +386,7 @@ button, safe-area insets.
 |---|---|
 | `GET /app` (+ assets) | UI |
 | `GET /api/events?range=today\|upcoming` | Leagues with compact match rows `[id, home, away, start, home_uid, away_uid, 1, X, 2]`; ETag / 304 |
-| `GET /api/live` | In-play matches (score, minute, live 1X2, official SportyBet link, stream flag) |
+| `GET /api/live` | In-play matches (score, minute, live 1X2, official SportyBet link, stream flag) + `ended` (finished in the last 45 min: badge FT/AET/PEN/ABD/PPD, final score) |
 | `GET /api/live/match?event_id=[&video=0]` | Live odds, tracker feed (ball, momentum, stats, timeline) and `video` (official YouTube stream or null) |
 | `POST /api/predict {"event_id"}` | Prediction + `stats` (form/H2H) |
 | `GET /api/match_markets?event_id=` | Strongest stats-checked legs across every market of one match |
@@ -491,6 +507,7 @@ python tests/test_constraints.py   # offline: Under tagging, rule parsing, scann
 python tests/test_analyzer.py      # offline: code detection, share parsing (fixtures), ratings, grade, swaps, verdict, top-leagues ids, no history writes
 python tests/test_early_settle.py  # offline: 40 early-settlement cases, Entered ping once, corrections, rollover tickets, refresh picks
 python tests/test_links.py         # offline: booking-code links = SportyBet share URL (app link), buttons, HTML escaping, Mini App
+python tests/test_live_status.py   # offline: live/ended/AET/AP/abandoned/postponed/interrupted states, feed drop-outs, caps, match view, settlement
 python tests/test_tracker.py       # 26 settlement cases + tracker run on real finished matches (SQLite, fake bot, 1 ping per slip)
 ```
 

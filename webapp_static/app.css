@@ -299,6 +299,8 @@ body { min-height: var(--vh-stable, var(--tg-viewport-stable-height, 100vh)); }
 .seg .cnt { font-size: 11px; background: rgba(255, 77, 94, .18); color: #ff8a95; padding: 1px 6px; border-radius: 8px; margin-left: 2px; }
 .lbadge { display: inline-block; font: 800 9.5px/1 Inter, system-ui; letter-spacing: .6px; color: #fff; background: var(--red); padding: 3px 5px; border-radius: 4px; box-shadow: 0 0 10px rgba(255, 77, 94, .45); }
 .hl .lbadge { margin-left: auto; }
+.lbadge.fin { background: var(--muted, #6b7280); box-shadow: none; }
+.lrow.ended { opacity: .8; }
 .livebanner { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; margin-top: 12px; border-color: rgba(255, 77, 94, .35); background: linear-gradient(90deg, rgba(255, 77, 94, .12), var(--card)); }
 .livebanner b { font-size: 14px; } .livebanner .sub { margin-left: auto; }
 .lrow .time { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }

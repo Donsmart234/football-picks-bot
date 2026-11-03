@@ -26,6 +26,7 @@ import uuid
 from datetime import datetime, timezone
 
 import leagues
+from matchstate import clock_overrun, sb_state
 from constraints import Constraints, leg_tags, parse_text, verify
 from markets import FAMILIES, pretty_pick, spec_value
 from scanner import Leg, _rec, apply_stats, uid_of
@@ -99,14 +100,17 @@ def parse_share(data: dict) -> list[dict]:
         status = int(o.get("status") or 0)
         ms = str(o.get("matchStatus") or "")
         msl = ms.lower()
-        if any(w in msl for w in ("cancel", "abandon", "postpon", "interrupt")):
+        sbst, _badge = sb_state(status, ms)
+        if any(w in msl for w in ("cancel", "abandon", "postpon", "interrupt")) or sbst in ("void", "postponed"):
             state = "cancelled"
-        elif status == 0:
-            state = "upcoming"
-        elif status in (1, 2):
+        elif sbst == "live" and not clock_overrun(ms, o.get("playedSeconds")):
             state = "live"
-        else:
+        elif sbst == "live":
+            state = "ended"                 # clock past any real half (SportyBet's own feeds keep ticking)
+        elif sbst == "ended" or status >= 3:
             state = "ended"
+        else:
+            state = "upcoming"
         result = None
         refund = _f(oc.get("refundFactor")) or 0.0
         if state == "ended" and oc.get("isWinning") is not None:
@@ -532,7 +536,12 @@ class Analyzer:
         for m in mapped[:MAX_LEGS]:
             ev = ((details or {}).get(m["event_id"]) or (None,))[0]
             start = ev.start if ev is not None else None
+            hdr = ((details or {}).get(m["event_id"]) or (None, None, {}))[2] or {}
             state = "upcoming" if start is None or start > now else "live"
+            if hdr.get("status") is not None:       # the event page's own status beats "kickoff has passed"
+                sbst, _b = sb_state(hdr.get("status"), hdr.get("matchStatus"))
+                state = {"live": "live", "interrupted": "live", "ended": "ended", "void": "cancelled",
+                         "postponed": "cancelled", "notstarted": "upcoming"}.get(sbst, state)
             legs.append({
                 "event_id": m["event_id"], "market_id": str(m["market_id"]), "specifier": m.get("specifier") or "",
                 "outcome_id": str(m["outcome_id"]),
@@ -542,8 +551,11 @@ class Analyzer:
                 "tournament_id": ev.tournament_id if ev else "", "category_id": ev.category_id if ev else "",
                 "sport": "sr:sport:1", "kickoff": start.isoformat() if start else "",
                 "market": m.get("market") or "", "pick": m.get("pick") or "", "odds": _f(m.get("odds")),
-                "feed_prob": None, "active": True, "group": "", "state": state, "match_status": "", "score": "",
-                "minute": "", "result": None, "image_odds": _f(m.get("image_odds")),
+                "feed_prob": None, "active": True, "group": "", "state": state,
+                "match_status": str(hdr.get("matchStatus") or "") if state != "upcoming" else "",
+                "score": str(hdr.get("setScore") or "") if state != "upcoming" else "",
+                "minute": str(hdr.get("playedSeconds") or "") if state == "live" else "", "result": None,
+                "image_odds": _f(m.get("image_odds")),
             })
         for u in (unmatched or [])[:MAX_LEGS]:
             legs.append({"event_id": "", "market_id": "", "specifier": "", "outcome_id": "",

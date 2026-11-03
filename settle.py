@@ -22,16 +22,16 @@ from dataclasses import dataclass, field
 import httpx
 
 from markets import FAMILIES, spec_value
+from matchstate import clock_overrun, is_sr_id, sb_state, sr_state
 
 log = logging.getLogger(__name__)
 SR = "https://stats.fn.sportradar.com/sportybet/en/Africa:Lagos/gismo"
 HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/126.0 Safari/537.36"),
            "Referer": "https://www.sportybet.com/", "Origin": "https://www.sportybet.com"}
-ENDED = {100, 110, 120}            # Ended, AET, AP
-VOIDED = {"cancelled", "canceled", "abandoned", "walkover", "coverage canceled", "removed"}
-LIVE_PHASE = {6: "1h", 31: "ht", 7: "2h"}   # Sportradar status ids; anything else in play = "other" (no early calls)
-POSTPONED = {"postponed", "delayed", "interrupted", "suspended", "start delayed"}
+# Status mapping (ended / AET / AP / abandoned / cancelled / postponed / interrupted / live phase) lives in
+# matchstate.sr_state, shared with the Live view. Live phases 1h / ht / 2h allow early calls; anything else in play
+# (extra time, penalties) is "other" and waits for the final whistle.
 
 
 @dataclass
@@ -97,6 +97,39 @@ class ResultsClient:
             log.info("results %s failed: %s", path, exc.__class__.__name__)
             return None
 
+    async def _sb_fallback(self, event_id: str, res: MatchResult) -> None:
+        """SportyBet's own (Bet Genius) matches have no Sportradar feed: read the state from SportyBet's event page.
+        Ended -> regular-time score from gameScore (two halves) when the match ended in regular time; AET/AP or no
+        halves -> 'unknown' (left for the user to check after 72 h). Never 'live' with a usable phase, so no early
+        calls are made from this feed (phase 'other')."""
+        try:
+            data = await self.bm._event_raw(event_id)
+        except Exception:
+            data = None
+        if not data or not data.get("eventId"):
+            return
+        state, badge = sb_state(data.get("status"), data.get("matchStatus"))
+        res.status_name = str(data.get("matchStatus") or "")
+        halves = [_split(str(x).replace(":", "/")) for x in (data.get("gameScore") or [])]
+        if state == "ended" and badge == "FT" and len(halves) == 2 and all(halves):
+            res.state = "ended"
+            res.ht = halves[0]
+            res.ft = (halves[0][0] + halves[1][0], halves[0][1] + halves[1][1])
+        elif state == "ended":
+            res.state = "unknown"
+        elif state == "void":
+            res.state = "void"
+        elif state in ("postponed", "interrupted"):
+            res.state = "postponed"
+        elif state == "notstarted":
+            res.state = "notstarted"
+        elif state == "live" and clock_overrun(data.get("matchStatus"), data.get("playedSeconds")):
+            res.state = "unknown"           # clock ticking past any real half: over, result not posted yet
+        elif state == "live":
+            res.state, res.phase = "live", "other"
+            sc = _split(str(data.get("setScore") or "").replace(":", "/"))
+            res.live = sc
+
     async def result(self, event_id: str, need_stats: bool = False) -> MatchResult:
         mid = event_id.rsplit(":", 1)[-1]
         res = MatchResult()
@@ -107,24 +140,27 @@ class ResultsClient:
             sid, name = int(st.get("_id", -1)), str(st.get("name", ""))
             res.status_name = name
             periods = m.get("periods") or {}
-            low = name.lower()
-            if sid in ENDED:
+            state, _badge, phase = sr_state(st, m.get("timeinfo"))
+            if state == "ended":
                 res.state = "ended"
-                res.ft = _pair(periods.get("ft")) or (_pair(m.get("result")) if sid == 100 else None)
+                res.ft = _pair(periods.get("ft")) or (_pair(m.get("result")) if sid not in (110, 120) and
+                                                      "aet" not in name.lower() and "ap" != name.lower() else None)
                 res.ht = _pair(periods.get("p1"))
-            elif low in VOIDED or sid in (70, 90):
+            elif state == "void":
                 res.state = "void"
-            elif low in POSTPONED or sid in (60, 61, 80):
-                res.state = "postponed"
-            elif sid == 0:
+            elif state in ("postponed", "interrupted"):
+                res.state = "postponed"     # waits (pending); a resumed match comes back as live
+            elif state == "notstarted":
                 res.state = "notstarted"
-            else:
+            elif state == "live":
                 res.state = "live"
                 res.status_id = sid
                 res.live = _pair(m.get("result"))
                 res.ht = _pair(periods.get("p1"))
-                res.phase = LIVE_PHASE.get(sid, "other")
+                res.phase = phase
                 res.minute = _minute((m.get("timeinfo") or {}).get("played"), res.phase)
+        elif self.bm is not None and not is_sr_id(event_id):
+            await self._sb_fallback(event_id, res)
         if res.state == "ended" and res.ft is None:
             res.state = "unknown"       # ended but no score yet: try again next tick
         if res.state == "ended" and need_stats:

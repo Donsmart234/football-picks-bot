@@ -335,7 +335,8 @@ class MiniApp:
         except Exception as exc:
             log.warning("live list failed: %s", exc)
             return web.json_response({"error": "SportyBet's live list didn't answer just now."}, status=502)
-        return self._gz(web.json_response({"count": len(rows), "matches": rows, "updated": int(time.time())},
+        return self._gz(web.json_response({"count": len(rows), "matches": rows, "ended": self.live.ended(),
+                                           "updated": int(time.time())},
                                           headers={"Cache-Control": "no-store"}))
 
     async def live_match(self, request: web.Request) -> web.Response:

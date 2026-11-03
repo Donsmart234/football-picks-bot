@@ -13,12 +13,17 @@ import time
 
 import httpx
 
+from matchstate import ABS_CAP_MIN, FROZEN_S, LIVE_CAP_MIN, clock_overrun, is_sr_id, sb_state, sr_state
 from srstats import BASE as SR_BASE, HEADERS as SR_HEADERS
 
 log = logging.getLogger(__name__)
 LIST_TTL = 20
 EVENT_TTL = 8
 FEED_TTL = 10
+STALE_OK_S = 60            # a failed list refresh may reuse the last list only this long
+ENDED_KEEP_S = 45 * 60     # finished matches stay in the Ended section this long
+RECHECK_MAX = 8            # event / Sportradar rechecks per list refresh (relay calls)
+GONE_STOP_GRACE_S = 10 * 60   # off the live list and this long past SportyBet's estimateStopTime -> ended
 SHOW_MARKETS = {"1": "1X2", "8": "Next goal", "18": "Over/Under", "10": "Double chance", "29": "GG/NG",
                 "11": "Draw no bet", "7": "Rest of the match"}
 STREAM_KEY = re.compile(r"stream|video|livetv|tvchannel|broadcast", re.I)
@@ -56,7 +61,10 @@ def stream_flag(raw: dict) -> bool:
     return walk(raw)
 
 
-def _minute(played: str | None, status: str | None) -> str:
+def _minute(played: str | None, status: str | None, sb_status=1) -> str:
+    state, badge = sb_state(sb_status, status)
+    if state != "live":
+        return badge                # FT / AET / PEN / ABD / CANC / PPD / INT (never "91'")
     st = (status or "").upper()
     if st in ("HT", "HALFTIME", "PAUSE"):
         return "HT"
@@ -88,13 +96,15 @@ def compact_event(e: dict, tournament: dict) -> dict:
     home, away = e.get("homeTeamName", "?"), e.get("awayTeamName", "?")
     league = tournament.get("name") or ""
     category = cat.get("name", "")
+    state, badge = sb_state(e.get("status"), e.get("matchStatus"))
     return {"id": e.get("eventId"), "home": home, "away": away,
             "home_uid": str(e.get("homeTeamId") or "").rsplit(":", 1)[-1],
             "away_uid": str(e.get("awayTeamId") or "").rsplit(":", 1)[-1],
             "league": f"{category} · {league}" if category else league, "category": category,
             "tid": tournament.get("id", ""),
             "score": (e.get("setScore") or "").replace(":", "–"), "ht": (e.get("gameScore") or [None])[0],
-            "minute": _minute(e.get("playedSeconds"), e.get("matchStatus")), "status": e.get("matchStatus") or "",
+            "minute": _minute(e.get("playedSeconds"), e.get("matchStatus"), e.get("status")),
+            "status": e.get("matchStatus") or "", "state": state, "badge": badge,
             "played": e.get("playedSeconds") or "", "start": int(e.get("estimateStartTime") or 0) // 1000,
             "odds": [odds.get("1"), odds.get("2"), odds.get("3")],
             "tracker": not e.get("matchTrackerNotAllowed", False), "stream": stream_flag(e),
@@ -202,7 +212,27 @@ def feed_view(timeline: dict | None, details: dict | None) -> dict:
     return out
 
 
+def finished_row(row: dict, state: str, badge: str, score: str | None = None, at: float | None = None) -> dict:
+    """A list row turned into an Ended-section row: FT / AET / PEN / ABD / CANC / PPD badge, final score, no odds."""
+    out = dict(row)
+    out.update(state=state, badge=badge or "FT", minute=badge or "FT", odds=[None, None, None],
+               ended_at=int(at or time.time()))
+    if score is not None:
+        out["score"] = score
+    out["url"] = sportybet_url(row.get("id", ""), row.get("category", ""), (row.get("league", "").split(" · ")[-1]),
+                               row.get("home", ""), row.get("away", ""), False)
+    return out
+
+
 class Live:
+    """Live list = SportyBet's in-play feed, checked so a finished match never stays "live":
+    - a row whose matchStatus says Ended / AET / AP / abandoned / postponed / cancelled leaves the Live list;
+    - a match that drops out of the feed is re-checked on its event page (and Sportradar) and moves to Ended
+      with its final score and status, unless the event page still shows it running;
+    - past kickoff + LIVE_CAP_MIN a match stays live only while it moves (clock / score / status changed in the
+      last FROZEN_S) or Sportradar says it's running; past kickoff + ABS_CAP_MIN only on Sportradar's word;
+    - a failed refresh reuses the last list for STALE_OK_S at most."""
+
     def __init__(self, bookmaker):
         self.bm = bookmaker
         self._client = httpx.AsyncClient(headers=SR_HEADERS, timeout=httpx.Timeout(10.0))
@@ -210,9 +240,28 @@ class Live:
         self._lock = asyncio.Lock()
         self._ev: dict[str, tuple[float, dict | None]] = {}
         self._feed: dict[str, tuple[float, dict | None]] = {}
+        self._track: dict[str, dict] = {}     # eid -> {sig, changed, seen, row}
+        self._ended: dict[str, dict] = {}     # eid -> Ended-section row
+        self._dead: dict[str, tuple | None] = {}   # eid -> the frozen feed signature it was called ended on
+        self.ids_now: set[str] = set()             # ids in SportyBet's live list at the last refresh
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def ended(self) -> list[dict]:
+        now = time.time()
+        for k in [k for k, v in self._ended.items() if now - v.get("ended_at", now) > ENDED_KEEP_S]:
+            self._ended.pop(k, None)
+        for k in [k for k in self._dead if k not in self._ended]:
+            self._dead.pop(k, None)
+        return sorted(self._ended.values(), key=lambda r: -r.get("ended_at", 0))[:20]
+
+    async def _fetch_list(self) -> list:
+        url, q = self.bm._url("/factsCenter/liveOrPrematchEvents", {"sportId": "sr:sport:1", "marketId": "1"})
+        r = await self.bm._client.get(url, params=q)
+        self.bm._check(r)
+        data = (r.json() or {}).get("data") or []
+        return data if isinstance(data, list) else []
 
     async def list(self, force: bool = False) -> list[dict]:
         if self._list and not force and time.time() - self._list[0] < LIST_TTL:
@@ -221,35 +270,158 @@ class Live:
             if self._list and not force and time.time() - self._list[0] < LIST_TTL:
                 return self._list[1]
             try:
-                url, q = self.bm._url("/factsCenter/liveOrPrematchEvents", {"sportId": "sr:sport:1", "marketId": "1"})
-                r = await self.bm._client.get(url, params=q)
-                self.bm._check(r)
-                data = (r.json() or {}).get("data") or []
+                data = await self._fetch_list()
             except (httpx.HTTPError, ValueError) as exc:
                 log.warning("live list failed: %s", exc.__class__.__name__)
-                if self._list:
+                if self._list and time.time() - self._list[0] < STALE_OK_S:
                     return self._list[1]
                 raise
-            out, raw = [], {}
-            for t in data if isinstance(data, list) else []:
-                for e in t.get("events") or []:
-                    if e.get("status") != 1 or not e.get("eventId"):
-                        continue
-                    lg = f"{(((e.get('sport') or {}).get('category') or {}).get('name') or '')} {t.get('name', '')}".lower()
-                    if any(x in lg for x in ("srl", "simulated", "esoccer", "ebattle", "virtual")):
-                        continue
-                    c = compact_event(e, t)
-                    out.append(c)
-                    raw[c["id"]] = e
+            out, raw = await self.reconcile(data, time.time())
             self._list = (time.time(), out, raw)
             return out
+
+    async def reconcile(self, data: list, now: float) -> tuple[list[dict], dict]:
+        """Feed tournaments -> checked live rows (+ Ended section updates). Separate from the fetch for tests."""
+        rows, raw = [], {}
+        for t in data:
+            for e in t.get("events") or []:
+                if not e.get("eventId"):
+                    continue
+                lg = f"{(((e.get('sport') or {}).get('category') or {}).get('name') or '')} {t.get('name', '')}".lower()
+                if any(x in lg for x in ("srl", "simulated", "esoccer", "ebattle", "virtual")):
+                    continue
+                st, badge = sb_state(e.get("status"), e.get("matchStatus"))
+                c = compact_event(e, t)
+                if st in ("ended", "void", "postponed"):
+                    if e.get("status") in (1, 2) or e["eventId"] in self._track or e["eventId"] in self._ended:
+                        self._finish(c, st, badge, now)
+                    self._track.pop(e["eventId"], None)
+                    continue
+                if e.get("status") not in (1, 2) and st != "interrupted":
+                    continue
+                sig = (e.get("matchStatus"), e.get("playedSeconds"), e.get("setScore"))
+                if c["id"] in self._dead:
+                    if self._dead[c["id"]] == sig:
+                        continue                 # still the same frozen "live" row we already called ended
+                    self._dead.pop(c["id"], None)
+                    self._ended.pop(c["id"], None)
+                tr = self._track.get(c["id"])
+                if not tr or tr["sig"] != sig:
+                    tr = {"sig": sig, "changed": now, "first": (tr or {}).get("first", now), "row": c}
+                tr.update(seen=now, row=c)
+                self._track[c["id"]] = tr
+                rows.append(c)
+                raw[c["id"]] = e
+        # matches that dropped out of the feed: re-check before calling them finished
+        cur = {c["id"] for c in rows}
+        self.ids_now = cur
+        gone = [k for k in self._track if k not in cur]
+        # matches past the cap that aren't moving: re-check too
+        suspect = []
+        for c in rows:
+            tr = self._track[c["id"]]
+            age_min = (now - c["start"]) / 60 if c["start"] else 0
+            frozen = now - tr["changed"] >= FROZEN_S
+            first = tr["first"] == now and is_sr_id(c["id"])   # first look already past the cap: ask Sportradar
+            if clock_overrun(c["status"], c["played"]) or c["start"] and (
+                    age_min >= ABS_CAP_MIN or (age_min >= LIVE_CAP_MIN and (frozen or first))):
+                suspect.append(c["id"])
+        checks = (gone + suspect)[:RECHECK_MAX]
+        verdicts = await asyncio.gather(*(self._recheck(k, now) for k in checks))
+        drop = set()
+        for k, (state, badge, score, still) in zip(checks, verdicts):
+            tr = self._track.get(k) or {}
+            row = tr.get("row") or {}
+            if state == "live" and k in gone and still:
+                # the event page still shows it in play and moving: a feed blip, keep it live
+                if still["sig"] != tr.get("sig"):
+                    tr.update(sig=still["sig"], changed=now)
+                rows.append(still["row"])
+                raw[k] = still["raw"]
+                tr.update(seen=now, row=still["row"])
+                continue
+            if state == "live" and k not in gone:
+                continue                       # Sportradar / event page says it's still running and moving
+            self._finish(row, state if state in ("ended", "void", "postponed") else "ended", badge, now, score,
+                         tr.get("sig"))
+            self._track.pop(k, None)
+            drop.add(k)
+        for k in gone[RECHECK_MAX:]:
+            tr = self._track.get(k) or {}
+            if now - tr.get("seen", now) > 120 and tr.get("row"):   # couldn't re-check it: never keep it live
+                self._finish(tr["row"], "ended", "Ended", now, sig=tr.get("sig"))
+                self._track.pop(k, None)
+        rows = [c for c in rows if c["id"] not in drop]
+        for k in [k for k in self._track if now - self._track[k].get("seen", now) > 6 * 3600]:
+            self._track.pop(k, None)
+        return rows, raw
+
+    def _finish(self, row: dict, state: str, badge: str, now: float, score: str | None = None, sig=None) -> None:
+        """Move a match to the Ended section. `sig` = the frozen (status, clock, score) it was judged on: the feed
+        showing exactly that again doesn't bring it back; any change does."""
+        if not row or not row.get("id"):
+            return
+        prev = self._ended.get(row["id"])
+        self._ended[row["id"]] = finished_row(row, state, badge, score, prev["ended_at"] if prev else now)
+        self._dead[row["id"]] = sig
+        self.ended()
+
+    async def _recheck(self, eid: str, now: float) -> tuple[str, str, str | None, dict | None]:
+        """(state, badge, final score or None, live row from the event page or None) for a match that left the
+        feed or stopped moving. A finished status from Sportradar or SportyBet's event page wins; it stays live
+        only when Sportradar's clock is running or the event page shows it in play and still moving; anything
+        else is treated as ended."""
+        tr = self._track.get(eid) or {}
+        row = tr.get("row") or {}
+        ev = await self.event(eid, ttl=0)
+        sr = None
+        if is_sr_id(eid):
+            info = await self._sr(f"match_info/{eid.rsplit(':', 1)[-1]}")
+            sr = (info or {}).get("match") or None
+        score = str(ev["setScore"]).replace(":", "–") if ev and ev.get("setScore") else None
+        s_state, s_badge, _ = sr_state((sr or {}).get("status"), (sr or {}).get("timeinfo"))
+        e_state, e_badge = sb_state(ev.get("status"), ev.get("matchStatus")) if ev else ("unknown", "")
+        res = (sr or {}).get("result") or {}
+        if res.get("home") is not None and res.get("away") is not None:
+            score = f"{res['home']}–{res['away']}"
+        if s_state in ("ended", "void", "postponed"):
+            return s_state, s_badge, score, None
+        if e_state in ("ended", "void", "postponed"):
+            return e_state, e_badge, score, None
+        still = self._still(ev, row)
+        if s_state == "live" and (sr.get("timeinfo") or {}).get("running"):
+            return "live", "LIVE", score, still
+        if e_state in ("live", "interrupted") and still and not clock_overrun(ev.get("matchStatus"), ev.get("playedSeconds")):
+            age_min = (now - row.get("start", now)) / 60 if row.get("start") else 0
+            stop = int(ev.get("estimateStopTime") or 0) / 1000
+            off_list = eid not in self.ids_now
+            if off_list and stop and now > stop + GONE_STOP_GRACE_S:
+                return "ended", "FT" if score else "Ended", score, None
+            seen_moving = tr.get("changed", 0) > tr.get("first", 0) and now - tr["changed"] < FROZEN_S
+            first_look = tr.get("changed") == tr.get("first") and now - tr.get("first", 0) < FROZEN_S
+            # first look with no Sportradar answer: benefit of the doubt until it's had FROZEN_S to move
+            moving = still["sig"] != tr.get("sig") or seen_moving or (first_look and s_state == "unknown")
+            if age_min < ABS_CAP_MIN and moving:
+                return "live", "LIVE", score, still
+        return "ended", "FT" if score else "Ended", score, None
+
+    @staticmethod
+    def _still(ev: dict | None, row: dict) -> dict | None:
+        if not ev or not ev.get("eventId"):
+            return None
+        sp = (ev.get("sport") or {}).get("category") or {}
+        t = sp.get("tournament") or {}
+        c = compact_event(ev, {"name": t.get("name", ""), "id": t.get("id", "")})
+        if row.get("league"):
+            c["league"] = row["league"]
+        return {"sig": (ev.get("matchStatus"), ev.get("playedSeconds"), ev.get("setScore")), "row": c, "raw": ev}
 
     def ids(self) -> set[str]:
         return {x["id"] for x in (self._list[1] if self._list else [])}
 
-    async def event(self, eid: str) -> dict | None:
+    async def event(self, eid: str, ttl: int = EVENT_TTL) -> dict | None:
         hit = self._ev.get(eid)
-        if hit and time.time() - hit[0] < EVENT_TTL:
+        if hit and time.time() - hit[0] < max(ttl, 0) and ttl:
             return hit[1]
         try:
             url, q = self.bm._url("/factsCenter/event", {"eventId": eid, "productId": 1})
@@ -283,6 +455,42 @@ class Live:
                 self._feed.pop(k, None)
         return data
 
+    def head_state(self, ev: dict | None, tl: dict | None, now: float | None = None) -> tuple[str, str]:
+        """(state, badge) for one match's Live view: Sportradar's status when it has one, else SportyBet's, and
+        the same kickoff cap as the list (a quiet "live" match long past kickoff isn't live)."""
+        now = now or time.time()
+        m = (tl or {}).get("match") or {}
+        s_state, s_badge, _ = sr_state(m.get("status"), m.get("timeinfo")) if m.get("status") else ("unknown", "", "")
+        e_state, e_badge = sb_state(ev.get("status"), ev.get("matchStatus")) if ev else ("unknown", "")
+        for st, b in ((s_state, s_badge), (e_state, e_badge)):
+            if st in ("ended", "void", "postponed"):
+                return st, b
+        if "live" in (s_state, e_state) or "interrupted" in (s_state, e_state):
+            st, b = (s_state, s_badge) if s_state in ("live", "interrupted") else (e_state, e_badge)
+            start = int((ev or {}).get("estimateStartTime") or 0) / 1000
+            age_min = (now - start) / 60 if start else 0
+            eid = (ev or {}).get("eventId") or ""
+            tr = self._track.get(eid)
+            running = bool((m.get("timeinfo") or {}).get("running"))
+            if s_state != "live" and ev and clock_overrun(ev.get("matchStatus"), ev.get("playedSeconds")):
+                return "ended", "FT"
+            stop = int((ev or {}).get("estimateStopTime") or 0) / 1000
+            if s_state != "live" and stop and now > stop + GONE_STOP_GRACE_S and self._list \
+                    and eid not in self.ids_now and now - self._list[0] < 120:
+                return "ended", "FT"
+            if start and age_min >= ABS_CAP_MIN and not running:
+                return "ended", "FT"
+            if start and age_min >= LIVE_CAP_MIN and not running and (
+                    eid in self._ended or (tr and now - tr["changed"] >= FROZEN_S)):
+                return "ended", "FT"
+            if eid in self._ended and s_state != "live":
+                r = self._ended[eid]
+                return r["state"], r["badge"]
+            return st, b
+        if e_state == "notstarted" or s_state == "notstarted":
+            return "notstarted", ""
+        return "unknown", ""
+
     async def match(self, eid: str) -> dict | None:
         """Everything the Live view needs for one match."""
         num = eid.rsplit(":", 1)[-1]
@@ -293,11 +501,27 @@ class Live:
         if not ev and not tl:
             return None
         head = None
+        if ev and ev.get("status") in (1, 2) and eid not in self._ended:
+            sig = (ev.get("matchStatus"), ev.get("playedSeconds"), ev.get("setScore"))
+            tr = self._track.get(eid)
+            if tr and tr["sig"] != sig:      # the match view keeps the "still moving" clock fresh too
+                tr.update(sig=sig, changed=time.time())
+        state, badge = self.head_state(ev, tl)
         if ev:
             sp = (ev.get("sport") or {}).get("category") or {}
             head = compact_event(ev, {"name": (sp.get("tournament") or {}).get("name", ""),
                                       "id": (sp.get("tournament") or {}).get("id", "")})
-            head["live"] = ev.get("status") == 1
-            head["ended"] = ev.get("status") in (2, 3, 4) or (ev.get("matchStatus") or "").lower() in ("ended", "ft")
-        return {"event_id": eid, "head": head, "markets": live_markets(ev) if ev and ev.get("status") == 1 else [],
+        elif eid in self._ended:
+            head = dict(self._ended[eid])
+        if head is not None:
+            head["state"], head["badge"] = state, badge
+            head["live"] = state in ("live", "interrupted")
+            head["ended"] = state in ("ended", "void", "postponed")
+            if not head["live"]:
+                head["minute"] = badge or ("" if state == "notstarted" else "FT")
+                res = ((tl or {}).get("match") or {}).get("result") or {}
+                if head["ended"] and res.get("home") is not None and res.get("away") is not None:
+                    head["score"] = f"{res['home']}–{res['away']}"
+        live = bool(head and head.get("live"))
+        return {"event_id": eid, "head": head, "markets": live_markets(ev) if ev and live and ev.get("status") == 1 else [],
                 "feed": feed_view(tl, det), "updated": int(time.time())}

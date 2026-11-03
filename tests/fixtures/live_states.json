@@ -1,0 +1,1492 @@
+{
+"captured": "2026-11-03 ~08:30 WAT via the relay (SportyBet liveOrPrematchEvents + factsCenter/event productId=1) and Sportradar gismo match_info",
+"list": [
+{
+"id": "sr:tournament:402",
+"name": "J2 League",
+"categoryName": "Japan",
+"categoryId": "sr:category:52",
+"events": [
+{
+"eventId": "sr:match:72151320",
+"gameId": "31165",
+"productStatus": "0#0",
+"estimateStartTime": 1793685000000,
+"status": 1,
+"setScore": "0:3",
+"gameScore": [
+"0:2",
+"0:1"
+],
+"period": "2",
+"matchStatus": "H2",
+"playedSeconds": "61:54",
+"homeTeamId": "sr:competitor:79907",
+"homeTeamName": "FC Imabari",
+"awayTeamName": "Hokkaido Consadole Sapporo",
+"awayTeamId": "sr:competitor:3142",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:52",
+"name": "Japan",
+"tournament": {
+"id": "sr:tournament:402",
+"name": "J2 League"
+}
+}
+},
+"totalMarketSize": 76,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 0,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "80.00",
+"probability": "0.0022648155",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "14.50",
+"probability": "0.0130723994",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "1.01",
+"probability": "0.9846627851",
+"voidProbability": "0E-10",
+"isActive": 0,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_RADAR",
+"availableScore": "0:3",
+"lastOddsChangeTime": 1793689991775,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": true
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": true
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {
+"name": "ASICS Satoyama Stadium"
+},
+"ai": false,
+"bgEvent": false,
+"matchTrackerNotAllowed": false,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72151320"
+},
+"liveSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72151320"
+}
+},
+"containsPcbb": false,
+"banned": false
+}
+]
+},
+{
+"id": "sr:tournament:2094",
+"name": "J3 League",
+"categoryName": "Japan",
+"categoryId": "sr:category:52",
+"events": [
+{
+"eventId": "sr:match:72152150",
+"gameId": "26072",
+"productStatus": "0#0",
+"estimateStartTime": 1793689200000,
+"status": 1,
+"setScore": "1:0",
+"gameScore": [
+"1:0"
+],
+"period": "1",
+"matchStatus": "H1",
+"playedSeconds": "09:33",
+"homeTeamId": "sr:competitor:44528",
+"homeTeamName": "FC Ryukyu",
+"awayTeamName": "FC Gifu",
+"awayTeamId": "sr:competitor:21900",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:52",
+"name": "Japan",
+"tournament": {
+"id": "sr:tournament:2094",
+"name": "J3 League"
+}
+}
+},
+"totalMarketSize": 89,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 0,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "1.85",
+"probability": "0.5121130748",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "4.70",
+"probability": "0.1920992164",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "3.10",
+"probability": "0.2957876990",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_RADAR",
+"availableScore": "1:0",
+"lastOddsChangeTime": 1793689984237,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {
+"name": "Okinawa Prefecture Athletic Stadium"
+},
+"ai": false,
+"bgEvent": false,
+"matchTrackerNotAllowed": false,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72152150"
+},
+"liveSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72152150"
+}
+},
+"containsPcbb": false,
+"banned": false
+}
+]
+},
+{
+"id": "sr:simple_tournament:16086",
+"name": "Bangalore Super Division",
+"categoryName": "India",
+"categoryId": "sr:category:352",
+"events": [
+{
+"eventId": "sr:match:111111114633165",
+"gameId": "26083",
+"productStatus": "0#0",
+"estimateStartTime": 1793683800000,
+"estimateStopTime": 1793690742811,
+"status": 1,
+"setScore": "0:1",
+"gameScore": [
+"0:0",
+"0:1"
+],
+"pointScore": "[\"0:0\",\"0:1\"]",
+"period": "2",
+"matchStatus": "H2",
+"playedSeconds": "77:24",
+"remainingTimeInPeriod": "12:35",
+"homeTeamId": "sr:competitor:1111111565839",
+"homeTeamName": "ASC & Center FC",
+"awayTeamName": "Roots FC",
+"awayTeamId": "sr:competitor:11111111359644",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:352",
+"name": "India",
+"tournament": {
+"id": "sr:simple_tournament:16086",
+"name": "Bangalore Super Division"
+}
+}
+},
+"totalMarketSize": 8,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 0,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "32.00",
+"probability": "0.0073400000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "6.25",
+"probability": "0.1024000000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "1.07",
+"probability": "0.8902600000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_GENIUS",
+"availableScore": "0:1",
+"lastOddsChangeTime": 1793689980138,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114633165"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114633165"
+}
+},
+"containsPcbb": false,
+"banned": false
+}
+]
+},
+{
+"id": "sr:simple_tournament:96391",
+"name": "Chinese Football League, Women",
+"categoryName": "China",
+"categoryId": "sr:category:99",
+"events": [
+{
+"eventId": "sr:match:111111114542031",
+"gameId": "18786",
+"productStatus": "0#0",
+"estimateStartTime": 1793689200000,
+"estimateStopTime": 1793694625015,
+"status": 1,
+"setScore": "0:0",
+"gameScore": [
+"0:0"
+],
+"pointScore": "[\"0:0\"]",
+"period": "1",
+"matchStatus": "H1",
+"playedSeconds": "12:31",
+"remainingTimeInPeriod": "32:28",
+"homeTeamId": "sr:competitor:11111111463291",
+"homeTeamName": "Fujian Nanan Women",
+"awayTeamName": "Shanghai Shengli B Women",
+"awayTeamId": "sr:competitor:11111111749206",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:99",
+"name": "China",
+"tournament": {
+"id": "sr:simple_tournament:96391",
+"name": "Chinese Football League, Women"
+}
+}
+},
+"totalMarketSize": 41,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 0,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "2.40",
+"probability": "0.3806000000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "2.85",
+"probability": "0.3156800000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "3.00",
+"probability": "0.3037200000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_GENIUS",
+"availableScore": "0:0",
+"lastOddsChangeTime": 1793689978532,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542031"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542031"
+}
+},
+"containsPcbb": false,
+"banned": false
+},
+{
+"eventId": "sr:match:111111114542034",
+"gameId": "35586",
+"productStatus": "0#0",
+"estimateStartTime": 1793689200000,
+"estimateStopTime": 1793694601592,
+"status": 1,
+"setScore": "0:0",
+"gameScore": [
+"0:0"
+],
+"pointScore": "[\"0:0\"]",
+"period": "1",
+"matchStatus": "H1",
+"playedSeconds": "13:01",
+"remainingTimeInPeriod": "31:58",
+"homeTeamId": "sr:competitor:11111111747641",
+"homeTeamName": "Hebei FC Women",
+"awayTeamName": "Qingdao West Coast Women",
+"awayTeamId": "sr:competitor:11111111747648",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:99",
+"name": "China",
+"tournament": {
+"id": "sr:simple_tournament:96391",
+"name": "Chinese Football League, Women"
+}
+}
+},
+"totalMarketSize": 36,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 1,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "6.80",
+"probability": "0.1210200000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "3.90",
+"probability": "0.2176800000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "1.43",
+"probability": "0.6613000000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_GENIUS",
+"availableScore": "0:0",
+"lastOddsChangeTime": 1793689982908,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542034"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542034"
+}
+},
+"containsPcbb": false,
+"banned": false
+},
+{
+"eventId": "sr:match:111111114542032",
+"gameId": "32250",
+"productStatus": "0#0",
+"estimateStartTime": 1793689200000,
+"estimateStopTime": 1793694655434,
+"status": 1,
+"setScore": "0:0",
+"gameScore": [
+"0:0"
+],
+"pointScore": "[\"0:0\"]",
+"period": "1",
+"matchStatus": "H1",
+"playedSeconds": "12:10",
+"remainingTimeInPeriod": "32:49",
+"homeTeamId": "sr:competitor:11111111747756",
+"homeTeamName": "Shanghai Shenhua Women",
+"awayTeamName": "Wuhan Sports University Women",
+"awayTeamId": "sr:competitor:11111111747757",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:99",
+"name": "China",
+"tournament": {
+"id": "sr:simple_tournament:96391",
+"name": "Chinese Football League, Women"
+}
+}
+},
+"totalMarketSize": 40,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 0,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "1.50",
+"probability": "0.6305000000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "3.80",
+"probability": "0.2284400000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "5.90",
+"probability": "0.1410600000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_GENIUS",
+"availableScore": "0:0",
+"lastOddsChangeTime": 1793689979254,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542032"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542032"
+}
+},
+"containsPcbb": false,
+"banned": false
+},
+{
+"eventId": "sr:match:111111114542033",
+"gameId": "35521",
+"productStatus": "0#0",
+"estimateStartTime": 1793689200000,
+"estimateStopTime": 1793694649599,
+"status": 1,
+"setScore": "0:1",
+"gameScore": [
+"0:1"
+],
+"pointScore": "[\"0:1\"]",
+"period": "1",
+"matchStatus": "H1",
+"playedSeconds": "12:16",
+"remainingTimeInPeriod": "32:43",
+"homeTeamId": "sr:competitor:11111111388186",
+"homeTeamName": "Yongchuan Chashan Women",
+"awayTeamName": "Henan Songshan Longmen Women",
+"awayTeamId": "sr:competitor:11111111230450",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:99",
+"name": "China",
+"tournament": {
+"id": "sr:simple_tournament:96391",
+"name": "Chinese Football League, Women"
+}
+}
+},
+"totalMarketSize": 39,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 0,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "24.00",
+"probability": "0.0173400000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "9.60",
+"probability": "0.0648800000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "1.05",
+"probability": "0.9177800000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_GENIUS",
+"availableScore": "0:1",
+"lastOddsChangeTime": 1793689987111,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542033"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114542033"
+}
+},
+"containsPcbb": false,
+"banned": false
+}
+]
+},
+{
+"id": "sr:simple_tournament:77926",
+"name": "Mumbai Super League",
+"categoryName": "India",
+"categoryId": "sr:category:352",
+"events": [
+{
+"eventId": "sr:match:111111114645123",
+"gameId": "34831",
+"productStatus": "0#0",
+"estimateStartTime": 1793683800000,
+"estimateStopTime": 1793692662556,
+"status": 1,
+"setScore": "1:1",
+"gameScore": [
+"1:1",
+"0:0"
+],
+"pointScore": "[\"1:1\",\"0:0\"]",
+"period": "2",
+"matchStatus": "H2",
+"playedSeconds": "45:02",
+"remainingTimeInPeriod": "44:57",
+"homeTeamId": "sr:competitor:11111111157529",
+"homeTeamName": "Bombay YMCA",
+"awayTeamName": "Kopana FC",
+"awayTeamId": "sr:competitor:11111111419141",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:352",
+"name": "India",
+"tournament": {
+"id": "sr:simple_tournament:77926",
+"name": "Mumbai Super League"
+}
+}
+},
+"totalMarketSize": 8,
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 1,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "5.50",
+"probability": "0.1449400000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "3.40",
+"probability": "0.2503200000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "1.53",
+"probability": "0.6047400000",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_GENIUS",
+"availableScore": "1:1",
+"lastOddsChangeTime": 1793689980224,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": false
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114645123"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114645123"
+}
+},
+"containsPcbb": false,
+"banned": false
+}
+]
+}
+],
+"events": {
+"sr:match:72513288": {
+"eventId": "sr:match:72513288",
+"gameId": "40989",
+"productStatus": "0#0",
+"estimateStartTime": 1793457000000,
+"status": 4,
+"setScore": "0:2",
+"gameScore": [
+"0:1",
+"0:1"
+],
+"period": "2",
+"matchStatus": "Ended",
+"playedSeconds": "90:00",
+"homeTeamId": "sr:competitor:2530",
+"homeTeamName": "Schalke",
+"awayTeamName": "RB Leipzig",
+"awayTeamId": "sr:competitor:36360",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:30",
+"name": "Germany",
+"tournament": {
+"id": "sr:tournament:35",
+"name": "Bundesliga"
+}
+}
+},
+"markets": [],
+"bookingStatus": "Booked",
+"topTeam": false,
+"oddsBoost": true,
+"fixtureVenue": {
+"name": "VELTINS-Arena"
+},
+"ai": false,
+"bgEvent": false,
+"matchTrackerNotAllowed": false,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72513288"
+},
+"liveSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72513288"
+}
+},
+"containsPcbb": false,
+"banned": false
+},
+"sr:match:111111114645123": {
+"eventId": "sr:match:111111114645123",
+"gameId": "34831",
+"productStatus": "0#0",
+"estimateStartTime": 1793683800000,
+"estimateStopTime": 1793692662556,
+"status": 9,
+"setScore": "2:1",
+"gameScore": [
+"1:1",
+"1:0"
+],
+"pointScore": "[\"1:1\",\"1:0\"]",
+"period": "2",
+"matchStatus": "H2",
+"playedSeconds": "61:38",
+"remainingTimeInPeriod": "28:21",
+"homeTeamId": "sr:competitor:11111111157529",
+"homeTeamName": "Bombay YMCA",
+"awayTeamName": "Kopana FC",
+"awayTeamId": "sr:competitor:11111111419141",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:352",
+"name": "India",
+"tournament": {
+"id": "sr:simple_tournament:77926",
+"name": "Mumbai Super League"
+}
+}
+},
+"markets": [],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114645123"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114645123"
+}
+},
+"containsPcbb": false,
+"banned": false
+},
+"sr:match:111111114633165": {
+"eventId": "sr:match:111111114633165",
+"gameId": "26083",
+"productStatus": "0#0",
+"estimateStartTime": 1793683800000,
+"estimateStopTime": 1793690742811,
+"status": 1,
+"setScore": "0:1",
+"gameScore": [
+"0:0",
+"0:1"
+],
+"pointScore": "[\"0:0\",\"0:1\"]",
+"period": "2",
+"matchStatus": "H2",
+"playedSeconds": "93:56",
+"remainingTimeInPeriod": "04:03",
+"homeTeamId": "sr:competitor:1111111565839",
+"homeTeamName": "ASC & Center FC",
+"awayTeamName": "Roots FC",
+"awayTeamId": "sr:competitor:11111111359644",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:352",
+"name": "India",
+"tournament": {
+"id": "sr:simple_tournament:16086",
+"name": "Bangalore Super Division"
+}
+}
+},
+"markets": [],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {},
+"ai": false,
+"bgEvent": true,
+"matchTrackerNotAllowed": true,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114633165"
+},
+"liveSource": {
+"sourceType": "BET_GENIUS",
+"sourceId": "111111114633165"
+}
+},
+"containsPcbb": false,
+"banned": false
+},
+"sr:match:72151320": {
+"eventId": "sr:match:72151320",
+"gameId": "31165",
+"productStatus": "0#0",
+"estimateStartTime": 1793685000000,
+"status": 1,
+"setScore": "0:4",
+"gameScore": [
+"0:2",
+"0:2"
+],
+"period": "2",
+"matchStatus": "H2",
+"playedSeconds": "78:55",
+"homeTeamId": "sr:competitor:79907",
+"homeTeamName": "FC Imabari",
+"awayTeamName": "Hokkaido Consadole Sapporo",
+"awayTeamId": "sr:competitor:3142",
+"sport": {
+"id": "sr:sport:1",
+"name": "Football",
+"category": {
+"id": "sr:category:52",
+"name": "Japan",
+"tournament": {
+"id": "sr:tournament:402",
+"name": "J2 League"
+}
+}
+},
+"markets": [
+{
+"id": "1",
+"product": 1,
+"desc": "1X2",
+"status": 0,
+"group": "Main",
+"groupId": "171121135724MGI11262166",
+"marketGuide": "Which team will win the match. Overtime not included.",
+"title": "1,X,2",
+"name": "1X2",
+"favourite": 0,
+"outcomes": [
+{
+"id": "1",
+"odds": "100.00",
+"probability": "0.0000122048",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Home"
+},
+{
+"id": "2",
+"odds": "12.00",
+"probability": "0.0001937534",
+"voidProbability": "0E-10",
+"isActive": 1,
+"desc": "Draw"
+},
+{
+"id": "3",
+"odds": "1.01",
+"probability": "0.9997940418",
+"voidProbability": "0E-10",
+"isActive": 0,
+"desc": "Away"
+}
+],
+"farNearOdds": 0,
+"marketExtendVOS": null,
+"sourceType": "BET_RADAR",
+"availableScore": "0:4",
+"lastOddsChangeTime": 1793690982912,
+"earlyPayoutMarkets": [
+{
+"name": "1UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60200",
+"mappedSpecifier": "",
+"supported": true
+},
+{
+"name": "2UP",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60100",
+"mappedSpecifier": "",
+"supported": true
+},
+{
+"name": "one_x_two_never_down",
+"sourceMarketId": "1",
+"sourceSpecifier": "",
+"mappedMarketId": "60210",
+"mappedSpecifier": "",
+"supported": false
+}
+],
+"banned": false
+}
+],
+"bookingStatus": "Booked",
+"topTeam": false,
+"fixtureVenue": {
+"name": "ASICS Satoyama Stadium"
+},
+"ai": false,
+"bgEvent": false,
+"matchTrackerNotAllowed": false,
+"eventSource": {
+"preMatchSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72151320"
+},
+"liveSource": {
+"sourceType": "BET_RADAR",
+"sourceId": "72151320"
+}
+},
+"containsPcbb": false,
+"banned": false
+}
+},
+"sr_match_info": {
+"72513288": {
+"match": {
+"_id": 72513288,
+"status": {
+"_doc": "status",
+"_id": 100,
+"name": "Ended",
+"shortName": "END"
+},
+"result": {
+"home": 0,
+"away": 2,
+"winner": "away"
+},
+"periods": {
+"p1": {
+"home": 0,
+"away": 1
+},
+"ft": {
+"home": 0,
+"away": 2
+}
+},
+"timeinfo": {
+"injurytime": null,
+"ended": "1793463830",
+"started": "1793457038",
+"played": "5533",
+"remaining": null,
+"running": false
+},
+"teams": {
+"home": {
+"_doc": "team",
+"_id": 5090,
+"_sid": 1,
+"uid": 2530,
+"virtual": false,
+"name": "Schalke",
+"mediumname": "Schalke 04",
+"abbr": "SCH",
+"nickname": null,
+"iscountry": false,
+"haslogo": true,
+"homerealcategoryid": 30,
+"countrycode": {
+"_doc": "countrycode",
+"_id": 80,
+"a2": "de",
+"name": "Germany",
+"a3": "DEU",
+"ioc": "GER",
+"continentid": 1,
+"continent": "Europe",
+"population": 82500000
+}
+},
+"away": {
+"_doc": "team",
+"_id": 8720196,
+"_sid": 1,
+"uid": 36360,
+"virtual": false,
+"name": "Leipzig",
+"mediumname": "RB Leipzig",
+"abbr": "RBL",
+"nickname": null,
+"iscountry": false,
+"haslogo": true,
+"homerealcategoryid": 30,
+"countrycode": {
+"_doc": "countrycode",
+"_id": 80,
+"a2": "de",
+"name": "Germany",
+"a3": "DEU",
+"ioc": "GER",
+"continentid": 1,
+"continent": "Europe",
+"population": 82500000
+}
+}
+}
+}
+},
+"72151320": {
+"match": {
+"_id": 72151320,
+"status": {
+"_doc": "status",
+"_id": 7,
+"name": "2nd half",
+"shortName": "H2"
+},
+"result": {
+"home": 0,
+"away": 4,
+"winner": "away"
+},
+"periods": {
+"p1": {
+"home": 0,
+"away": 2
+}
+},
+"timeinfo": {
+"injurytime": null,
+"ended": null,
+"started": "1793685202",
+"played": "4726",
+"remaining": null,
+"running": true
+},
+"teams": {
+"home": {
+"_doc": "team",
+"_id": 15476391,
+"_sid": 1,
+"uid": 79907,
+"virtual": false,
+"name": "Imabari",
+"mediumname": "FC Imabari",
+"abbr": "IMA",
+"nickname": null,
+"iscountry": false,
+"haslogo": true,
+"homerealcategoryid": 52,
+"countrycode": {
+"_doc": "countrycode",
+"_id": 107,
+"a2": "jp",
+"name": "Japan",
+"a3": "JPN",
+"ioc": "JPN",
+"continentid": 5,
+"continent": "Asia",
+"population": 127400000
+}
+},
+"away": {
+"_doc": "team",
+"_id": 502840,
+"_sid": 1,
+"uid": 3142,
+"virtual": false,
+"name": "Sapporo",
+"mediumname": "Hokkaido Consadole Sapporo",
+"abbr": "HCS",
+"nickname": null,
+"iscountry": false,
+"haslogo": true,
+"homerealcategoryid": 52,
+"countrycode": {
+"_doc": "countrycode",
+"_id": 107,
+"a2": "jp",
+"name": "Japan",
+"a3": "JPN",
+"ioc": "JPN",
+"continentid": 5,
+"continent": "Asia",
+"population": 127400000
+}
+}
+}
+}
+}
+}
+}
