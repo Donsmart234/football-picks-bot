@@ -337,6 +337,20 @@ def match_view() -> None:
     h = d["head"]
     check(h["live"] is False and h["ended"] and h["badge"] == "FT" and h["minute"] == "FT" and h["score"] == "0–3"
           and d["markets"] == [], "event page says 1 but Sportradar Ended -> FT 0–3, no live odds")
+    # real 07:46 UTC 2026-11-03: match_info Ended (ended 1793691970) while match_timeline still said 2nd half, running,
+    # and SportyBet's page said status 1, H2, 90:00
+    lv = FakeLive()
+    page = copy.deepcopy(FX["events"][IMABARI])
+    page.update(playedSeconds="90:00", setScore="0:4")
+    lv.pages[IMABARI] = page
+    lv.sr[f"match_timeline/{num}"] = {"match": {"status": {"_id": 7, "name": "2nd half"}, "result": {"home": 0, "away": 4},
+                                                "timeinfo": {"injurytime": "4", "ended": None, "played": "5698",
+                                                             "running": True}}, "events": []}
+    lv.sr[f"match_info/{num}"] = {"match": {"status": {"_id": 100, "name": "Ended"}, "result": {"home": 0, "away": 4},
+                                            "timeinfo": {"ended": "1793691970", "played": "5723", "running": False}}}
+    d = run(lv.match(IMABARI))
+    check(d["head"]["live"] is False and d["head"]["badge"] == "FT" and d["head"]["score"] == "0–4",
+          "match_info Ended beats a lagging match_timeline 'running' -> FT 0–4")
     lv = FakeLive()
     lv.pages[SCHALKE] = copy.deepcopy(FX["events"][SCHALKE])
     d = run(lv.match(SCHALKE))

@@ -455,16 +455,24 @@ class Live:
                 self._feed.pop(k, None)
         return data
 
-    def head_state(self, ev: dict | None, tl: dict | None, now: float | None = None) -> tuple[str, str]:
-        """(state, badge) for one match's Live view: Sportradar's status when it has one, else SportyBet's, and
-        the same kickoff cap as the list (a quiet "live" match long past kickoff isn't live)."""
+    def head_state(self, ev: dict | None, tl: dict | None, now: float | None = None,
+                   info: dict | None = None) -> tuple[str, str]:
+        """(state, badge) for one match's Live view: a finished status from any source wins (Sportradar match_info,
+        match_timeline, SportyBet's event page; match_timeline lags match_info by minutes at full time, seen
+        2026-11-03), then the same caps as the list (a quiet "live" match long past kickoff isn't live)."""
         now = now or time.time()
         m = (tl or {}).get("match") or {}
+        mi = (info or {}).get("match") or {}
         s_state, s_badge, _ = sr_state(m.get("status"), m.get("timeinfo")) if m.get("status") else ("unknown", "", "")
+        i_state, i_badge, _ = sr_state(mi.get("status"), mi.get("timeinfo")) if mi.get("status") else ("unknown", "", "")
         e_state, e_badge = sb_state(ev.get("status"), ev.get("matchStatus")) if ev else ("unknown", "")
-        for st, b in ((s_state, s_badge), (e_state, e_badge)):
+        for st, b in ((i_state, i_badge), (s_state, s_badge), (e_state, e_badge)):
             if st in ("ended", "void", "postponed"):
                 return st, b
+        if (ev or {}).get("eventId") in self._ended:
+            r = self._ended[ev["eventId"]]
+            if not (mi.get("timeinfo") or {}).get("running"):
+                return r["state"], r["badge"]
         if "live" in (s_state, e_state) or "interrupted" in (s_state, e_state):
             st, b = (s_state, s_badge) if s_state in ("live", "interrupted") else (e_state, e_badge)
             start = int((ev or {}).get("estimateStartTime") or 0) / 1000
@@ -483,9 +491,6 @@ class Live:
             if start and age_min >= LIVE_CAP_MIN and not running and (
                     eid in self._ended or (tr and now - tr["changed"] >= FROZEN_S)):
                 return "ended", "FT"
-            if eid in self._ended and s_state != "live":
-                r = self._ended[eid]
-                return r["state"], r["badge"]
             return st, b
         if e_state == "notstarted" or s_state == "notstarted":
             return "notstarted", ""
@@ -496,8 +501,9 @@ class Live:
         num = eid.rsplit(":", 1)[-1]
         if not num.isdigit():
             return None
-        ev, tl, det = await asyncio.gather(self.event(eid), self._sr(f"match_timeline/{num}"),
-                                           self._sr(f"match_detailsextended/{num}"))
+        ev, tl, det, info = await asyncio.gather(
+            self.event(eid), self._sr(f"match_timeline/{num}"), self._sr(f"match_detailsextended/{num}"),
+            self._sr(f"match_info/{num}") if is_sr_id(eid) else asyncio.sleep(0, None))
         if not ev and not tl:
             return None
         head = None
@@ -506,7 +512,7 @@ class Live:
             tr = self._track.get(eid)
             if tr and tr["sig"] != sig:      # the match view keeps the "still moving" clock fresh too
                 tr.update(sig=sig, changed=time.time())
-        state, badge = self.head_state(ev, tl)
+        state, badge = self.head_state(ev, tl, info=info)
         if ev:
             sp = (ev.get("sport") or {}).get("category") or {}
             head = compact_event(ev, {"name": (sp.get("tournament") or {}).get("name", ""),
@@ -519,7 +525,7 @@ class Live:
             head["ended"] = state in ("ended", "void", "postponed")
             if not head["live"]:
                 head["minute"] = badge or ("" if state == "notstarted" else "FT")
-                res = ((tl or {}).get("match") or {}).get("result") or {}
+                res = ((info or {}).get("match") or {}).get("result") or ((tl or {}).get("match") or {}).get("result") or {}
                 if head["ended"] and res.get("home") is not None and res.get("away") is not None:
                     head["score"] = f"{res['home']}–{res['away']}"
         live = bool(head and head.get("live"))
