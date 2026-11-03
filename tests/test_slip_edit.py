@@ -228,9 +228,9 @@ async def flow_rollover():
     import handlers
     text, kb = handlers._edit_html(out)
     datas = [b.callback_data for row in kb.inline_keyboard for b in row]
-    assert datas == [f"RC|{out['token']}", "NOOP"], datas
+    assert datas == [f"RC|{out['token']}", "NOOP", f"IMG|p|{out['token']}"], datas
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert labels == ["✅ Confirm: book new code", "Keep current slip"]
+    assert labels == ["✅ Confirm: book new code", "Keep current slip", "🖼 Image"]
     assert "New picks for today" in text and "YNAP2N" in text and "Arsenal v Burnley" in text and "replaced" in text
     print("render: edited preview keeps '✅ Confirm: book new code' / 'Keep current slip' OK")
 

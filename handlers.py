@@ -21,6 +21,7 @@ from predictor import Prediction
 from constraints import parse_text
 from scanner import TIER_ALIASES
 from services import TZ, Services
+from slipimg import TELEGRAM_PHOTO_MAX, png_size, spec_from_ctx, wants_image
 
 log = logging.getLogger(__name__)
 PAGE = 8
@@ -160,6 +161,9 @@ async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _run_analysis(update, ctx, code, "")
         return
     rt = update.effective_message.reply_to_message
+    if wants_image(text) and (rt is None or _image_ref(rt) is None or (rt.from_user and rt.from_user.is_bot)):
+        if await _image_request(update, ctx, text):    # "send slip image", "image of this slip" (reply), "pic of CODE"
+            return
     if rt is not None and _image_ref(rt) is not None:   # a text reply to a photo: read the photo with this text
         await _handle_image(update, ctx, rt, text)
         return
@@ -197,12 +201,26 @@ async def analyze_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await _run_analysis(update, ctx, code, " ".join(args.split()[1:]))
 
 
+def img_btn(kind: str = "", key: str = "", label: str = "🖼 Slip image") -> Btn:
+    """Button that sends the slip as a branded PNG (slipimg.py). kind: h history id · c code · s scan/AI slip id ·
+    a analysis id · p rollover preview token · u the chat slip; no kind = the slip stored for that message."""
+    data = f"IMG|{kind}|{key}" if kind else "IMG"
+    return Btn(label, callback_data=data[:64])
+
+
+def with_img(kb: Kb | None, kind: str = "", key: str = "") -> Kb:
+    rows = [list(r) for r in (kb.inline_keyboard if kb else [])]
+    rows.append([img_btn(kind, key)])
+    return Kb(rows)
+
+
 def open_code_kb(bookmaker, code: str | None) -> Kb:
     """One url button that opens the booking code in the SportyBet app when installed (website otherwise).
-    A url button (not a web_app one) so Telegram hands the link to the OS, which routes the app-claimed link."""
+    A url button (not a web_app one) so Telegram hands the link to the OS, which routes the app-claimed link.
+    Booked codes also get the 🖼 Slip image button."""
     if not code:
         return Kb([[Btn("Open SportyBet code hub", url=code_link(bookmaker, None))]])
-    return Kb([[Btn(f"📲 Open {code} in SportyBet", url=code_link(bookmaker, code))]])
+    return Kb([[Btn(f"📲 Open {code} in SportyBet", url=code_link(bookmaker, code))], [img_btn("c", code)]])
 
 
 def _analysis_kb(res: dict) -> Kb | None:
@@ -214,6 +232,7 @@ def _analysis_kb(res: dict) -> Kb | None:
     rows.append([Btn("🧠 AI take", callback_data=f"AZN|{res['id']}"),
                  Btn("📲 Open in SportyBet" if res.get("code") else "Open SportyBet",
                      url=res.get("load_url") or code_link(None, res.get("code")))])
+    rows.insert(len(rows) - 1, [img_btn("a", res["id"])])
     return Kb(rows)
 
 
@@ -313,8 +332,12 @@ async def _deliver_ai(update: Update, ctx, res: dict, note=None) -> None:
                              callback_data=f"AZR|{an_res['id']}")])
     if res.get("code"):
         rows.append([Btn(f"📲 Open {res['code']} in SportyBet", url=code_link(s.bookmaker, res["code"]))])
+        rows.append([img_btn("c", res["code"])])
     elif res.get("slip") and res["slip"].get("slip_id") and res["slip"].get("legs"):
         rows.append([Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{res['slip']['slip_id']}")])
+        rows.append([img_btn("s", res["slip"]["slip_id"])])
+    elif an_res and an_res.get("id"):
+        rows.append([img_btn("a", an_res["id"])])
     if rows:
         kb = Kb(rows)
     html_text = md_to_html(res["reply"])
@@ -442,7 +465,7 @@ def _edit_html(out: dict) -> tuple[str, Kb | None]:
                 "every leg ≥80% est." + ("" if out.get("allow_unders") else " No unders.")
                 + " Nothing is booked until you confirm. Estimates, not guarantees. 18+.</i>")
         kb = Kb([[Btn("✅ Confirm: book new code", callback_data=f"RC|{out['token']}")],
-                 [Btn("Keep current slip", callback_data="NOOP")]])
+                 [Btn("Keep current slip", callback_data="NOOP"), img_btn("p", out["token"], "🖼 Image")]])
         return text[:4096], kb
     sl = out.get("slip") or {}
     if sl.get("tier") in ("safe", "mid", "risk", "high"):
@@ -451,7 +474,8 @@ def _edit_html(out: dict) -> tuple[str, Kb | None]:
     title = ("✏️ <b>Edited slip</b>" + (f" (from <code>{esc(out.get('based_on'))}</code>)" if out.get("based_on") else "")
              + f" · not saved until you book\n{change}")
     text = f"{title}\n{RULE}\n{body}\n{tail}\n<i>Estimates, not guarantees. 18+.</i>"
-    kb = Kb([[Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{out['sid']}")]]) if out.get("sid") else None
+    kb = Kb([[Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{out['sid']}")],
+             [img_btn("s", out["sid"])]]) if out.get("sid") else None
     return text[:4096], kb
 
 
@@ -541,7 +565,8 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             parts.append(f"\n<b>{esc(sl['label'])}</b>: {len(sl['legs'])} legs, total {sl['total_odds']:.2f}, "
                          f"est {sl['est_prob']:.0%}" + (f" – {esc(sl['note'])}" if sl["note"] else ""))
             if sid and sl["legs"]:
-                rows.append([Btn(f"📒 Book {sl['label']} ({sl['total_odds']:.2f})", callback_data=f"SB|{sid}")])
+                rows.append([Btn(f"📒 Book {sl['label']} ({sl['total_odds']:.2f})", callback_data=f"SB|{sid}"),
+                             img_btn("s", sid, "🖼 Image")])
         parts.append("\n<i>Estimates, not guarantees. 18+.</i>")
         await note.edit_text("\n".join(parts)[:4000], parse_mode=ParseMode.HTML, reply_markup=Kb(rows) if rows else None)
         return
@@ -568,6 +593,8 @@ def _scan_kb(sid: str | None, res: dict) -> Kb | None:
         return None
     rows = [[Btn("📒 Book on SportyBet", callback_data=f"SB|{sid}")]] if res["legs"] else []
     rows.append([Btn("🔄 Refresh picks", callback_data=f"SR|{sid}"), Btn("🔀 Different picks", callback_data=f"SR|{sid}|x")])
+    if res["legs"]:
+        rows.append([img_btn("s", sid)])
     return Kb(rows)
 
 
@@ -796,6 +823,7 @@ async def _render_slip(user_id: int, ctx) -> tuple[str, Kb | None]:
         rows.append([Btn(f"❌ Remove {i}", callback_data=f"R|{p['event_id']}")])
     lines.append(f"\n<b>Total odds: {total:.2f}</b> ({len(picks)} selection{'s' if len(picks) > 1 else ''})")
     rows.append([Btn("📒 Get booking code", callback_data="BOOK"), Btn("🗑 Clear", callback_data="CLR")])
+    rows.append([img_btn("u", "")])
     return "\n".join(lines), Kb(rows)
 
 
@@ -870,7 +898,14 @@ async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if live:
         lines += [RULE, record_text(live, "⏳ <b>Latest running slip</b>")]
     url = app_url()
-    kb = Kb([[Btn("📈 Open History in the app", web_app=WebAppInfo(url + "#history"))]]) if url else None
+    rows_kb = []
+    pics = [r for r in rows if (r["data"].get("legs"))][:6]
+    for i in range(0, len(pics), 3):
+        rows_kb.append([img_btn("h", r["id"], "🖼 " + (r["data"].get("code") or f"Day {r['data'].get('rollover_day') or ''}"))
+                        for r in pics[i:i + 3]])
+    if url:
+        rows_kb.append([Btn("📈 Open History in the app", web_app=WebAppInfo(url + "#history"))])
+    kb = Kb(rows_kb) if rows_kb else None
     await update.effective_message.reply_text("\n".join(lines)[:4096], parse_mode=ParseMode.HTML, reply_markup=kb,
                                               disable_web_page_preview=True)
 
@@ -917,6 +952,8 @@ def _ro_kb(rec: dict | None) -> Kb:
     if last and last.get("status") == "pending":
         rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{last['slip_id']}"),
                      Btn("🔀 Different picks", callback_data=f"RF|{last['slip_id']}|x")])
+    if last:
+        rows.append([img_btn("h", last["slip_id"], f"🖼 Day {last['day']} slip image")])
     rows.append([Btn("⏭ Skip today", callback_data="RO|skip"), Btn("⏹ Stop plan", callback_data="RO|stop")])
     return Kb(rows)
 
@@ -983,6 +1020,9 @@ async def _send_tickets(msg, ctx, plan_id: str | None) -> None:
             if cur:
                 rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{cur['slip_id']}"),
                              Btn("🔀 Different picks", callback_data=f"RF|{cur['slip_id']}|x")])
+            pics = [t for t in tickets if t.get("slip_id") and t.get("legs")][-6:]
+            for j in range(0, len(pics), 3):
+                rows.append([img_btn("h", t["slip_id"], f"🖼 Day {t['day']}") for t in pics[j:j + 3]])
             past = [r for r in await tr.rollovers(6) if r["id"] != plan["id"]][:3]
             for r in past:
                 rows.append([Btn(f"🎟 {r['data']['target']:g}× · {r['data']['days']} days · {r['status']} "
@@ -1027,7 +1067,7 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
             "Confirm to book a <b>new code</b>; the old one is marked <i>replaced</i> (not counted as a loss) and "
             f"stops being tracked.\n{RULE}\n{body}\n{tail}", parse_mode=ParseMode.HTML,
             reply_markup=Kb([[Btn("✅ Confirm: book new code", callback_data=f"RC|{out['token']}")],
-                             [Btn("Keep current slip", callback_data="NOOP")]]))
+                             [Btn("Keep current slip", callback_data="NOOP"), img_btn("p", out["token"], "🖼 Image")]]))
         return
     rec = out["record"]
     _remember(ctx, note, {"section": "rollover_day", "slip_id": rec["id"], "legs": res["legs"]})
@@ -1146,6 +1186,182 @@ async def _ro_action(msg, ctx, act: str) -> None:
             await note.delete()
 
 
+# ---------------------------------------------------------------- slip images (slipimg.py)
+def _imgs(ctx):
+    return getattr(svc(ctx), "slipimg", None)
+
+
+_NOT_CODES = {"TICKET", "BETSLI", "SPORTY", "IMAGES", "PHOTOS", "SCREEN", "PLEASE", "RENDER", "CREATE", "EXPORT"}
+
+
+def _code_in(text: str) -> str | None:
+    m = re.search(r"sharecode=([A-Za-z0-9]{5,10})", text or "", re.I)
+    if m:
+        return m.group(1).upper()
+    for tok in re.findall(r"\b[A-Za-z0-9]{6}\b", text or ""):
+        if (any(ch.isdigit() for ch in tok) and any(ch.isalpha() for ch in tok)) or (tok.isupper() and tok not in _NOT_CODES):
+            return tok.upper()
+    return None
+
+
+def _img_from_markup(markup) -> tuple[str, str] | None:
+    rows = getattr(markup, "inline_keyboard", None) or []
+    for row in rows:
+        for b in row:
+            d = getattr(b, "callback_data", None) or ""
+            if str(d).startswith("IMG|"):
+                p = str(d).split("|")
+                if len(p) >= 2 and p[1] and p[1] != "f":
+                    return p[1], (p[2] if len(p) > 2 else "")
+    return None
+
+
+async def _spec_from_sctx(ctx, sctx: dict | None) -> dict | None:
+    """Image spec for a hydrated slip context: history records (with results) when the slip is saved, else the
+    in-memory slip, else the context's own legs."""
+    if not sctx or not sctx.get("legs"):
+        return None
+    imgs = _imgs(ctx)
+    sec = sctx.get("section")
+    try:
+        if imgs is not None:
+            if sec in ("rollover_day", "history") and sctx.get("slip_id"):
+                sp = await imgs.spec_for("h", sctx["slip_id"])
+                if sp:
+                    return sp
+            if sec == "rollover_preview" and sctx.get("token"):
+                sp = await imgs.spec_for("p", sctx["token"])
+                if sp:
+                    return sp
+            if sec in ("scan", "ai") and sctx.get("sid"):
+                sp = await imgs.spec_for("s", sctx["sid"])
+                if sp:
+                    return sp
+            if sec == "analysis" and sctx.get("aid"):
+                sp = await imgs.spec_for("a", sctx["aid"])
+                if sp:
+                    return sp
+    except Exception as exc:
+        log.warning("slip image spec: %s", exc)
+    return spec_from_ctx(sctx)
+
+
+async def _chat_slip_spec(ctx, uid: int) -> dict | None:
+    from slipimg import make_spec
+    picks = svc(ctx).storage.slip_get(uid)
+    if not picks:
+        return None
+    legs = [{**p, "pick": p["label"], "match": p["match_name"], "market": _mkt_name(p["market_id"])} for p in picks]
+    tr = getattr(svc(ctx), "tracker", None)
+    if tr is not None:
+        try:
+            legs = await tr.enrich(legs)
+        except Exception:
+            pass
+    return make_spec(legs, "", None, None, "My slip")
+
+
+async def _send_slip_image(msg, ctx, spec: dict, reply_to: int | None = None) -> None:
+    """Render and send one slip PNG as a photo (tall slips also get a full-size file button)."""
+    imgs = _imgs(ctx)
+    try:
+        await msg.chat.send_action("upload_photo")
+    except Exception:
+        pass
+    png, key = await imgs.render(spec)
+    w, h = png_size(png)
+    kb = Kb([[Btn("📄 Full-size file (sharper)", callback_data=f"IMG|f|{key}")]]) if max(w, h) > TELEGRAM_PHOTO_MAX else None
+    await msg.chat.send_photo(photo=png, filename=imgs.filename(spec), caption=imgs.caption(spec), reply_markup=kb,
+                              reply_to_message_id=reply_to, allow_sending_without_reply=True)
+
+
+async def _slip_image_cb(q, ctx, parts: list[str]) -> None:
+    imgs = _imgs(ctx)
+    if imgs is None:
+        await q.answer("Slip images aren't available right now.", show_alert=True)
+        return
+    kind = parts[1] if len(parts) > 1 else ""
+    key = "|".join(parts[2:]) if len(parts) > 2 else ""
+    if kind == "f":                       # full-size PNG as a file
+        png = imgs.cached(key)
+        if not png:
+            await q.answer("That image expired: tap 🖼 Slip image again.", show_alert=True)
+            return
+        await q.answer("Sending the file…")
+        await q.message.chat.send_document(document=png, filename=f"FraPredict-slip-{key[:6]}.png",
+                                           reply_to_message_id=q.message.message_id, allow_sending_without_reply=True)
+        return
+    await q.answer("Drawing the slip…")
+    spec = None
+    try:
+        if kind == "u":
+            spec = await _chat_slip_spec(ctx, q.from_user.id)
+        elif kind:
+            spec = await imgs.spec_for(kind, key)
+        if spec is None:                  # expired in-memory slip / no key: the slip stored for this message
+            ed = getattr(svc(ctx), "editor", None)
+            ref = await ed.lookup(q.message.chat_id, q.message.message_id) if ed else None
+            if ref:
+                spec = await _spec_from_sctx(ctx, await ed.hydrate(ref) or ref)
+    except Exception as exc:
+        log.warning("slip image lookup failed: %s", exc, exc_info=True)
+    if spec is None or not spec.get("legs"):
+        await q.message.reply_text("I can't find that slip any more (it expired after a redeploy). "
+                                   "Open it again from /history or run the scan again.")
+        return
+    try:
+        await _send_slip_image(q.message, ctx, spec, reply_to=q.message.message_id)
+    except Exception as exc:
+        log.warning("slip image failed: %s", exc, exc_info=True)
+        await q.message.reply_text("I couldn't draw that slip just now. Tap the button again in a moment.")
+
+
+async def _image_request(update: Update, ctx, text: str) -> bool:
+    """'send slip image' / 'generate image of this slip' (reply to a slip) / 'image of CODE'. True when handled."""
+    imgs = _imgs(ctx)
+    if imgs is None:
+        return False
+    msg = update.effective_message
+    rt = msg.reply_to_message
+    ed = getattr(svc(ctx), "editor", None)
+    spec = None
+    try:
+        code = _code_in(text)
+        if rt is not None and (rt.from_user is None or rt.from_user.is_bot):
+            hit = _img_from_markup(getattr(rt, "reply_markup", None))
+            if hit:
+                if hit[0] == "u":
+                    spec = await _chat_slip_spec(ctx, update.effective_user.id)
+                else:
+                    spec = await imgs.spec_for(hit[0], hit[1])
+            if spec is None and ed is not None:
+                spec = await _spec_from_sctx(ctx, await ed.resolve(update.effective_chat.id, rt))
+            if spec is None and not code:
+                code = _code_in(getattr(rt, "text", None) or getattr(rt, "caption", None) or "")
+        if spec is None and code:
+            spec = await imgs.spec_for_code(code)
+            if spec is None:
+                await msg.reply_text(f"I couldn't load <code>{esc(code)}</code> from SportyBet (wrong, expired or "
+                                     "SportyBet didn't answer), so there's no slip to draw.", parse_mode=ParseMode.HTML)
+                return True
+        if spec is None and rt is None and ed is not None:
+            spec = await _spec_from_sctx(ctx, await ed.last_ref(update.effective_chat.id))
+    except Exception as exc:
+        log.warning("image request lookup failed: %s", exc, exc_info=True)
+    if spec is None or not spec.get("legs"):
+        if rt is None and not re.search(r"\b(slip|ticket|code|betslip|booking)\b", text, re.I):
+            return False                  # e.g. "make me an image of Messi": not a slip request
+        await msg.reply_text("Which slip? Reply to one of my slip messages with \"send slip image\" (or tap its "
+                             "🖼 Slip image button), or send \"image of CODE\".")
+        return True
+    try:
+        await _send_slip_image(msg, ctx, spec, reply_to=(rt.message_id if rt is not None else msg.message_id))
+    except Exception as exc:
+        log.warning("slip image failed: %s", exc, exc_info=True)
+        await msg.reply_text("I couldn't draw that slip just now. Try again in a moment.")
+    return True
+
+
 # ---------------------------------------------------------------- callbacks
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
@@ -1235,6 +1451,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await q.message.reply_text(f"📒 <b>Booking code: <code>{esc(d['code'])}</code></b> · {len(d['legs'])} legs · "
                                    f"total odds {d['total_odds']:.2f}", parse_mode=ParseMode.HTML,
                                    reply_markup=open_code_kb(s.bookmaker, d["code"]))
+    elif kind == "IMG":
+        await _slip_image_cb(q, ctx, parts)
     elif kind in ("AZR", "AZC", "AZN"):
         await _analyzer_callback(q, ctx, kind, parts[1] if len(parts) > 1 else "")
     elif kind == "CLR":

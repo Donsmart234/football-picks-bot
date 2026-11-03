@@ -155,6 +155,8 @@ class MiniApp:
         self._assets: dict[str, tuple[bytes, bytes, str]] = {}
         self._index: bytes | None = None
         self._warm_task: asyncio.Task | None = None
+        self._img_tokens: dict[str, tuple[float, str, str]] = {}    # token -> (ts, render key, file name)
+        self._img_jpg: dict[str, bytes] = {}
 
     def owner_id(self) -> int | None:
         return self._owner_id or config.OWNER_TELEGRAM_ID or self.s.storage.get_owner()
@@ -208,6 +210,10 @@ class MiniApp:
         app.router.add_post("/api/analyze/rebook", self.analyze_rebook)
         app.router.add_post("/api/analyze/narrative", self.analyze_narrative)
         app.router.add_get("/api/live/match", self.live_match)
+        app.router.add_post("/api/slipimg", self.slipimg)
+        app.router.add_post("/api/slipimg/send", self.slipimg_send)
+        app.router.add_post("/api/slipimg/prepare", self.slipimg_prepare)
+        app.router.add_get("/slipimg/{token:[A-Za-z0-9_-]{16,40}}.{ext:png|jpg}", self.slipimg_file)
         app.on_startup.append(self._on_startup)
         app.on_cleanup.append(self._on_cleanup)
 
@@ -788,6 +794,163 @@ class MiniApp:
         good = sorted([l for l in legs if l.odds >= 1.15 and l.verdict != "dropped"], key=lambda l: -l.conf)
         return self._gz(web.json_response({"event_id": eid, "legs": [l.to_json() for l in good[:15]],
                                            "stats": form.to_json() if form else None}))
+
+    # ---- slip images (slipimg.py) ----------------------------------------------
+    def _imgs(self):
+        imgs = getattr(self.s, "slipimg", None)
+        if imgs is None:
+            from slipimg import SlipImages
+            imgs = self.s.slipimg = SlipImages(self.s)
+        return imgs
+
+    async def _img_spec(self, data: dict) -> dict | None:
+        """Spec for {history_id} | {code} | {slip_id} | {analysis_id} | {token} | {slip: {legs, label?}} (app slip)."""
+        from slipimg import make_spec
+        imgs = self._imgs()
+        if data.get("history_id"):
+            return await imgs.spec_for("h", str(data["history_id"])[:40])
+        if data.get("slip_id"):
+            return await imgs.spec_for("s", str(data["slip_id"])[:20])
+        if data.get("analysis_id"):
+            return await imgs.spec_for("a", str(data["analysis_id"])[:20])
+        if data.get("token"):
+            return await imgs.spec_for("p", str(data["token"])[:40])
+        if data.get("code"):
+            return await imgs.spec_for_code(str(data["code"])[:16])
+        sl = data.get("slip")
+        if isinstance(sl, dict) and isinstance(sl.get("legs"), list) and sl["legs"]:
+            keep = ("pick", "label", "odds", "est", "home", "away", "match", "home_uid", "away_uid", "market",
+                    "league", "category", "kickoff", "start", "status", "score")
+            legs = []
+            for l in sl["legs"][:30]:
+                if isinstance(l, dict):
+                    legs.append({k: (str(l[k])[:120] if isinstance(l[k], str) else l[k]) for k in keep
+                                 if k in l and (isinstance(l[k], (str, int, float)) or l[k] is None)})
+            code = str(sl.get("code") or "")[:12]
+            if code and not re.fullmatch(r"[A-Za-z0-9]{4,12}", code):
+                code = ""
+            return make_spec(legs, code, None, None, str(sl.get("label") or "My slip")[:60])
+        return None
+
+    async def slipimg(self, request: web.Request) -> web.Response:
+        """Render a slip image. JSON {url, jpg, token, file_name, width, height, caption}; {"format": "png"} answers
+        the PNG itself (admin checks). Nothing is booked, saved or sent."""
+        import secrets
+        from slipimg import png_size
+        data = await self._json(request)
+        try:
+            spec = await self._img_spec(data)
+        except Exception as exc:
+            log.warning("slip image spec failed: %s", exc, exc_info=True)
+            spec = None
+        if not spec or not spec.get("legs"):
+            return web.json_response({"error": "That slip isn't available any more (expired or not found)."}, status=404)
+        imgs = self._imgs()
+        try:
+            png, key = await imgs.render(spec)
+        except Exception as exc:
+            log.warning("slip image render failed: %s", exc, exc_info=True)
+            return web.json_response({"error": "Couldn't draw that slip just now."}, status=500)
+        if data.get("format") == "png":
+            return web.Response(body=png, content_type="image/png", headers={"Cache-Control": "no-store"})
+        tok = secrets.token_urlsafe(18)
+        now = time.time()
+        self._img_tokens = {k: v for k, v in self._img_tokens.items() if now - v[0] < imgs.TTL}
+        self._img_tokens[tok] = (now, key, imgs.filename(spec))
+        w, h = png_size(png)
+        return web.json_response({"token": tok, "url": f"/slipimg/{tok}.png", "jpg": f"/slipimg/{tok}.jpg",
+                                  "file_name": imgs.filename(spec), "width": w, "height": h,
+                                  "caption": imgs.caption(spec), "legs": len(spec["legs"])})
+
+    def _img_bytes(self, tok: str, ext: str) -> tuple[bytes, str] | None:
+        hit = self._img_tokens.get(tok)
+        imgs = self._imgs()
+        if not hit or time.time() - hit[0] > imgs.TTL:
+            return None
+        png = imgs.cached(hit[1])
+        if png is None:
+            return None
+        if ext == "png":
+            return png, hit[2]
+        jpg = self._img_jpg.get(hit[1])
+        if jpg is None:
+            import io
+            from PIL import Image
+            with Image.open(io.BytesIO(png)) as im:
+                buf = io.BytesIO()
+                im.convert("RGB").save(buf, "JPEG", quality=88, optimize=True)
+            jpg = buf.getvalue()
+            self._img_jpg = {k: v for k, v in list(self._img_jpg.items())[-10:]}
+            self._img_jpg[hit[1]] = jpg
+        return jpg, hit[2].replace(".png", ".jpg")
+
+    async def slipimg_file(self, request: web.Request) -> web.Response:
+        """Short-lived public copy of a rendered slip (unguessable token, 15 min) for Telegram downloadFile /
+        prepared messages, which fetch the file without the initData header."""
+        ext = request.match_info["ext"]
+        got = self._img_bytes(request.match_info["token"], ext)
+        if got is None:
+            return web.Response(status=404, text="expired")
+        body, name = got
+        disp = "attachment" if request.query.get("dl") else "inline"
+        return web.Response(body=body, content_type="image/png" if ext == "png" else "image/jpeg",
+                            headers={"Cache-Control": "private, max-age=900",
+                                     "Content-Disposition": f'{disp}; filename="{name}"'})
+
+    def _bot(self):
+        tr = getattr(self.s, "tracker", None)
+        return getattr(tr, "bot", None)
+
+    async def slipimg_send(self, request: web.Request) -> web.Response:
+        """The bot sends the rendered slip to the requesting user's chat with the bot (explicit tap only)."""
+        data = await self._json(request)
+        user = request["tg_user"]
+        got = self._img_bytes(str(data.get("token") or ""), "png")
+        bot = self._bot()
+        if got is None:
+            return web.json_response({"error": "That image expired: tap Share image again."}, status=404)
+        if bot is None or not user.get("id") or user.get("admin"):
+            return web.json_response({"error": "Sending isn't available here."}, status=400)
+        png, name = got
+        try:
+            from slipimg import TELEGRAM_PHOTO_MAX, png_size
+            w, h = png_size(png)
+            if max(w, h) > TELEGRAM_PHOTO_MAX:
+                await bot.send_document(int(user["id"]), document=png, filename=name,
+                                        caption="🖼 FraPredict slip (full size). Estimates, not guarantees. 18+.")
+            else:
+                await bot.send_photo(int(user["id"]), photo=png, filename=name,
+                                     caption="🖼 FraPredict slip. Estimates, not guarantees. 18+.")
+        except Exception as exc:
+            log.warning("slip image send failed: %s", exc.__class__.__name__)
+            return web.json_response({"error": "Telegram didn't take the image just now."}, status=502)
+        return web.json_response({"ok": True})
+
+    async def slipimg_prepare(self, request: web.Request) -> web.Response:
+        """A prepared inline message (Bot API savePreparedInlineMessage) so Telegram.WebApp.shareMessage can share
+        the slip photo to any chat the user picks. Falls back (error) when the bot or Telegram doesn't support it."""
+        data = await self._json(request)
+        user = request["tg_user"]
+        tok = str(data.get("token") or "")
+        bot = self._bot()
+        if self._img_bytes(tok, "jpg") is None:
+            return web.json_response({"error": "That image expired: tap Share image again."}, status=404)
+        base = (config.WEBHOOK_URL or f"https://{request.host}").rstrip("/")
+        if bot is None or not base or not user.get("id") or user.get("admin"):
+            return web.json_response({"error": "Sharing isn't available here."}, status=400)
+        try:
+            from telegram import InlineQueryResultPhoto
+            url = f"{base}/slipimg/{tok}.jpg"
+            res = InlineQueryResultPhoto(id=tok[:32], photo_url=url, thumbnail_url=url,
+                                         caption="FraPredict slip · Estimates, not guarantees. 18+.")
+            pm = await bot.save_prepared_inline_message(user_id=int(user["id"]), result=res, allow_user_chats=True,
+                                                        allow_bot_chats=True, allow_group_chats=True,
+                                                        allow_channel_chats=True)
+        except Exception as exc:
+            log.warning("prepared inline message failed: %s: %s", exc.__class__.__name__, str(exc)[:160])
+            return web.json_response({"error": "Telegram sharing isn't available for this bot: use Send to chat."},
+                                     status=502)
+        return web.json_response({"id": pm.id})
 
     async def diag(self, request: web.Request) -> web.Response:
         out: dict = {"time": datetime.now(timezone.utc).isoformat()}

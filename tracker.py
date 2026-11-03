@@ -269,7 +269,7 @@ class Tracker:
             await self.send(f"⚠️ <b>Correction</b> · {esc(d.get('label') or 'Slip')}"
                             + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f": a leg called early changed at full time; the slip is now <b>{esc(rec['status'])}</b>.",
-                            test=d.get("test"))
+                            test=d.get("test"), markup=img_markup(rec["id"]))
             if d.get("rollover_id"):
                 await self._rollover_correction(rec)
         return changed
@@ -289,7 +289,7 @@ class Tracker:
                 title = (f"✅ <b>Entered!</b> 💥💥 <b>BOOM! Your {esc(name)} slip landed!</b> 🎉\n"
                          f"Every leg came in at total odds <b>{d.get('effective_odds') or d['total_odds']:.2f}</b>.")
             return await self.send(record_text(rec, title) + f"\n{RULE}\n<i>Estimates, not guarantees — enjoy this one. 18+.</i>",
-                                   test=d.get("test"))
+                                   test=d.get("test"), markup=img_markup(rec["id"]))
         elif st == "lost":
             lost = [l for l in d["legs"] if l.get("status") == "lost"]
             l = lost[0] if lost else {}
@@ -297,7 +297,7 @@ class Tracker:
             return await self.send(f"❌ <b>{esc(name)} slip lost</b>"
                             + (f" · <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f"\n{esc(l.get('home', ''))} v {esc(l.get('away', ''))} · {esc(l.get('pick', ''))} "
-                            f"({esc(l.get('score', ''))}){more}", test=d.get("test"))
+                            f"({esc(l.get('score', ''))}){more}", test=d.get("test"), markup=img_markup(rec["id"]))
         elif st == "check":
             n = sum(1 for l in d["legs"] if l.get("status") == "check")
             return await self.send(f"❔ <b>{esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
@@ -685,4 +685,11 @@ def day_markup(slip_id: str, booked: bool, code: str | None = None):
         rows.append([Btn("📒 Book this day on SportyBet", callback_data=f"HB|{slip_id}")])
     rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{slip_id}"),
                  Btn("🔀 Different picks", callback_data=f"RF|{slip_id}|x")])
+    rows.append([Btn("🖼 Slip image", callback_data=f"IMG|h|{slip_id}"[:64])])
     return Kb(rows)
+
+
+def img_markup(record_id: str):
+    """🖼 Slip image button under a result ping (won / lost / correction) for that history record."""
+    from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb
+    return Kb([[Btn("🖼 Slip image", callback_data=f"IMG|h|{record_id}"[:64])]])

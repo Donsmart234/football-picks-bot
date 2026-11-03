@@ -21,6 +21,7 @@ from ai import Analyst
 from analyzer import Analyzer
 from services import Services
 from tracker import Tracker
+from slipimg import SlipImages
 from webapp import MiniApp
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
@@ -52,6 +53,7 @@ def build_app(webhook: bool) -> Application:
     services.tracker = Tracker(services)
     services.analyzer = Analyzer(services)
     services.editor = SlipEditor(services)
+    services.slipimg = SlipImages(services)
     app.bot_data["services"] = services
     handlers.register(app)
     return app
@@ -141,6 +143,7 @@ async def run() -> None:
         await runner.cleanup()
     await services.ai.aclose()
     await services.tracker.aclose()
+    await services.slipimg.aclose()
     await services.aclose()
     await app.shutdown()
 

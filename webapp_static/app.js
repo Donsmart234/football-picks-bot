@@ -220,7 +220,8 @@
       ${s.constraints_text ? `<div class="rules">🎛 ${esc(s.constraints_text)}${s.constraint_check && s.constraint_check.ok && s.legs.length ? " · ✓ every leg re-checked" : ""}</div>` : ""}
       ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
       ${s.legs.length ? `<div class="btnrow"><button class="btn" data-act="bookslip" data-k="${esc(key)}">Book on SportyBet</button>
-        <button class="btn secondary" style="flex:.7" data-act="slipall" data-k="${esc(key)}">Add to slip</button></div>` : ""}
+        <button class="btn secondary" style="flex:.7" data-act="slipall" data-k="${esc(key)}">Add to slip</button></div>
+        ${s.slip_id ? `<div class="btnrow">${imgBtn({ slip_id: s.slip_id })}</div>` : ""}` : ""}
       ${key === "scan" ? `<div class="btnrow"><button class="btn small secondary" data-act="scanrefresh" data-x="0" ${state.scanRefreshing ? "disabled" : ""}>${state.scanRefreshing ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="scanrefresh" data-x="1" ${state.scanRefreshing ? "disabled" : ""}>🔀 Different picks</button></div>
         ${s.slip_id && s.legs.length ? `<button class="btn ghost" data-act="aiedit" data-kind="scan" data-sid="${esc(s.slip_id)}">✏️ Edit with AI</button>` : ""}
         <div class="sub" style="text-align:center;margin-top:6px">Not saved to History until you book a code</div>` : ""}
@@ -328,6 +329,7 @@
         <div class="code" id="codeText">${esc(r.code)}</div>
         <div class="sub" style="text-align:center">${legs.length} legs · total odds ${f2(total)}${prob != null ? ` · est. hit ${pct(prob, 1)}` : ""}${r.loaded != null && r.loaded !== legs.length ? ` · ⚠ ${r.loaded}/${legs.length} loaded` : ""}</div>
         <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="opencode" data-c="${esc(r.code)}">📲 Open in SportyBet</button></div>
+        <div class="btnrow">${imgBtn(r.history_id ? { history_id: r.history_id } : { code: r.code })}</div>
         <div class="sub" style="text-align:center;margin-top:8px">${r.history_id ? "Saved to History · you'll get a Telegram ping when it lands" : ""}</div>
         <div class="disc">Opens in the SportyBet app if installed (website otherwise), or paste the code under Load Code. Check every selection before staking. Estimates, not guarantees. 18+.</div>`);
     } catch (e) {
@@ -337,6 +339,42 @@
   }
   function openSheet(html) { $sheetCard.innerHTML = html; $sheet.classList.remove("hidden"); if (tg && tg.BackButton) tg.BackButton.show(); }
   function closeSheet() { $sheet.classList.add("hidden"); if (tg && tg.BackButton) (backVisible() ? tg.BackButton.show() : tg.BackButton.hide()); }
+
+  // ---------------------------------------------------------------- slip image (branded PNG, rendered server-side)
+  const imgSrc = (o) => esc(JSON.stringify(o));
+  const imgBtn = (o, label, cls) => `<button class="btn ${cls || "small secondary"}" data-act="slipimg" data-src="${imgSrc(o)}">${label || "🖼 Share image"}</button>`;
+  const tgAtLeast = (v) => !!(tg && tg.isVersionAtLeast && tg.isVersionAtLeast(v));
+  async function slipImage(src) {
+    hap("light");
+    openSheet(`<div class="label" style="text-align:center">Slip image</div><div class="scanning"><div class="radar"></div>Drawing your slip…</div>`);
+    try {
+      const r = await api("/api/slipimg", src);
+      state.img = r;
+      const abs = location.origin + r.url;
+      openSheet(`<div class="label" style="text-align:center">Slip image · ${r.legs} leg${r.legs === 1 ? "" : "s"}</div>
+        <div class="slipimg-wrap"><img class="slipimg" src="${esc(r.url)}" alt="Slip image" width="${r.width}" height="${r.height}"></div>
+        <div class="btnrow"><button class="btn" data-act="imgsend">📤 Send to chat</button>${tgAtLeast("8.0") ? `<button class="btn secondary" data-act="imgshare">↗︎ Share…</button>` : ""}</div>
+        <div class="btnrow"><button class="btn small secondary" data-act="imgsave" data-u="${esc(abs)}" data-n="${esc(r.file_name)}">⬇️ Save image</button><button class="btn small secondary" data-act="closesheet">Close</button></div>
+        <div class="disc">Nothing is booked or saved. “Send to chat” posts the picture in your chat with the bot so you can forward it. Estimates, not guarantees. 18+.</div>`);
+      hapN("success");
+    } catch (e) { hapN("error"); openSheet(`<div class="label" style="text-align:center">Slip image</div><div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="closesheet">Close</button>`); }
+  }
+  async function imgSend(t) {
+    if (!state.img) return; t.disabled = true; t.textContent = "Sending…";
+    try { await api("/api/slipimg/send", { token: state.img.token }); hapN("success"); toast("Sent to your chat with the bot"); t.textContent = "✓ Sent"; }
+    catch (e) { hapN("error"); toast(e.message); t.disabled = false; t.textContent = "📤 Send to chat"; }
+  }
+  async function imgShare(t) {
+    if (!state.img) return; t.disabled = true;
+    try { const r = await api("/api/slipimg/prepare", { token: state.img.token }); tg.shareMessage(r.id, (ok) => { if (ok) { hapN("success"); toast("Shared"); } }); }
+    catch (e) { toast(e.message); }
+    t.disabled = false;
+  }
+  function imgSave(t) {
+    const u = t.dataset.u, n = t.dataset.n;
+    if (tgAtLeast("8.0") && tg.downloadFile) { try { tg.downloadFile({ url: u, file_name: n }, () => {}); return; } catch (e) {} }
+    openLink(u + "?dl=1");
+  }
 
   // ---------------------------------------------------------------- MATCHES
   // compact rows [id, home, away, start, hu, au, o1, oX, o2] -> objects (day/time formatted once, cached formatters)
@@ -626,8 +664,9 @@
         }
         if (m.analysis && m.analysis.summary) { const a = m.analysis, s2 = a.summary;
           h += `<div class="card" style="max-width:88%;margin:4px 0 8px"><div class="sub">${a.code ? "Code " + esc(a.code) : "📷 From your screenshot"} · ${s2.legs} legs${s2.unmatched ? " · " + s2.unmatched + " couldn't match" : ""}</div><div style="margin:4px 0"><b>Grade ${esc(s2.grade || "–")}</b> · ${esc(a.verdict || "")}</div><div class="sub">Total odds ${s2.odds_known === false ? "n/a" : f2(s2.total_odds)} · est. hit chance ${pc(s2.chance)}</div></div><div class="btnrow" style="max-width:88%"><button class="btn small" data-act="aiaz" data-k="${i}">Open full analysis</button></div>`; }
-        if (m.slip && m.slip.legs && m.slip.legs.length && !m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="bookslip" data-k="chat:${i}">Book this slip</button><button class="btn small secondary" data-act="slipall" data-k="chat:${i}">Add to slip</button></div>`;
-        if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="opencode" data-c="${esc(m.code)}">📲 Open in SportyBet</button></div>`;
+        if (m.slip && m.slip.legs && m.slip.legs.length && !m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="bookslip" data-k="chat:${i}">Book this slip</button><button class="btn small secondary" data-act="slipall" data-k="chat:${i}">Add to slip</button>${m.slip.slip_id ? imgBtn({ slip_id: m.slip.slip_id }, "🖼 Image") : ""}</div>`;
+        if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="opencode" data-c="${esc(m.code)}">📲 Open in SportyBet</button>${imgBtn({ code: m.code }, "🖼 Image")}</div>`;
+        else if (m.analysis && m.analysis.id && !(m.slip && m.slip.legs && m.slip.legs.length)) h += `<div class="btnrow" style="max-width:88%">${imgBtn({ analysis_id: m.analysis.id }, "🖼 Slip image")}</div>`;
       }
     });
     if (state.aiBusy) h += `<div class="msg bot"><span class="typing"><i></i><i></i><i></i></span> <span class="sub">analysing… scans take ~30 s</span></div>`;
@@ -720,6 +759,7 @@
       ${s.approx_legs ? `<div class="note">${s.approx_legs} leg(s) can't be rated (props, specials, in play): the combined chance counts them at the bookmaker's de-margined price.</div>` : ""}
       ${s.started ? `<div class="sub" style="margin-top:8px">${s.started} leg(s) started or finished; the rest can still change.</div>` : ""}
       <div class="btnrow"><button class="btn small secondary" data-act="aztake" ${state.azTakeBusy ? "disabled" : ""}>${state.azTakeBusy ? "Thinking…" : "🧠 AI take"}</button><button class="btn small secondary" data-act="opencode" data-c="${esc(r.code || "")}">${r.code ? "📲 Open in SportyBet" : "Open SportyBet"}</button></div>
+      ${r.id ? `<div class="btnrow">${imgBtn({ analysis_id: r.id })}</div>` : ""}
       ${state.azTake ? `<div class="note ai-take" style="background:var(--bg2);border-color:var(--line);color:var(--text)">${esc(state.azTake)}</div>` : ""}</div>`;
     h += `<div class="section"><span class="label">Legs</span><span class="sub">est. · fair odds · value</span></div><div class="card flush">${r.legs.map(azLeg).join("")}</div>`;
     const rows = [];
@@ -780,6 +820,7 @@
       openSheet(`<div class="label" style="text-align:center">Improved slip booked</div><div class="code" id="codeText">${esc(r.code)}</div>
         <div class="sub" style="text-align:center">${r.legs} legs · total odds ${f2(r.total_odds)} · est. hit ${pc(r.chance)}${r.loaded != null && r.loaded !== r.legs ? ` · ⚠ ${r.loaded}/${r.legs} loaded` : ""}</div>
         <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="opencode" data-c="${esc(r.code)}">📲 Open in SportyBet</button></div>
+        <div class="btnrow">${imgBtn(r.history_id ? { history_id: r.history_id } : { code: r.code })}</div>
         <div class="sub" style="text-align:center;margin-top:8px">${r.history_id ? "Saved to History · you'll get a Telegram ping when it lands" : ""}</div>`);
     } catch (e) { hapN("error"); openSheet(`<div class="label" style="text-align:center">Rebook failed</div><div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="closesheet">Close</button>`); }
   }
@@ -815,7 +856,7 @@
         <div class="hright"><div class="num hbig">${f2(d.effective_odds || d.total_odds)}</div>${statusPill(r.status)}</div></div>
       <div class="segbar">${seg}</div>
       <div class="hstats"><span>${won}/${legs.length} won</span>${lost ? `<span class="c-red">${lost} lost</span>` : ""}${live ? `<span class="c-live">${live} live</span>` : ""}${d.est_prob != null ? `<span>est ${pct(d.est_prob, 1)}</span>` : ""}
-        <button class="linkbtn" data-act="histtoggle" data-id="${esc(r.id)}">${open ? "Hide legs" : "Show legs"}</button></div>
+        <button class="linkbtn" data-act="slipimg" data-src="${imgSrc({ history_id: r.id })}">🖼 Image</button><button class="linkbtn" data-act="histtoggle" data-id="${esc(r.id)}">${open ? "Hide legs" : "Show legs"}</button></div>
       ${open ? `<div class="hlegs">${legs.map(histLeg).join("")}</div>` : ""}</div>`;
   }
   async function loadHistory(force) {
@@ -871,7 +912,7 @@
           <div class="hright">${odds ? `<div class="num hbig">${f2(odds)}</div>` : ""}${statusPill(t.status)}</div></div>
         ${legs.length ? `<div class="segbar">${seg}</div>` : ""}
         <div class="hstats">${t.stake != null && t.status !== "replaced" ? `<span>Stake ${Math.round(t.stake).toLocaleString("en-GB")} → ${Math.round(t.expected_return).toLocaleString("en-GB")}</span>` : ""}${t.bankroll != null && ["won", "lost", "void"].includes(t.status) ? `<span>Bankroll ${Math.round(t.bankroll).toLocaleString("en-GB")}</span>` : ""}${t.status === "replaced" ? `<span>Replaced by a refresh · not a loss</span>` : ""}
-          ${legs.length ? `<button class="linkbtn" data-act="histtoggle" data-id="t:${esc(t.slip_id || t.day + t.date + t.status)}" data-ro="1">${open ? "Hide legs" : `${legs.filter((l) => l.status === "won").length}/${legs.length} legs`}</button>` : ""}</div>
+          ${legs.length && t.slip_id ? `<button class="linkbtn" data-act="slipimg" data-src="${imgSrc({ history_id: t.slip_id })}">🖼 Image</button>` : ""}${legs.length ? `<button class="linkbtn" data-act="histtoggle" data-id="t:${esc(t.slip_id || t.day + t.date + t.status)}" data-ro="1">${open ? "Hide legs" : `${legs.filter((l) => l.status === "won").length}/${legs.length} legs`}</button>` : ""}</div>
         ${open ? `<div class="hlegs">${legs.map(histLeg).join("")}</div>` : ""}</div>`;
     }
     return h;
@@ -901,7 +942,8 @@
           <div class="big num" style="text-align:center">${f2(s.total_odds)}<small> total odds · est ${pct(s.est_prob, 1)}</small></div>
           <div class="note">Your current slip is booked as <b>${esc(r.old_code)}</b>. Confirm to book a new code; the old one is marked replaced (not a loss) and stops being tracked.</div>
           <div class="hlegs">${(s.legs || []).map(histLeg).join("")}</div>
-          <div class="btnrow"><button class="btn" data-act="roconfirm" data-t="${esc(r.token)}">Confirm: book new code</button><button class="btn secondary" data-act="closesheet">Keep current</button></div>`);
+          <div class="btnrow"><button class="btn" data-act="roconfirm" data-t="${esc(r.token)}">Confirm: book new code</button><button class="btn secondary" data-act="closesheet">Keep current</button></div>
+          <div class="btnrow">${imgBtn({ token: r.token }, "🖼 Preview image")}</div>`);
       } else if (r.status === "replaced") { hapN("success"); toast("Picks refreshed · old slip marked replaced"); }
       else { hapN("warning"); toast(r.note || "No different slip"); }
     } catch (e) { hapN("error"); toast(e.message); }
@@ -931,6 +973,7 @@
         h += `<div class="section"><span class="label">Day ${dd.rollover_day} slip</span>${statusPill(ds.status)}</div>
           <div class="card"><div class="hhead"><div class="grow">${dd.code ? `<button class="codechip" data-act="copytext" data-t="${esc(dd.code)}">${esc(dd.code)}</button>${ds.status === "pending" ? openChip(dd.code) : ""}` : `<button class="btn small" style="margin:0;width:auto;padding:0 14px" data-act="robook" data-id="${esc(ds.id)}">Book code</button>`}</div><div class="hright"><div class="num hbig">${f2(dd.total_odds)}</div><span class="sub">est ${pct(dd.est_prob, 1)}</span></div></div>
           <div class="hlegs">${(dd.legs || []).map(histLeg).join("")}</div>
+          <div class="btnrow">${imgBtn({ history_id: ds.id })}</div>
           ${ds.can_refresh ? `<div class="btnrow"><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="0" ${state.roPicking ? "disabled" : ""}>${state.roPicking ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="1" ${state.roPicking ? "disabled" : ""}>🔀 Different picks</button></div><button class="btn ghost" data-act="aiedit" data-kind="rollover" data-id="${esc(ds.id)}" data-day="${esc(dd.rollover_day)}">✏️ Edit with AI</button><div class="sub" style="text-align:center;margin-top:6px">Same rules · only before the first kick-off${dd.code ? " · a new code only after you confirm" : ""}</div>` : ""}</div>`;
       }
       h += ticketsHtml(state.ro.tickets || [], d);
@@ -971,7 +1014,7 @@
       <div class="big num">${f2(total)}<small>total odds</small></div>
       <div class="kpis"><div class="kpi"><b>${prob == null ? "–" : pct(prob, 1)}</b><span>Est. hit chance</span></div><div class="kpi"><b>${items.length}</b><span>Legs</span></div><div class="kpi"><b>${items.filter((p) => p.start && Date.parse(p.start) <= now).length}</b><span>Started</span></div></div>
       ${meter(prob)}
-      <button class="btn" data-act="bookmine">Book on SportyBet</button><button class="btn ghost" data-act="clear">Clear slip</button></div>
+      <button class="btn" data-act="bookmine">Book on SportyBet</button><div class="btnrow">${imgBtn({ slip: { label: "My slip", legs: items.map((p) => ({ pick: p.label, odds: p.odds, est: p.est, home: p.home, away: p.away, match: p.match, home_uid: p.home_uid, away_uid: p.away_uid, market: p.market, league: p.league, category: p.category, kickoff: p.start })) } }, "🖼 Share image (preview)")}</div><button class="btn ghost" data-act="clear">Clear slip</button></div>
       <div class="card flush">${items.map((p) => {
         const started = p.start && Date.parse(p.start) <= now;
         const weak = p.est != null && p.est < 0.8;
@@ -1019,6 +1062,10 @@
     else if (a === "remove") { slip.remove(t.dataset.id); hap("light"); renderSlip(); }
     else if (a === "clear") { const doIt = () => { slip.clear(); renderSlip(); toast("Slip cleared"); }; if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast("6.2")) tg.showConfirm("Clear all picks?", (ok) => ok && doIt()); else if (confirm("Clear all picks?")) doIt(); }
     else if (a === "closesheet") closeSheet();
+    else if (a === "slipimg") { let src = null; try { src = JSON.parse(t.dataset.src || "null"); } catch (e) {} if (src) slipImage(src); }
+    else if (a === "imgsend") imgSend(t);
+    else if (a === "imgshare") imgShare(t);
+    else if (a === "imgsave") imgSave(t);
     else if (a === "copycode") { const c = document.getElementById("codeText").textContent; toast((await copy(c)) ? "Code copied" : "Press and hold the code to copy"); hap("light"); }
     else if (a === "copytext" || a === "copyinline") { const c = t.dataset.t || t.textContent; toast((await copy(c)) ? `Copied ${c}` : "Couldn't copy"); hap("light"); }
     else if (a === "openhub") openLink(LOAD_URL);

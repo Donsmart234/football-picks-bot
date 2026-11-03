@@ -17,6 +17,31 @@ Rollover cards) links to SportyBet's own share URL `https://www.sportybet.com/?s
 (which loads the code) otherwise. Telegram: url buttons only; Mini App uses `Telegram.WebApp.openLink(url,
 {try_instant_view:false})`. The code stays in `<code>` (tap to copy). Test: `tests/test_links.py`.
 
+## What's new (2026-11-03, later): branded slip images
+**🖼 Slip image** turns any slip into a FraPredict PNG (`slipimg.py`, Pillow, Inter font bundled in `assets/fonts/`, Fra
+mark in `assets/fra_mark.png`): navy header with the Fra logo, "FraPredict", 🇳🇬 Nigeria, "Betslip" + date/time WAT · the
+big green **Booking Code** (or amber "Preview – not booked") · slip status badge (WON / LOST / IN PLAY / VOID / REPLACED) ·
+Odds and Est. chance boxes ("Pre-match est." once a slip has started) · **Example Bet** stake 100.00 → payout ·
+**Selections**: per row a ball icon (ring coloured by result), pick + odds right-aligned, both crests (img.sportradar.com
+`ls/crest/medium/<uid>.png`, cached in memory + `DATA_DIR/crests`, 3 s timeout, 4 s budget; missing → coloured initials),
+"Home vs Away" (wraps to 2 lines, then …), market, league tag, kickoff (WAT), est. % with a bar, leg badge (WON · 2-0,
+WON EARLY 38', LOST, LIVE 63' · 0-0, VOID / UNAVAILABLE) · footer: combined estimate (independent legs), "@FraPredictbot",
+"Estimates, not guarantees · 18+". 1–20 legs drawn (more → "+ N more"), 1080 px wide, ~100–300 ms per render, cached 15 min.
+**Where:** a 🖼 button (`IMG|<kind>|<key>`: `h` history id, `c` code, `s` scan / AI / edited slip, `a` analysis, `p` rollover
+preview token, `u` the chat /slip) on booked-code messages (`open_code_kb`), /scan results (+ refresh, audit slips), AI
+slips and codes, analyzer results, rollover day pushes / refreshes / previews (`tracker.day_markup`), /rollover, /rollover
+tickets (🖼 Day N), /history (🖼 CODE for the latest 6), result pings (won / lost / correction), /slip. Tap → the PNG as a
+photo replying to the slip; taller than 2560 px (Telegram downsizes) → **📄 Full-size file** button sends it as a document.
+**Chat:** "send slip image", "generate image of this slip" (reply to a slip, or the last slip shown), "image of CODE"
+(History first, else SportyBet's share payload, read only); `slipimg.wants_image` + `handlers._image_request`, before the AI.
+**Mini App:** "🖼 Share image" on Scanner slips, booking sheets, AI chat slips / codes, Analyzer, History cards (🖼 Image),
+the rollover day slip, tickets, refresh previews and the Slip tab → sheet with the picture, **📤 Send to chat** (the bot sends
+it to your chat with it), **↗︎ Share…** (Telegram ≥ 8.0: `savePreparedInlineMessage` + `WebApp.shareMessage`, any chat),
+**⬇️ Save image** (`WebApp.downloadFile`, else opens the file). API: `POST /api/slipimg {history_id|code|slip_id|analysis_id|
+token|slip:{legs}, format?:"png"}` → `{token, url, jpg, file_name, width, height}`; `GET /slipimg/<token>.png|jpg` (public,
+random token, 15 min); `POST /api/slipimg/send|prepare {token}` (never with the admin token). Only on tap / request (never
+auto-attached); nothing is booked, saved to History or tracked. Tests: `tests/test_slipimg.py` (offline).
+
 ## What's new (2026-11-03): named leagues / teams are hard filters
 Bug: "Champions League selections" returned picks from other leagues. **Cause:** the deterministic parser only read a
 league after "only / from / in" (or before "only / games / matches"), so "champions league selections", "ucl picks",
