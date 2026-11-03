@@ -424,9 +424,9 @@ async def flow_bot_slip():
     ai._generate = FakeGemini([read(kind="bot_slip", legs=shot, header=hdr), RuntimeError("down")])
     await handlers.on_image(upd, ctx)
     assert len(photo.sent) == 2, [m.text for m in photo.sent]
-    assert photo.sent[0].text.startswith("📷 That's one of my slips")
+    assert photo.sent[0].text.startswith("That's one of my slips")
     datas = [b.callback_data for row in photo.sent[1].reply_markup.inline_keyboard for b in row]
-    assert photo.sent[1].text.startswith("🔄 <b>New picks for today</b>") and datas[0].startswith("RC|") and datas[1] == "NOOP"
+    assert photo.sent[1].text.startswith("<b>New picks for today</b>") and datas[0].startswith("RC|") and datas[1] == "NOOP"
     # a text reply to a photo -> the photo is read with that text (no caption on the photo)
     photo2 = UMsg("")
     photo2.photo, photo2.document, photo2.caption = photo.photo, None, None
@@ -453,7 +453,7 @@ async def flow_bot_slip():
     out = await vision.handle_image(ai, 77, jpeg(), "image/jpeg", "")
     assert out["kind"] == "bot_slip" and out["context"]["slip_id"] == done["record"]["id"], out["context"]
     assert out["context"]["section"] == "rollover_day"
-    print("telegram: photo + caption -> '📷 That's one of my slips' + preview with Confirm/Keep; reply to a photo -> "
+    print("telegram: photo + caption -> 'That's one of my slips' + preview with Confirm/Keep; reply to a photo -> "
           "read with the reply text; no-caption pointer message is reply-editable OK")
 
 

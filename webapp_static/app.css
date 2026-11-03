@@ -394,3 +394,15 @@ body { min-height: var(--vh-stable, var(--tg-viewport-stable-height, 100vh)); }
 /* slip image sheet */
 .slipimg-wrap{max-height:52vh;overflow:auto;border-radius:14px;border:1px solid var(--line);margin:10px 0 4px;background:#080e1e;-webkit-overflow-scrolling:touch}
 .slipimg{display:block;width:100%;height:auto}
+/* inline SVG icons (no emoji in the Mini App) */
+svg.i { width: 1.05em; height: 1.05em; flex: none; display: inline-block; vertical-align: -0.16em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+svg.i .fill { fill: currentColor; stroke: none; }
+.btn svg.i, .chip svg.i, .linkbtn svg.i, .codechip svg.i, .vchip svg.i, .rules svg.i, .why svg.i, .tools svg.i { margin-right: 5px; }
+.xbtn svg.i, .sugg .ic svg.i { margin: 0; width: 15px; height: 15px; }
+.spill i svg.i { width: 11px; height: 11px; vertical-align: -1px; stroke-width: 2.6; }
+.sicon svg.i, .steps-ro .st svg.i { width: 13px; height: 13px; stroke-width: 2.6; }
+.tic svg.i { width: 15px; height: 15px; vertical-align: -3px; }
+.tic.c-yellow svg.i { color: var(--amber); } .tic.c-red svg.i { color: var(--red); }
+.flag.emo svg.i { width: 13px; height: 13px; color: var(--muted); vertical-align: -2px; }
+.state svg.i { width: 13px; height: 13px; stroke-width: 2.6; margin-right: 3px; }
+.out .o svg.i { width: 14px; height: 14px; color: var(--muted); }

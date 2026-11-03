@@ -214,7 +214,7 @@ def test_history():
     an = A.Analyzer(S())
     r = asyncio.run(an.analyze("N6RXGP"))
     check(r["ok"] and r["summary"]["status"] == "lost" and r["summary"]["grade"] is None, "finished slip: lost")
-    check(r["recommendation"]["kind"] == "settled" and r["recommendation"]["text"].startswith("❌"),
+    check(r["recommendation"]["kind"] == "settled" and r["recommendation"]["text"].startswith("Already lost") and r["recommendation"]["icon"] == "LOST",
           f"settled verdict: {r['recommendation']['text']}")
     rows = asyncio.run(hs.list("slip", None, 50))
     check(rows == [] and "history" not in r, "analyzed code NOT saved to history / not tracked")
@@ -227,7 +227,7 @@ def test_history():
     check(not bad["ok"] and bad["kind"] == "invalid" and "invalid" in bad["error"], "invalid code reported")
     from fmt import analysis_messages
     msgs = analysis_messages(r)
-    check(msgs and all(len(m) <= 4096 for m in msgs) and "Lost" in msgs[0] and "Already lost" in msgs[-1],
+    check(msgs and all(len(m) <= 4096 for m in msgs) and "LOST" in msgs[0] and "Already lost" in msgs[-1],
           "Telegram text renders and ends with the verdict")
 
 
@@ -247,12 +247,12 @@ def test_verdict():
              "total_odds": A.total_odds(legs)}
         return {"legs": legs, "summary": s, "suggestions": sg}
     good = [leg(i, 0.86, 1.13, "Strong") for i in range(4)]
-    check(A.recommendation(res(good))["kind"] == "go", "4 Strong legs -> ✅ go")
+    check(A.recommendation(res(good))["kind"] == "go", "4 Strong legs -> go")
     fixable = good[:3] + [leg(3, 0.33, 2.9, "Avoid")]
     r = A.recommendation(res(fixable))
-    check(r["kind"] == "fix" and "dropping Home3 v Away3" in r["text"], f"one Avoid leg -> ⚠️ after dropping it: {r['text']}")
+    check(r["kind"] == "fix" and "dropping Home3 v Away3" in r["text"], f"one Avoid leg -> fix after dropping it: {r['text']}")
     junk = [leg(i, 0.33, 2.9, "Avoid") for i in range(5)]
-    check(A.recommendation(res(junk))["kind"] == "skip", "5 long shots -> ❌ skip")
+    check(A.recommendation(res(junk))["kind"] == "skip", "5 long shots -> skip")
 
 
 if __name__ == "__main__":

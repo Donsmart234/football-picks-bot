@@ -33,6 +33,7 @@ import model
 from srstats import MatchForm, SportradarStats
 
 log = logging.getLogger(__name__)
+CAUTION = " · caution: "      # marks a red flag inside Leg.why (plain text, no emoji)
 TZ = ZoneInfo(config.LOCAL_TZ)
 
 TIERS: dict[str, dict] = {
@@ -815,7 +816,7 @@ def apply_stats(leg: Leg, form: MatchForm | None) -> None:
         leg.verdict = "demoted"
     else:
         leg.verdict = "dropped"
-    leg.why = _why(leg, fam, form) + (f" ⚠ {flag}" if flag else "")
+    leg.why = _why(leg, fam, form) + (f"{CAUTION}{flag}" if flag else "")
 
 
 def _red_flag(leg: Leg, fam: Family, f: MatchForm) -> str:

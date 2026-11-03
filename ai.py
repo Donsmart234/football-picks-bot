@@ -14,6 +14,7 @@ import httpx
 
 from bookmakers import BookingError, Selection, code_link
 from markets import valid_token
+from fmt import strip_emoji
 from constraints import MARKET_TYPES, Constraints, detect_teams, parse_text, verify
 from scanner import TIER_ALIASES, apply_stats
 from services import TZ, Services
@@ -31,6 +32,9 @@ SYSTEM = """You are Fra, a sharp, concise football betting analyst inside a priv
 Nigeria. Bookmaker: SportyBet Nigeria. Times are Africa/Lagos. Today is {today}.
 
 Rules:
+- NO EMOJI. Never use emoji, emoji-style symbols, pictographs or flag characters anywhere in a reply (not as
+  bullets, ticks, crosses, warnings or decoration). Write plain words instead: "Won", "Lost", "Void", "Live",
+  "Note:", "Warning:", "Yes"/"No". Status and verdicts are said in words, e.g. "I'd go for this (grade A ...)".
 - Use tools for anything about real fixtures, odds, probabilities, team form/H2H or booking codes. Never invent
   matches, odds, stats or codes. If a tool fails or returns nothing, say so plainly.
 - "Analyze games and give me a safe 5 odds code" => call scan_markets(tier="safe", target_odds=5, day=...), then
@@ -366,7 +370,7 @@ class Analyst:
             except Exception as exc:
                 log.warning("Gemini recovery round failed: %s", exc)
         dbg["empty"] = not reply
-        return reply
+        return strip_emoji(reply)          # the bot never shows emoji, even if the model adds some
 
     @staticmethod
     def _slip_summary(sl: dict) -> str:
@@ -402,6 +406,7 @@ class Analyst:
             reply += f"\n\nBooking code: `{turn['code']}`"
         if "estimate" not in reply.lower() and "guarantee" not in reply.lower():
             reply += f"\n\n_{DISCLAIMER}_"
+        reply = strip_emoji(reply)
         self._save(chat_id, "user", text)
         self._save(chat_id, "model", reply)
         an = turn.get("analysis")
@@ -475,10 +480,11 @@ class Analyst:
             turn["edit"] = await ed.run(ctx, op)
         out = turn["edit"]
         if out is not None:
-            reply = (f"✏️ {out['change']}" if out.get("ok") else f"⚠️ {out['note']}")
+            reply = (f"Edited: {out['change']}" if out.get("ok") else f"Not changed: {out['note']}")
         elif not reply:
             reply = ("I couldn't tell which change you want on this slip. Try \"change the 2nd selection\", "
                      "\"remove Newcastle\", \"change leg 3 to over 1.5\" or \"make it safer\".")
+        reply = strip_emoji(reply)
         self._save(chat_id, "user", f"[reply to {sec_label} slip] {text}")
         self._save(chat_id, "model", reply)
         return {"reply": reply, "slip": None, "code": None, "tools": turn["tools"], "model": self.model,
@@ -490,13 +496,13 @@ class Analyst:
         system = ("You write a 3-4 sentence verdict on a football bet slip for a Telegram user in Nigeria. Use ONLY "
                   "the facts in the JSON: never add teams, players, injuries, stats or numbers that aren't there, and "
                   "copy percentages exactly as written. Say which legs carry the risk and what the suggestions change. "
-                  "Plain text, no headings, no lists, at most 90 words. Call the numbers estimates; never promise a "
+                  "Plain text, no headings, no lists, no emoji, at most 90 words. Call the numbers estimates; never promise a "
                   "win.")
         data = await self._generate([{"role": "user", "parts": [{"text": _json.dumps(facts, ensure_ascii=False)}]}],
                                     system=system, tools=False, max_tokens=2048)
         cand = (data.get("candidates") or [{}])[0]
         parts = (cand.get("content") or {}).get("parts") or []
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+        text = strip_emoji("".join(p.get("text", "") for p in parts if not p.get("thought")).strip())
         if cand.get("finishReason") not in (None, "STOP") or not text.endswith((".", "!", ")", "”", '"')):
             return ""          # cut off: the caller falls back to the rule-based summary
         return text
@@ -514,18 +520,18 @@ class Analyst:
         viol = chk.get("violations", [])
         short_only = bool(viol) and all(re.search(r"^\d+ legs < min \d+$", v) for v in viol)
         if not chk.get("ok") and not short_only:
-            return ("\n\n⚠️ Rules check failed on this slip: " + "; ".join(viol[:3]) +
+            return ("\n\nRules check FAILED on this slip: " + "; ".join(viol[:3]) +
                     ". Don't use it; ask me to rebuild.")
         if not sl.get("legs"):
-            return f"\n\nℹ️ {scope_note}" if scope_note else ""
-        line = (f"\n\n✅ Rules check: {sl.get('constraints_text') or 'ok'} · {len(sl['legs'])} legs · total "
+            return f"\n\nNote: {scope_note}" if scope_note else ""
+        line = (f"\n\nRules check OK: {sl.get('constraints_text') or 'ok'} · {len(sl['legs'])} legs · total "
                 f"{sl['total_odds']:.2f}" + ("" if chk.get("target_reached") else " (short of target)"))
         if short_only:
             mn = (sl.get("constraints") or {}).get("min_legs")
-            line = (f"\n\nℹ️ Rules check: {sl.get('constraints_text') or 'ok'} · only {len(sl['legs'])} leg"
+            line = (f"\n\nRules check: {sl.get('constraints_text') or 'ok'} · only {len(sl['legs'])} leg"
                     f"{'s' if len(sl['legs']) != 1 else ''} qualif{'y' if len(sl['legs']) != 1 else 'ies'}"
                     f"{f' (you asked for {mn})' if mn else ''}; every leg obeys your rules, nothing padded.")
-        return line + (f"\nℹ️ {scope_note}" if scope_note else "")
+        return line + (f"\nNote: {scope_note}" if scope_note else "")
 
     # ---- tools ------------------------------------------------------------
     async def _find(self, match: str):

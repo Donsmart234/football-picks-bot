@@ -4,7 +4,7 @@
 
 Covers: rendering 1 / 6 / 20 / 25 legs (image grows, 20-leg cap with "+N more"), long names wrap / ellipsize, preview
 ("Preview - not booked"), statuses, every spec source (history record, share payload fixture, editflow context, scan
-slip, analysis), the "send slip image" phrase detector, the 🖼 buttons on every slip keyboard, the Telegram callback
+slip, analysis), the "send slip image" phrase detector, the Slip image buttons on every slip keyboard, the Telegram callback
 and reply flows (photo sent, nothing saved or booked), and the Mini App endpoints (/api/slipimg, /slipimg/<token>).
 """
 from __future__ import annotations
@@ -258,10 +258,10 @@ async def telegram_tests():
     s, hist, rec = world()
     ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"services": s}))
     chat = FakeChat()
-    slipmsg = Msg(chat, "🔁 Rollover day 2/5", message_id=50, from_bot=True)
+    slipmsg = Msg(chat, "Rollover day 2/5", message_id=50, from_bot=True)
     q = Q(f"IMG|h|{rec['id']}", slipmsg)
     await H._slip_image_cb(q, ctx, q.data.split("|"))
-    check(len(chat.photos) == 1 and chat.photos[0][0][:4] == b"\x89PNG", "🖼 tap: one PNG photo sent")
+    check(len(chat.photos) == 1 and chat.photos[0][0][:4] == b"\x89PNG", "Slip image tap: one PNG photo sent")
     kw = chat.photos[0][1]
     check(kw["reply_to_message_id"] == 50 and "N6RXGP" in kw["caption"] and kw["filename"].endswith(".png"),
           f"photo replies to the slip, caption names the code: {kw['caption']!r}")
@@ -293,7 +293,7 @@ async def telegram_tests():
     check(len(chat.docs) == 1 and chat.docs[0][0][:4] == b"\x89PNG", "full-size file sent as a document")
     # free text: reply "send slip image" to a slip message that carries the button
     from telegram import InlineKeyboardMarkup as Kb
-    bot_msg = Msg(chat, "🔁 Rollover day 2/5", message_id=70, from_bot=True,
+    bot_msg = Msg(chat, "Rollover day 2/5", message_id=70, from_bot=True,
                   reply_markup=Kb([[H.img_btn("h", rec["id"])]]))
     user = Msg(chat, "send slip image", message_id=71, reply_to=bot_msg)
     upd = SimpleNamespace(effective_message=user, effective_chat=chat, effective_user=SimpleNamespace(id=1))

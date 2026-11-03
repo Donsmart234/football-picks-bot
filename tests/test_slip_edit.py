@@ -201,11 +201,11 @@ async def flow_rollover():
 
     # resolution without a stored ref: from the replied message's buttons, then from its text, then after a restart
     from editflow import SlipEditor
-    kb = {"inline_keyboard": [[{"text": "✅ Confirm: book new code", "callback_data": f"RC|{pv_token}"}],
+    kb = {"inline_keyboard": [[{"text": "Confirm: book new code", "callback_data": f"RC|{pv_token}"}],
                               [{"text": "Keep current slip", "callback_data": "NOOP"}]]}
     c2 = await ed.resolve(1, Msg(message_id=999, reply_markup=kb, text=""))
     assert c2["section"] == "rollover_preview" and c2["slip_id"] == day_id and len(c2["legs"]) == 5
-    c3 = await ed.resolve(1, Msg(message_id=998, reply_markup=None, text="🔄 New picks for today (preview) Your current…"))
+    c3 = await ed.resolve(1, Msg(message_id=998, reply_markup=None, text="New picks for today (preview) Your current…"))
     assert c3["section"] == "rollover_day" and c3["slip_id"] == day_id and c3["code"] == "YNAP2N"
     ed2 = SlipEditor(s)                       # fresh process: memory gone, SQLite copy remains
     c4 = await ed2.resolve(1, Msg(message_id=501, reply_markup=None, text=""))
@@ -230,9 +230,9 @@ async def flow_rollover():
     datas = [b.callback_data for row in kb.inline_keyboard for b in row]
     assert datas == [f"RC|{out['token']}", "NOOP", f"IMG|p|{out['token']}"], datas
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert labels == ["✅ Confirm: book new code", "Keep current slip", "🖼 Image"]
+    assert labels == ["Confirm: book new code", "Keep current slip", "Slip image"]
     assert "New picks for today" in text and "YNAP2N" in text and "Arsenal v Burnley" in text and "replaced" in text
-    print("render: edited preview keeps '✅ Confirm: book new code' / 'Keep current slip' OK")
+    print("render: edited preview keeps 'Confirm: book new code' / 'Keep current slip' OK")
 
     # follow-up reply on the edited preview chains on the edited legs
     ref = ed.outcome_ref(out, ctx)
@@ -245,7 +245,7 @@ async def flow_rollover():
     # impossible -> plain message, current slip kept, nothing created
     s.scanner.cands = [L(40, "X", "Y", 1.9, 0.9)]
     res3 = await s.ai.ask(1, "Change the first selection", context=ctx)
-    assert res3["edit"] and not res3["edit"]["ok"] and "unchanged" in res3["edit"]["note"] and res3["reply"].startswith("⚠️")
+    assert res3["edit"] and not res3["edit"]["ok"] and "unchanged" in res3["edit"]["note"] and res3["reply"].startswith("Not changed:")
     assert not s.bookmaker.booked
     print("ai: chained edit on the edited preview, impossible case -> plain message + slip kept OK")
 
@@ -256,7 +256,7 @@ async def flow_rollover():
     new = done["record"]
     assert new["data"]["legs"][0]["home"] == "Arsenal" and new["data"]["replaces"] == day_id
     assert len(await tr.history.list("slip", None)) == n_hist + 1
-    print("confirm: new code only on ✅ Confirm, old slip -> replaced (not a loss) OK")
+    print("confirm: new code only on Confirm, old slip -> replaced (not a loss) OK")
 
     # after kick-off: refused
     s.scanner.cands = [L(20, "Arsenal", "Burnley", 1.18, 0.86)]
@@ -274,8 +274,8 @@ async def flow_scan():
           "legs": [dict(l) for l in SLIP], "rules": {"min_p": 0.80, "odds": (1.05, 1.35)}, "day": "today",
           "scan_args": {"tier": "safe", "target": 2.0, "day": "today", "constraints": None}}
     sid = s.ai.remember_slip(sl)
-    kb = {"inline_keyboard": [[{"text": "📒 Book on SportyBet", "callback_data": f"SB|{sid}"}],
-                              [{"text": "🔄 Refresh picks", "callback_data": f"SR|{sid}"}]]}
+    kb = {"inline_keyboard": [[{"text": "Book on SportyBet", "callback_data": f"SB|{sid}"}],
+                              [{"text": "Refresh picks", "callback_data": f"SR|{sid}"}]]}
     ctx = await s.editor.resolve(1, Msg(message_id=700, reply_markup=kb, text=""))
     assert ctx["section"] == "scan" and ctx["sid"] == sid
     res = await s.ai.ask(1, "remove am, I mean swap the second one", context=ctx)
@@ -396,7 +396,7 @@ async def flow_handler():
     await tr.generate_day(plan, force=True, push=False)
     day_id = (await tr.history.get(plan["id"]))["data"]["log"][-1]["slip_id"]
     tok = tr.edit_preview(day_id, {"legs": SLIP, "total_odds": 1.96, "est_prob": 0.42})
-    preview = TgMsg("🔄 New picks for today (preview)", message_id=501, from_bot=True)
+    preview = TgMsg("New picks for today (preview)", message_id=501, from_bot=True)
     ed.remember(1, 501, {"section": "rollover_preview", "token": tok, "slip_id": day_id, "legs": SLIP})
     user_msg = TgMsg("Change the first selection", reply_to=preview)
 
@@ -411,7 +411,7 @@ async def flow_handler():
     assert len(user_msg.sent) == 1, [m.text for m in user_msg.sent]
     out = user_msg.sent[0]
     datas = [b.callback_data for row in out.reply_markup.inline_keyboard for b in row]
-    assert out.text.startswith("🔄 <b>New picks for today</b> (preview)") and datas[0].startswith("RC|") and datas[1] == "NOOP"
+    assert out.text.startswith("<b>New picks for today</b> (preview)") and datas[0].startswith("RC|") and datas[1] == "NOOP"
     assert "Arsenal v Burnley" in out.text and "Real Oviedo" not in out.text and not s.bookmaker.booked
     ref = await ed.lookup(1, out.message_id)
     assert ref and ref["section"] == "rollover_preview" and ref["legs"][0]["home"] == "Arsenal"

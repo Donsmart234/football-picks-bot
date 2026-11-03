@@ -7,6 +7,19 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-03): no emoji anywhere
+The whole product is emoji-free. **Telegram**: messages, buttons, result pings, rollover/tickets/history lists and the
+analyzer use plain text labels (statuses spelled out: WON, LOST, VOID, LIVE, RUNNING, CHECK, REPLACED, CANCELLED, NO SLIP,
+SKIPPED via `fmt.STATUS_LABEL`; country flags in leg lines replaced by the league name "England · Premier League";
+"Note:" instead of warning signs; verdicts keep their words, e.g. "I'd go for this (grade A ...)"). **AI**: the system
+prompt forbids emoji and every model-written reply (chat, slip edits, image answers, AI take) passes through
+`fmt.strip_emoji` before it is sent. **Mini App**: inline SVG icons (`IC` in app.js: check, cross, refresh, shuffle,
+edit, image, send, share/open, download, spark, ball, globe, lock, card, flag...) or plain text; status pills are text +
+colour (WON green, LOST red, LIVE red dot, VOID/REPLACED/CANCELLED grey); the dark navy / electric-green look is
+unchanged. **Slip image**: drawn shapes only (ball, badges, bars, the Nigeria flag as two green bands); emoji in any
+input text is stripped. Analyzer red-flag marker in `Leg.why` is now `scanner.CAUTION` (" · caution: ").
+Test: `tests/test_no_emoji.py` (static scan of every *.py and webapp_static file, rendered texts, pings, AI strip).
+
 **Booking-code links open the SportyBet app** (2026-11-03). Every code the bot shows (/book, scan and AI bookings,
 rollover days and refreshes, analyzer rebooks, /history and ticket lists for running slips, Mini App sheets, History and
 Rollover cards) links to SportyBet's own share URL `https://www.sportybet.com/?shareCode=CODE&c=ng`
@@ -18,8 +31,8 @@ Rollover cards) links to SportyBet's own share URL `https://www.sportybet.com/?s
 {try_instant_view:false})`. The code stays in `<code>` (tap to copy). Test: `tests/test_links.py`.
 
 ## What's new (2026-11-03, later): branded slip images
-**🖼 Slip image** turns any slip into a FraPredict PNG (`slipimg.py`, Pillow, Inter font bundled in `assets/fonts/`, Fra
-mark in `assets/fra_mark.png`): navy header with the Fra logo, "FraPredict", 🇳🇬 Nigeria, "Betslip" + date/time WAT · the
+**Slip image** turns any slip into a FraPredict PNG (`slipimg.py`, Pillow, Inter font bundled in `assets/fonts/`, Fra
+mark in `assets/fra_mark.png`): navy header with the Fra logo, "FraPredict", Nigeria, "Betslip" + date/time WAT · the
 big green **Booking Code** (or amber "Preview – not booked") · slip status badge (WON / LOST / IN PLAY / VOID / REPLACED) ·
 Odds and Est. chance boxes ("Pre-match est." once a slip has started) · **Example Bet** stake 100.00 → payout ·
 **Selections**: per row a ball icon (ring coloured by result), pick + odds right-aligned, both crests (img.sportradar.com
@@ -27,17 +40,17 @@ Odds and Est. chance boxes ("Pre-match est." once a slip has started) · **Examp
 "Home vs Away" (wraps to 2 lines, then …), market, league tag, kickoff (WAT), est. % with a bar, leg badge (WON · 2-0,
 WON EARLY 38', LOST, LIVE 63' · 0-0, VOID / UNAVAILABLE) · footer: combined estimate (independent legs), "@FraPredictbot",
 "Estimates, not guarantees · 18+". 1–20 legs drawn (more → "+ N more"), 1080 px wide, ~100–300 ms per render, cached 15 min.
-**Where:** a 🖼 button (`IMG|<kind>|<key>`: `h` history id, `c` code, `s` scan / AI / edited slip, `a` analysis, `p` rollover
+**Where:** a button (`IMG|<kind>|<key>`: `h` history id, `c` code, `s` scan / AI / edited slip, `a` analysis, `p` rollover
 preview token, `u` the chat /slip) on booked-code messages (`open_code_kb`), /scan results (+ refresh, audit slips), AI
 slips and codes, analyzer results, rollover day pushes / refreshes / previews (`tracker.day_markup`), /rollover, /rollover
-tickets (🖼 Day N), /history (🖼 CODE for the latest 6), result pings (won / lost / correction), /slip. Tap → the PNG as a
-photo replying to the slip; taller than 2560 px (Telegram downsizes) → **📄 Full-size file** button sends it as a document.
+tickets (Day N), /history (CODE for the latest 6), result pings (won / lost / correction), /slip. Tap → the PNG as a
+photo replying to the slip; taller than 2560 px (Telegram downsizes) → **Full-size file** button sends it as a document.
 **Chat:** "send slip image", "generate image of this slip" (reply to a slip, or the last slip shown), "image of CODE"
 (History first, else SportyBet's share payload, read only); `slipimg.wants_image` + `handlers._image_request`, before the AI.
-**Mini App:** "🖼 Share image" on Scanner slips, booking sheets, AI chat slips / codes, Analyzer, History cards (🖼 Image),
-the rollover day slip, tickets, refresh previews and the Slip tab → sheet with the picture, **📤 Send to chat** (the bot sends
-it to your chat with it), **↗︎ Share…** (Telegram ≥ 8.0: `savePreparedInlineMessage` + `WebApp.shareMessage`, any chat),
-**⬇️ Save image** (`WebApp.downloadFile`, else opens the file). API: `POST /api/slipimg {history_id|code|slip_id|analysis_id|
+**Mini App:** "Share image" on Scanner slips, booking sheets, AI chat slips / codes, Analyzer, History cards (Image),
+the rollover day slip, tickets, refresh previews and the Slip tab → sheet with the picture, **Send to chat** (the bot sends
+it to your chat with it), **︎ Share…** (Telegram ≥ 8.0: `savePreparedInlineMessage` + `WebApp.shareMessage`, any chat),
+**Save image** (`WebApp.downloadFile`, else opens the file). API: `POST /api/slipimg {history_id|code|slip_id|analysis_id|
 token|slip:{legs}, format?:"png"}` → `{token, url, jpg, file_name, width, height}`; `GET /slipimg/<token>.png|jpg` (public,
 random token, 15 min); `POST /api/slipimg/send|prepare {token}` (never with the admin token). Only on tap / request (never
 auto-attached); nothing is booked, saved to History or tracked. Tests: `tests/test_slipimg.py` (offline).
@@ -64,7 +77,7 @@ reply starts with a "Rules:" line; the server footer repeats the check. Tests: `
 
 ## What's new (2026-11-02, latest): the AI reads images
 **Send a photo or an image file** (with or without a caption), or **reply to a photo** with a question; in the Mini App
-**AI tab** tap 📷 (camera or gallery). `vision.py`: the image is downscaled when needed (≤ 2048 px, ≤ 5 MB, Pillow) and
+**AI tab** tap (camera or gallery). `vision.py`: the image is downscaled when needed (≤ 2048 px, ≤ 5 MB, Pillow) and
 sent to Gemini inline with one JSON reading prompt (kind, booking code, legs, matches, header, short answer; JSON mode,
 `finishReason` logged in `/api/admin/diag` → `gemini_last_image`). Then it is routed:
 - **Bookmaker betslip / booking-code screenshot** → code visible: the Bet Analyzer on that code (same output, grade and
@@ -76,7 +89,7 @@ sent to Gemini inline with one JSON reading prompt (kind, booking code, legs, ma
 - **A screenshot of one of this bot's slips** → resolved like a reply to it (`SlipEditor.match_screenshot`: the newest
   stored slip reference in the chat covering the teams read, else a booked code from History, else the header text →
   the rollover's current day). With a caption the caption edits it in its own section (rollover → preview with
-  ✅ Confirm / Keep current slip); without one the bot says which slip it is and a reply to that message edits it.
+  Confirm / Keep current slip); without one the bot says which slip it is and a reply to that message edits it.
 - **Fixture list / match card / odds board** → the normal tool loop with the image attached (predict, stats, scan under
   the caption's constraints); the booking tool is not offered, so a slip only gets a code from an explicit Book tap.
   If Gemini fails, a plain list from the predictor for the matches read.
@@ -104,8 +117,8 @@ duplicate matches (1 replacement leg, else 2); **scan** = the tier + the user's 
 **analyzer / history** = top leagues, est ≥75%, no unders unless the slip had them, total within 0.85–1.25× of the current.
 Impossible → a plain "No qualifying replacement … Your slip is unchanged." and the slip stays.
 
-**Same section, nothing booked without confirm.** A rollover edit comes back as "🔄 New picks for today (preview)" for
-that plan/day with **✅ Confirm: book new code** / **Keep current slip** (`tracker.edit_preview` → the existing `RC|token`
+**Same section, nothing booked without confirm.** A rollover edit comes back as "New picks for today (preview)" for
+that plan/day with **Confirm: book new code** / **Keep current slip** (`tracker.edit_preview` → the existing `RC|token`
 → `refresh_confirm`: new code, old slip `replaced`, not a loss); a scan edit as a scan result with Book / Refresh /
 Different buttons (not saved); analyzer / history edits as an edited slip with a Book button. Each edited message gets
 its own ref, so "now change the last one" chains. If a confirm token expired (redeploy, >15 min) it's rebuilt from the
@@ -119,7 +132,7 @@ text; the old code didn't log `finishReason`, so the exact reason isn't in the l
 counting its thinking against `maxOutputTokens` (2048) after the big tool result (MAX_TOKENS, empty), with
 MALFORMED_FUNCTION_CALL / running out of rounds ending the same way → fallback line + the unrelated slip's footer. Now: 8192-token budget, `finishReason`
 logged (`/api/admin/diag` → `gemini_last_turn`), one tool-free "answer now" round, then a plain summary of the slip.
-Mini App: **✏️ Edit with AI** on the rollover day slip and the Scanner slip; the AI tab shows "Editing: …" and sends it as
+Mini App: **Edit with AI** on the rollover day slip and the Scanner slip; the AI tab shows "Editing: …" and sends it as
 `context` (`POST /api/ai {"message", "context": {"kind": "rollover", "slip_id"} | {"kind": "scan", "sid"} | …}` → `edit`
 with legs + Confirm for rollover). Tests: `tests/test_slip_edit.py` (offline).
 
@@ -129,17 +142,17 @@ with legs + Confirm for rollover). Tests: `tests/test_slip_edit.py` (offline).
 `bankroll` after a win, `won_early` minute, `replaced_by`. `Tracker.rollover_tickets(plan)` joins them (PostgREST
 `data->>rollover_id=eq.<plan>`, oldest first): day, date, status **pending / live / won / lost / check / void / replaced /
 no_slip / skipped**, code, total (effective) odds, legs with results, stake → expected return, running bankroll, `can_refresh`.
-Past days and past plans stay viewable after the plan advances or ends. Telegram: `/rollover tickets` (also `view`), 🎟 buttons
+Past days and past plans stay viewable after the plan advances or ends. Telegram: `/rollover tickets` (also `view`), buttons
 for the current plan and up to 3 past plans. Mini App Rollover tab: **Tickets** list (tap for legs), **Past plans** rows open
 their tickets. API: `GET /api/rollover` now carries `tickets` + `day_slip.can_refresh`; `GET /api/rollover/tickets?id=<plan>`.
 
-**Refresh picks.** 🔄 **Refresh picks** re-reads today's top-league prices (scanner pool forced fresh unless < 60 s old) and
+**Refresh picks.** **Refresh picks** re-reads today's top-league prices (scanner pool forced fresh unless < 60 s old) and
 rebuilds the day under the same rules (target, top-league allowlist, stats-confirmed legs ≥80% calibrated est., no unders
-unless the plan allows them). 🔀 **Different picks** also leaves out every previous selection, so the slip really changes.
+unless the plan allows them). **Different picks** also leaves out every previous selection, so the slip really changes.
 Only the current day, only while the slip is pending and **before its first kick-off**; legs kicking off within 5 min are never
 picked. If fresh prices give the same picks it says so; if no different valid slip exists it says so and keeps the slip.
 Old slip unbooked → replaced at once. Old slip **booked** → preview first; a new booking code is created only on an explicit
-✅ Confirm (Telegram `RC|token`, app confirm sheet; token single-use, 15 min). The old record becomes status `replaced`
+Confirm (Telegram `RC|token`, app confirm sheet; token single-use, 15 min). The old record becomes status `replaced`
 (`replaced_by`, kept in History and Tickets, never counted as a loss, no longer tracked); the new one has `replaces`.
 API: `POST /api/rollover {"action":"refresh","id","exclude_prev"}` → `{status: replaced|preview|same|none, …}`,
 `{"action":"refresh_confirm","token"}` → `{code, record}`. Telegram buttons `RF|<slip>` / `RF|<slip>|x` under each day's slip,
@@ -158,9 +171,9 @@ early** — Under x.5 / team Under passed, GG No after both scored, exact goals 
 odd/even, corners and cards always wait for the final whistle. A call must be seen on **two looks ≥60 s apart** (the tracker
 polls every 2 min while a tracked leg is live, 5 min while pending, 15 min idle), so a goal ruled out quickly is never locked.
 Leg note "Won early (63')" / "Lost early (70')" + `early {min, score, verified}`. When every leg is won the slip pings
-**"✅ Entered!"** at once (one ping per slip, as before; ❌ goes out as soon as a leg is lost). After full time each early call
+**"Entered!"** at once (one ping per slip, as before; goes out as soon as a leg is lost). After full time each early call
 is re-checked against the final score; in the rare case it differs (VAR / feed correction) the leg and slip are corrected and
-one ⚠️ Correction message is sent (a rollover day corrected to lost busts the plan). History and tickets show
+one Correction message is sent (a rollover day corrected to lost busts the plan). History and tickets show
 "won early (63')". Tests: `tests/test_early_settle.py` (40 market cases + tracker / rollover / refresh flows, offline).
 
 ## What's new (2026-11-01, later): Bet analyzer + top-leagues default
@@ -184,12 +197,12 @@ the AI ("check this code N6RXGP" → tool `analyze_booking_code`).
   chance on a log scale, penalty when the whole slip is priced well under fair; any Avoid leg caps it at C), drop suggestions,
   safer swaps in the same match (lower total line, DC/DNB instead of a win, Over 1.5 instead of GG; never turns an over into an
   under; obeys rules given with the code) with the new combined chance, and an **improved slip**. It ends with a verdict:
-  "✅ I'd go for this", "⚠️ I'd go for this only after dropping/switching …" or "❌ I'd skip this".
-- **Rebook improved slip** books only on an explicit tap (Telegram: tap → preview → ✅ Confirm; Mini App: button → confirm
+  "I'd go for this", "I'd go for this only after dropping/switching …" or "I'd skip this".
+- **Rebook improved slip** books only on an explicit tap (Telegram: tap → preview → Confirm; Mini App: button → confirm
   sheet); refused if it breaks the given rules or a match has started. That new booking is saved to History and tracked as usual.
 - **Analyzed codes are not saved to History or tracked** (History = bot-generated / booked slips only). If the code is already in
   History (the bot booked it) its booked prices are read, nothing is written.
-- 🧠 **AI take**: optional Gemini paragraph from the computed numbers only (no tools); every percentage it writes must exist
+- **AI take**: optional Gemini paragraph from the computed numbers only (no tools); every percentage it writes must exist
   in the facts or it is replaced by a rule-based summary.
 - Access stays owner-only. Opening it to others later is config only: `ANALYZER_ACCESS=allowlist` + `ANALYZER_USERS=id1,id2`, or
   `ANALYZER_ACCESS=public`. Then only `/analyze`, bare codes, the analyzer buttons and `/api/analyze*` open up; everything else
@@ -326,7 +339,7 @@ or booking, and say plainly when rules can't be met. Server-side safety net: the
 (`parse_text`) and merged into the model's args (exclusions unioned, stated numbers win), so a rule the model forgets is still enforced.
 `build_booking_code` refuses a slip whose check failed or that breaks the rules in the current message, and won't book a slip that fell
 short of its target unless `accept_short=true` (user agreed). Replies with a constrained slip end with a server line
-"✅ Rules check: … · N legs · total X". Wording stays "estimates, not guarantees".
+"Rules check: … · N legs · total X". Wording stays "estimates, not guarantees".
 
 **/scan filters**: `/scan safe 5 nounders -corners -cards only:1x2,dc legs:4-8 minodds:1.15 maxodds:1.4 league:epl country:spain
 team:arsenal notteam:chelsea after:18:00 before:22:00 minp:85` (plain words like "no unders" work too). **Mini App**: Filters chips under
@@ -351,8 +364,8 @@ A background loop (every 5 min while anything is pending, 15 min otherwise) sett
 modelled goals markets (1X2, DC, DNB, O/U, team totals, GG/NG, Asian x.5/European handicaps, FT/1H/2H), odd/even, correct score,
 exact goals, multigoals, corners (O/U, 1X2, handicap, team totals, odd/even) and bookings (O/U, 1X2, team totals; yellow 1, red 2).
 Player props, specials, minute markets and combos become **Check** once the match ends. Cancelled/abandoned → void (odds drop out).
-**Pings (one per slip, never repeated):** 💥 "BOOM" with code, total odds and every leg's score when the whole slip lands; a short ❌
-as soon as a leg loses; ❔ when nothing lost but a leg needs a manual look. Per-leg wins are shown in History, not pinged.
+**Pings (one per slip, never repeated):** "BOOM" with code, total odds and every leg's score when the whole slip lands; a short 
+as soon as a leg loses; when nothing lost but a leg needs a manual look. Per-leg wins are shown in History, not pinged.
 
 **Rollover** (`/rollover`, Mini App Rollover tab). Pick a daily target (2, 3, 4 or 5) and 3–15 days, optional starting stake. Each
 morning from 09:00 Africa/Lagos (until 20:00) the day's slip is built from an allowlist of top competitions (now the shared `leagues.py` id list; formerly `ROLLOVER_LEAGUES` in
@@ -500,6 +513,7 @@ API-Football cost: up to 4 requests the first time a match is analysed (1 shared
 python tests/live_test.py          # live SportyBet fetch, id verification, 3 predictions, offline checks
 python tests/live_test.py --book   # + creates ONE real (anonymous, free) booking code with 2 selections
 python tests/test_stats_mock.py    # API-Football path with mocked HTTP (no key or quota used)
+python tests/test_no_emoji.py       # no emoji in source/static files, rendered texts, pings, AI replies
 python tests/test_webapp.py        # initData validation unit tests (fake token)
 python tests/test_webapp.py --live # + local server: /app, 403s, /api/events, /api/predict through the relay
 python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/book

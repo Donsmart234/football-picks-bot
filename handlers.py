@@ -16,7 +16,7 @@ import config
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection, code_link
 from ai import md_to_html
 from analyzer import bare_code, extract_code
-from fmt import RULE, STATUS_ICON, analysis_messages, code_html, record_text, slip_text
+from fmt import RULE, STATUS_LABEL, analysis_messages, code_html, record_text, slip_text
 from predictor import Prediction
 from constraints import parse_text
 from scanner import TIER_ALIASES
@@ -26,14 +26,14 @@ from slipimg import TELEGRAM_PHOTO_MAX, png_size, spec_from_ctx, wants_image
 log = logging.getLogger(__name__)
 PAGE = 8
 
-RG_NOTE = ("⚠️ <i>Predictions are statistical estimates, never guarantees. Bet only what you can afford "
+RG_NOTE = ("<i>Predictions are statistical estimates, never guarantees. Bet only what you can afford "
            "to lose, 18+ only. If gambling stops being fun, take a break.</i>")
 HELP = (
     "<b>Commands</b>\n"
     "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit). Filters: nounders, -corners, "
     "-cards, -props, only:1x2,dc, legs:4-8, minodds:1.2, league:epl, after:18:00, allleagues (top leagues by default)\n"
     "/ai question – ask the AI analyst (or just type any message)\n"
-    "📷 Send a screenshot (betslip, booking code, fixtures, one of my slips) and I'll read it; add a caption to say what you want\n"
+    "Send a screenshot (betslip, booking code, fixtures, one of my slips) and I'll read it; add a caption to say what you want\n"
     "/today – today's matches by league\n"
     "/upcoming – next 3 days\n"
     "/predict Team A vs Team B – analyse a match\n"
@@ -93,9 +93,9 @@ def app_url() -> str | None:
 # ---------------------------------------------------------------- commands
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     url = app_url()
-    kb = Kb([[Btn("📈 Open Fra app", web_app=WebAppInfo(url))]]) if url else None
+    kb = Kb([[Btn("Open Fra app", web_app=WebAppInfo(url))]]) if url else None
     await update.effective_message.reply_text(
-        "👋 <b>Fra Prediction</b> – private football analytics desk\nScans SportyBet markets, checks team form, "
+        "<b>Fra Prediction</b> – private football analytics desk\nScans SportyBet markets, checks team form, "
         "home/away records and H2H, and builds Safe / Mid-safe / Risk / High-risk slips to your target odds. "
         "Type any question to ask the AI analyst.\n\n"
         + ("Tap <b>Open Fra app</b> (or the menu button) for the full app.\n\n" if url else "")
@@ -201,7 +201,7 @@ async def analyze_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await _run_analysis(update, ctx, code, " ".join(args.split()[1:]))
 
 
-def img_btn(kind: str = "", key: str = "", label: str = "🖼 Slip image") -> Btn:
+def img_btn(kind: str = "", key: str = "", label: str = "Slip image") -> Btn:
     """Button that sends the slip as a branded PNG (slipimg.py). kind: h history id · c code · s scan/AI slip id ·
     a analysis id · p rollover preview token · u the chat slip; no kind = the slip stored for that message."""
     data = f"IMG|{kind}|{key}" if kind else "IMG"
@@ -217,20 +217,20 @@ def with_img(kb: Kb | None, kind: str = "", key: str = "") -> Kb:
 def open_code_kb(bookmaker, code: str | None) -> Kb:
     """One url button that opens the booking code in the SportyBet app when installed (website otherwise).
     A url button (not a web_app one) so Telegram hands the link to the OS, which routes the app-claimed link.
-    Booked codes also get the 🖼 Slip image button."""
+    Booked codes also get the Slip image button."""
     if not code:
         return Kb([[Btn("Open SportyBet code hub", url=code_link(bookmaker, None))]])
-    return Kb([[Btn(f"📲 Open {code} in SportyBet", url=code_link(bookmaker, code))], [img_btn("c", code)]])
+    return Kb([[Btn(f"Open {code} in SportyBet", url=code_link(bookmaker, code))], [img_btn("c", code)]])
 
 
 def _analysis_kb(res: dict) -> Kb | None:
     rows = []
     imp = (res.get("suggestions") or {}).get("improved")
     if imp and imp.get("legs") and imp.get("bookable"):
-        rows.append([Btn(f"♻️ Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
+        rows.append([Btn(f"Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
                          callback_data=f"AZR|{res['id']}")])
-    rows.append([Btn("🧠 AI take", callback_data=f"AZN|{res['id']}"),
-                 Btn("📲 Open in SportyBet" if res.get("code") else "Open SportyBet",
+    rows.append([Btn("AI take", callback_data=f"AZN|{res['id']}"),
+                 Btn("Open in SportyBet" if res.get("code") else "Open SportyBet",
                      url=res.get("load_url") or code_link(None, res.get("code")))])
     rows.insert(len(rows) - 1, [img_btn("a", res["id"])])
     return Kb(rows)
@@ -243,7 +243,7 @@ async def _run_analysis(update: Update, ctx, code: str, rules: str) -> None:
         await update.effective_message.reply_text("The analyzer isn't available right now.")
         return
     note = await update.effective_message.reply_text(
-        f"🔍 Loading <code>{esc(code)}</code> and rating every leg (form, H2H, team news)… ~10 s",
+        f"Loading <code>{esc(code)}</code> and rating every leg (form, H2H, team news)… ~10 s",
         parse_mode=ParseMode.HTML)
     try:
         res = await an.analyze(code, rules)   # not saved / tracked
@@ -253,7 +253,7 @@ async def _run_analysis(update: Update, ctx, code: str, rules: str) -> None:
                              "Send the code again in a minute.")
         return
     if not res.get("ok"):
-        icon = "⛔" if res.get("kind") == "invalid" else "⚠️"
+        icon = "Invalid code" if res.get("kind") == "invalid" else "Couldn't load"
         await note.edit_text(f"{icon} <code>{esc(code)}</code>: {esc(res.get('error', 'could not load it'))}",
                              parse_mode=ParseMode.HTML)
         return
@@ -282,7 +282,7 @@ async def reset_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     ai = getattr(svc(ctx), "ai", None)
     if ai:
         ai.reset(update.effective_chat.id)
-    await update.effective_message.reply_text("🧹 AI chat memory cleared.")
+    await update.effective_message.reply_text("AI chat memory cleared.")
 
 
 async def _typing_loop(chat, stop):
@@ -328,13 +328,13 @@ async def _deliver_ai(update: Update, ctx, res: dict, note=None) -> None:
     if an_res and an_res.get("id"):
         imp = (an_res.get("suggestions") or {}).get("improved")
         if imp and imp.get("legs") and imp.get("bookable"):
-            rows.append([Btn(f"♻️ Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
+            rows.append([Btn(f"Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
                              callback_data=f"AZR|{an_res['id']}")])
     if res.get("code"):
-        rows.append([Btn(f"📲 Open {res['code']} in SportyBet", url=code_link(s.bookmaker, res["code"]))])
+        rows.append([Btn(f"Open {res['code']} in SportyBet", url=code_link(s.bookmaker, res["code"]))])
         rows.append([img_btn("c", res["code"])])
     elif res.get("slip") and res["slip"].get("slip_id") and res["slip"].get("legs"):
-        rows.append([Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{res['slip']['slip_id']}")])
+        rows.append([Btn("Book this slip on SportyBet", callback_data=f"SB|{res['slip']['slip_id']}")])
         rows.append([img_btn("s", res["slip"]["slip_id"])])
     elif an_res and an_res.get("id"):
         rows.append([img_btn("a", an_res["id"])])
@@ -391,13 +391,13 @@ async def _handle_image(update: Update, ctx, img_msg, caption: str) -> None:
         return
     file_id, size, mime = ref
     if size and size > vision.MAX_DOWNLOAD:
-        await msg.reply_text("⚠️ That file is over 20 MB; send a screenshot or a smaller photo.")
+        await msg.reply_text("That file is over 20 MB; send a screenshot or a smaller photo.")
         return
     ai = getattr(s, "ai", None)
     if ai is None:
         await msg.reply_text("The AI analyst isn't available right now.")
         return
-    note = await msg.reply_text("📷 Reading your image…")
+    note = await msg.reply_text("Reading your image…")
     stop = asyncio.Event()
     typer = asyncio.create_task(_typing_loop(update.effective_chat, stop))
     try:
@@ -422,14 +422,14 @@ async def _send_image_result(update: Update, ctx, out: dict, note) -> None:
     kind = out.get("kind")
     if kind == "analysis" and out.get("analysis"):
         res = out["analysis"]
-        lead = (f"📷 Read <code>{esc(out['code_read'])}</code> from your screenshot." if out.get("code_read")
-                else "📷 " + esc(out["reply"].split("\n")[0]))
+        lead = (f"Read <code>{esc(out['code_read'])}</code> from your screenshot." if out.get("code_read")
+                else esc(out["reply"].split("\n")[0]))
         await _send_analysis(update, ctx, res, note, lead)
         return
     if kind == "edit":
         ed_out, sctx = out.get("edit"), out.get("context") or {}
         if ed_out is not None:
-            await note.edit_text("📷 That's one of my slips: " + esc(out.get("reply") or ""), parse_mode=ParseMode.HTML)
+            await note.edit_text("That's one of my slips: " + esc(out.get("reply") or ""), parse_mode=ParseMode.HTML)
             await _send_edit(update, ctx, ed_out, sctx)
             return
         await note.edit_text(md_to_html(out.get("reply") or "")[:4096], parse_mode=ParseMode.HTML)
@@ -451,7 +451,7 @@ def _edit_html(out: dict) -> tuple[str, Kb | None]:
     from fmt import leg_lines
     legs = out["legs"]
     body = "\n".join(leg_lines(l, i, why=False) for i, l in enumerate(legs, 1))
-    change = f"✏️ <i>{esc(out.get('change') or '')}</i>"
+    change = f"<i>{esc(out.get('change') or '')}</i>"
     tail = (f"{RULE}\n<b>Total odds <code>{out['total_odds']:.2f}</code></b> · est. hit chance "
             f"<b>{out['est_prob']:.0%}</b>")
     if out["section"] == "rollover_preview":
@@ -460,21 +460,21 @@ def _edit_html(out: dict) -> tuple[str, Kb | None]:
                     "the old one is marked <i>replaced</i> (not counted as a loss) and stops being tracked.")
         else:
             lead = ("Confirm to book these picks as today's code; the current (unbooked) slip is marked <i>replaced</i>.")
-        text = (f"🔄 <b>New picks for today</b> (preview) · Rollover day {out.get('day') or ''} · target "
+        text = (f"<b>New picks for today</b> (preview) · Rollover day {out.get('day') or ''} · target "
                 f"{(out.get('target') or 0):g}\n{change}\n{lead}\n{RULE}\n{body}\n{tail}\n<i>Same rules: top leagues, "
                 "every leg ≥80% est." + ("" if out.get("allow_unders") else " No unders.")
                 + " Nothing is booked until you confirm. Estimates, not guarantees. 18+.</i>")
-        kb = Kb([[Btn("✅ Confirm: book new code", callback_data=f"RC|{out['token']}")],
-                 [Btn("Keep current slip", callback_data="NOOP"), img_btn("p", out["token"], "🖼 Image")]])
+        kb = Kb([[Btn("Confirm: book new code", callback_data=f"RC|{out['token']}")],
+                 [Btn("Keep current slip", callback_data="NOOP"), img_btn("p", out["token"], "Slip image")]])
         return text[:4096], kb
     sl = out.get("slip") or {}
     if sl.get("tier") in ("safe", "mid", "risk", "high"):
-        head = f"✏️ <b>Edited slip</b> · not saved until you book\n{change}\n"
+        head = f"<b>Edited slip</b> · not saved until you book\n{change}\n"
         return _scan_msg(sl, head), _scan_kb(out.get("sid"), sl)
-    title = ("✏️ <b>Edited slip</b>" + (f" (from <code>{esc(out.get('based_on'))}</code>)" if out.get("based_on") else "")
+    title = ("<b>Edited slip</b>" + (f" (from <code>{esc(out.get('based_on'))}</code>)" if out.get("based_on") else "")
              + f" · not saved until you book\n{change}")
     text = f"{title}\n{RULE}\n{body}\n{tail}\n<i>Estimates, not guarantees. 18+.</i>"
-    kb = Kb([[Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{out['sid']}")],
+    kb = Kb([[Btn("Book this slip on SportyBet", callback_data=f"SB|{out['sid']}")],
              [img_btn("s", out["sid"])]]) if out.get("sid") else None
     return text[:4096], kb
 
@@ -482,7 +482,7 @@ def _edit_html(out: dict) -> tuple[str, Kb | None]:
 async def _send_edit(update: Update, ctx, out: dict, sctx: dict) -> None:
     msg = update.effective_message
     if not out.get("ok"):
-        await msg.reply_text(f"⚠️ {esc(out.get('note') or 'That change is not possible right now.')}",
+        await msg.reply_text(f"{esc(out.get('note') or 'That change is not possible right now.')}",
                              parse_mode=ParseMode.HTML)
         return
     text, kb = _edit_html(out)
@@ -494,13 +494,13 @@ async def _send_edit(update: Update, ctx, out: dict, sctx: dict) -> None:
 
 def format_slip(sl: dict, why: bool = True) -> str:
     rule = f"Each leg est. ≥{sl['rules']['min_p']:.0%} after the stats check" if sl.get("rules", {}).get("min_p") else ""
-    title = (f"🧮 <b>{esc(sl['label']).upper()} SLIP</b> · target {sl['target']:g} · {esc(sl.get('day', ''))}"
+    title = (f"<b>{esc(sl['label']).upper()} SLIP</b> · target {sl['target']:g} · {esc(sl.get('day', ''))}"
              + (f"\n<i>{rule} · {sl.get('candidates', 0)} qualified · {sl.get('with_stats', 0)} matches stats-checked</i>"
                if rule and not sl.get("edited") else f"\n<i>{rule}</i>" if rule else ""))
     if sl.get("constraints_text"):
         chk = sl.get("constraint_check") or {}
-        title += (f"\n🎛 Your rules: {esc(sl['constraints_text'])}"
-                  + (" · ✅ every leg re-checked" if chk.get("ok") and sl.get("legs") else ""))
+        title += (f"\nYour rules: {esc(sl['constraints_text'])}"
+                  + (" · every leg re-checked" if chk.get("ok") and sl.get("legs") else ""))
     return slip_text(sl, title, why=why)
 
 
@@ -538,7 +538,7 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     s = svc(ctx)
     rules = f" · {esc(c.describe())}" if c else ""
     note = await update.effective_message.reply_text(
-        f"🔎 Scanning up to 80 {'' if c and c.widens_leagues() else 'top-league '}matches ({day}){rules}, every market, "
+        f"Scanning up to 80 {'' if c and c.widens_leagues() else 'top-league '}matches ({day}){rules}, every market, "
         "then checking form/H2H… ~30 s",
         parse_mode=ParseMode.HTML)
     try:
@@ -549,7 +549,7 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     ai = getattr(s, "ai", None)
     if tier == "audit":
-        parts = [f"📊 <b>Grand audit</b> · {res['scanned']} matches scanned, {res['with_stats']} stats-checked, "
+        parts = [f"<b>Grand audit</b> · {res['scanned']} matches scanned, {res['with_stats']} stats-checked, "
                  f"{res['dropped_by_stats']} legs dropped by stats"]
         parts.append("\n<b>Best leg per match</b>")
         for l in res["best_per_match"][:10]:
@@ -565,8 +565,8 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             parts.append(f"\n<b>{esc(sl['label'])}</b>: {len(sl['legs'])} legs, total {sl['total_odds']:.2f}, "
                          f"est {sl['est_prob']:.0%}" + (f" – {esc(sl['note'])}" if sl["note"] else ""))
             if sid and sl["legs"]:
-                rows.append([Btn(f"📒 Book {sl['label']} ({sl['total_odds']:.2f})", callback_data=f"SB|{sid}"),
-                             img_btn("s", sid, "🖼 Image")])
+                rows.append([Btn(f"Book {sl['label']} ({sl['total_odds']:.2f})", callback_data=f"SB|{sid}"),
+                             img_btn("s", sid, "Slip image")])
         parts.append("\n<i>Estimates, not guarantees. 18+.</i>")
         await note.edit_text("\n".join(parts)[:4000], parse_mode=ParseMode.HTML, reply_markup=Kb(rows) if rows else None)
         return
@@ -591,8 +591,8 @@ def _scan_msg(res: dict, head: str = "") -> str:
 def _scan_kb(sid: str | None, res: dict) -> Kb | None:
     if not sid:
         return None
-    rows = [[Btn("📒 Book on SportyBet", callback_data=f"SB|{sid}")]] if res["legs"] else []
-    rows.append([Btn("🔄 Refresh picks", callback_data=f"SR|{sid}"), Btn("🔀 Different picks", callback_data=f"SR|{sid}|x")])
+    rows = [[Btn("Book on SportyBet", callback_data=f"SB|{sid}")]] if res["legs"] else []
+    rows.append([Btn("Refresh picks", callback_data=f"SR|{sid}"), Btn("Different picks", callback_data=f"SR|{sid}|x")])
     if res["legs"]:
         rows.append([img_btn("s", sid)])
     return Kb(rows)
@@ -624,17 +624,17 @@ async def _scan_refresh(q, ctx, sid: str, exclude_prev: bool) -> None:
         return
     new = {sel_key(l) for l in res["legs"]}
     if not res["legs"]:
-        await q.message.reply_text("🔄 No different valid slip exists right now under the same rules"
+        await q.message.reply_text("No different valid slip exists right now under the same rules"
                                    + (" without the previous picks" if exclude_prev else "") + ". The last slip stands.")
         return
     if new == prev:
-        await q.message.reply_text("🔄 Fresh prices give the same picks: they're still the strongest. "
-                                   "Tap 🔀 Different picks to leave them out.")
+        await q.message.reply_text("Fresh prices give the same picks: they're still the strongest. "
+                                   "Tap Different picks to leave them out.")
         return
     res["scan_args"] = args
     nsid = ai.remember_slip(res)
     kept = len(new & prev)
-    head = f"🔄 <b>Refreshed</b> · {len(new) - kept} new pick(s), {kept} kept · not saved until you book\n"
+    head = f"<b>Refreshed</b> · {len(new) - kept} new pick(s), {kept} kept · not saved until you book\n"
     sent = await q.message.reply_text(_scan_msg(res, head), parse_mode=ParseMode.HTML, reply_markup=_scan_kb(nsid, res))
     _remember(ctx, sent, _scan_ref(nsid, res))
 
@@ -650,7 +650,7 @@ async def book_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def clear_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     svc(ctx).storage.slip_clear(update.effective_user.id)
-    await update.effective_message.reply_text("🗑 Slip cleared.")
+    await update.effective_message.reply_text("Slip cleared.")
 
 
 # ---------------------------------------------------------------- browse
@@ -672,7 +672,7 @@ async def _send_leagues(update: Update, ctx, scope: str, page: int, edit: bool) 
     rows = [[Btn(f"{name} ({n})"[:60], callback_data=f"LM|{scope}|{tid}|0")]
             for tid, name, n in leagues[page * PAGE:(page + 1) * PAGE]]
     rows.append(_pager(f"LL|{scope}", page, pages))
-    text = f"⚽ <b>{title}</b>: {len(events)} matches in {len(leagues)} leagues. Pick a league:"
+    text = f"<b>{title}</b>: {len(events)} matches in {len(leagues)} leagues. Pick a league:"
     await _reply_or_edit(update, text, Kb([r for r in rows if r]), edit)
 
 
@@ -689,19 +689,19 @@ async def _send_matches(update: Update, ctx, scope: str, tid: str, page: int) ->
         t = e.start.astimezone(TZ).strftime("%a %H:%M" if scope == "u" else "%H:%M")
         rows.append([Btn(f"{t} {e.home} – {e.away}"[:60], callback_data=f"P|{e.event_id}")])
     rows.append(_pager(f"LM|{scope}|{tid}", page, pages))
-    rows.append([Btn("⬅️ Leagues", callback_data=f"LL|{scope}|0")])
-    await _reply_or_edit(update, f"🏆 <b>{esc(events[0].league_full)}</b> – pick a match:",
+    rows.append([Btn("‹ Leagues", callback_data=f"LL|{scope}|0")])
+    await _reply_or_edit(update, f"<b>{esc(events[0].league_full)}</b> – pick a match:",
                          Kb([r for r in rows if r]), True)
 
 
 def _pager(prefix: str, page: int, pages: int) -> list[Btn]:
     row = []
     if page > 0:
-        row.append(Btn("◀️ Prev", callback_data=f"{prefix}|{page - 1}"))
+        row.append(Btn("‹ Prev", callback_data=f"{prefix}|{page - 1}"))
     if pages > 1:
         row.append(Btn(f"{page + 1}/{pages}", callback_data="NOOP"))
     if page < pages - 1:
-        row.append(Btn("Next ▶️", callback_data=f"{prefix}|{page + 1}"))
+        row.append(Btn("Next ›", callback_data=f"{prefix}|{page + 1}"))
     return row
 
 
@@ -745,8 +745,8 @@ def format_prediction(p: Prediction) -> str:
 
     when = e.start.astimezone(TZ).strftime("%a %d %b, %H:%M")
     parts = [
-        f"⚽ <b>{esc(e.home)} vs {esc(e.away)}</b>",
-        f"🏆 {esc(e.league_full)} · 🕒 {when} (Lagos)",
+        f"<b>{esc(e.home)} vs {esc(e.away)}</b>",
+        f"{esc(e.league_full)} · {when} (Lagos)",
         "",
         "<b>1X2</b>  " + " | ".join(line(MARKET_1X2, o) for o in ("1", "2", "3")),
         "<b>O/U 2.5</b>  " + " | ".join(line(MARKET_OU, o) for o in ("12", "13")),
@@ -756,7 +756,7 @@ def format_prediction(p: Prediction) -> str:
     ]
     if p.best:
         odds = f" @ {p.best.odds:.2f}" if p.best.odds else ""
-        parts.append(f"⭐ <b>Best pick: {p.best.label}</b> ({p.best.prob:.0%}{odds})")
+        parts.append(f"<b>Best pick: {p.best.label}</b> ({p.best.prob:.0%}{odds})")
     parts.append(esc(p.reasoning))
     parts.append(f"<i>Model: {p.source}. Estimate only – not guaranteed.</i>")
     return "\n".join(parts)
@@ -769,11 +769,11 @@ def prediction_keyboard(p: Prediction) -> Kb:
         label, spec = SELECTIONS[(mid, oid)]
         odds = p.event.odds(mid, oid, spec)
         short = label.split(" (")[0]
-        return Btn(f"➕ {short}" + (f" {odds:.2f}" if odds else ""), callback_data=f"A|{mid}|{oid}|{eid}")
+        return Btn(f"+ {short}" + (f" {odds:.2f}" if odds else ""), callback_data=f"A|{mid}|{oid}|{eid}")
 
     rows = []
     if p.best and p.best.odds:
-        rows.append([Btn(f"⭐ Add best pick: {p.best.label.split(' (')[0]} @ {p.best.odds:.2f}",
+        rows.append([Btn(f"Add best pick: {p.best.label.split(' (')[0]} @ {p.best.odds:.2f}",
                          callback_data=f"A|{p.best.market_id}|{p.best.outcome_id}|{eid}")])
     groups = [[(MARKET_1X2, "1"), (MARKET_1X2, "2"), (MARKET_1X2, "3")],
               [(MARKET_OU, "12"), (MARKET_OU, "13")],
@@ -783,7 +783,7 @@ def prediction_keyboard(p: Prediction) -> Kb:
         row = [b(m, o) for m, o in g if p.event.odds(m, o, SELECTIONS[(m, o)][1])]
         if row:
             rows.append(row)
-    rows.append([Btn("🧾 View slip", callback_data="SLIP")])
+    rows.append([Btn("View slip", callback_data="SLIP")])
     return Kb(rows)
 
 
@@ -807,8 +807,8 @@ async def _render_slip(user_id: int, ctx) -> tuple[str, Kb | None]:
     s = svc(ctx)
     picks = s.storage.slip_get(user_id)
     if not picks:
-        return "🧾 Your slip is empty. Add picks from a prediction.", None
-    lines, total, rows = ["🧾 <b>Your slip</b>"], 1.0, []
+        return "Your slip is empty. Add picks from a prediction.", None
+    lines, total, rows = ["<b>Your slip</b>"], 1.0, []
     for i, p in enumerate(picks, 1):
         odds = p["odds"]
         try:  # refresh price from the (5-min cached) feed when available
@@ -820,9 +820,9 @@ async def _render_slip(user_id: int, ctx) -> tuple[str, Kb | None]:
             pass
         total *= odds or 1.0
         lines.append(f"{i}. {esc(p['match_name'])}\n    {esc(p['label'])} @ <b>{odds:.2f}</b>")
-        rows.append([Btn(f"❌ Remove {i}", callback_data=f"R|{p['event_id']}")])
+        rows.append([Btn(f"Remove {i}", callback_data=f"R|{p['event_id']}")])
     lines.append(f"\n<b>Total odds: {total:.2f}</b> ({len(picks)} selection{'s' if len(picks) > 1 else ''})")
-    rows.append([Btn("📒 Get booking code", callback_data="BOOK"), Btn("🗑 Clear", callback_data="CLR")])
+    rows.append([Btn("Get booking code", callback_data="BOOK"), Btn("Clear", callback_data="CLR")])
     rows.append([img_btn("u", "")])
     return "\n".join(lines), Kb(rows)
 
@@ -831,7 +831,7 @@ async def _book(user_id: int, ctx) -> dict:
     s = svc(ctx)
     picks = s.storage.slip_get(user_id)
     if not picks:
-        return {"text": "🧾 Your slip is empty. Add picks from a prediction first."}
+        return {"text": "Your slip is empty. Add picks from a prediction first."}
     sels = [Selection(p["event_id"], p["market_id"], p["specifier"], p["outcome_id"]) for p in picks]
     try:
         code = await s.bookmaker.book(sels)
@@ -843,7 +843,7 @@ async def _book(user_id: int, ctx) -> dict:
         total *= p["odds"] or 1.0
     await _record(ctx, [{**p, "pick": p["label"], "market": _mkt_name(p["market_id"]),
                          "match": p["match_name"]} for p in picks], code, "chat-slip", total_odds=total)
-    return {"text": (f"📒 <b>Booking code: <code>{esc(code)}</code></b>\n{len(picks)} selection(s), "
+    return {"text": (f"<b>Booking code: <code>{esc(code)}</code></b>\n{len(picks)} selection(s), "
                      f"approx. total odds {total:.2f}.\nTap below to open it in the {esc(s.bookmaker.name)} app (or the website if "
                      f"the app isn't installed), or copy the code into Load Code.\n\n{RG_NOTE}"),
             "parse_mode": ParseMode.HTML, "disable_web_page_preview": True,
@@ -859,7 +859,7 @@ def _code_cell(code: str | None, live: bool) -> str:
     """A code in a list: monospace (tap to copy); running slips also get the open-in-SportyBet-app link."""
     if not code:
         return "<code>—</code>"
-    return code_html(code, "📲 open") if live else f"<code>{esc(code)}</code>"
+    return code_html(code, "Open") if live else f"<code>{esc(code)}</code>"
 
 
 def _hist_line(r: dict) -> str:
@@ -876,7 +876,7 @@ def _hist_line(r: dict) -> str:
     early = [l["early"]["min"] for l in legs if (l.get("early") or {}).get("min")]
     if early and r["status"] == "won":
         tag += f" · won early ({max(early)}')"
-    return (f"{({'replaced': '♻️'}).get(r['status']) or STATUS_ICON.get(r['status'], '⏳')} <b>{esc(tag)}</b> · {_code_cell(d.get('code'), r['status'] == 'pending')} · "
+    return (f"<b>{STATUS_LABEL.get(r['status'], r['status'].upper())}</b> · <b>{esc(tag)}</b> · {_code_cell(d.get('code'), r['status'] == 'pending')} · "
             f"<b>{d.get('total_odds') or 0:.2f}</b> · {won}/{len(legs)} legs won · <i>{esc(when)}</i>")
 
 
@@ -888,23 +888,23 @@ async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("The history store didn't answer just now. Try again shortly.")
         return
     if not rows:
-        await update.effective_message.reply_text("📚 No booked codes yet. Book one from /scan, /slip or the app.")
+        await update.effective_message.reply_text("No booked codes yet. Book one from /scan, /slip or the app.")
         return
     counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("won", "lost", "pending", "check")}
-    lines = [f"📚 <b>History</b> · last {len(rows)} codes", f"✅ {counts['won']} won · ❌ {counts['lost']} lost · "
-             f"⏳ {counts['pending']} running" + (f" · ❔ {counts['check']} to check" if counts["check"] else ""), RULE]
+    lines = [f"<b>History</b> · last {len(rows)} codes", f"{counts['won']} won · {counts['lost']} lost · "
+             f"{counts['pending']} running" + (f" · {counts['check']} to check" if counts["check"] else ""), RULE]
     lines += [_hist_line(r) for r in rows]
     live = next((r for r in rows if r["status"] == "pending"), None)
     if live:
-        lines += [RULE, record_text(live, "⏳ <b>Latest running slip</b>")]
+        lines += [RULE, record_text(live, "<b>Latest running slip</b>")]
     url = app_url()
     rows_kb = []
     pics = [r for r in rows if (r["data"].get("legs"))][:6]
     for i in range(0, len(pics), 3):
-        rows_kb.append([img_btn("h", r["id"], "🖼 " + (r["data"].get("code") or f"Day {r['data'].get('rollover_day') or ''}"))
+        rows_kb.append([img_btn("h", r["id"], "Image " + (r["data"].get("code") or f"day {r['data'].get('rollover_day') or ''}"))
                         for r in pics[i:i + 3]])
     if url:
-        rows_kb.append([Btn("📈 Open History in the app", web_app=WebAppInfo(url + "#history"))])
+        rows_kb.append([Btn("Open History in the app", web_app=WebAppInfo(url + "#history"))])
     kb = Kb(rows_kb) if rows_kb else None
     await update.effective_message.reply_text("\n".join(lines)[:4096], parse_mode=ParseMode.HTML, reply_markup=kb,
                                               disable_web_page_preview=True)
@@ -912,26 +912,24 @@ async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 def _ro_text(rec: dict | None) -> str:
     if not rec:
-        return ("🔁 <b>Rollover</b>\nNo plan running. Pick a daily target (2, 3, 4 or 5 odds) and 3–15 days, e.g.\n"
+        return ("<b>Rollover</b>\nNo plan running. Pick a daily target (2, 3, 4 or 5 odds) and 3–15 days, e.g.\n"
                 "<code>/rollover 2 7</code> or with a starting stake <code>/rollover 3 5 1000</code>.\n"
                 "Each morning (~09:00) I build that day's slip from top leagues only, stats-confirmed legs ≥80% est., "
                 "no under selections (add <code>unders</code> to allow them, e.g. <code>/rollover 3 7 unders</code>), "
                 "as close to the target as possible. A win moves the plan to the next day; a loss ends it. "
                 "If nothing qualifies, I'll say so and suggest skipping the day.\n<i>Estimates, not guarantees. 18+.</i>")
     d = rec["data"]
-    icon = {"active": "▶️", "completed": "🏆", "busted": "💔", "stopped": "⏹"}.get(rec["status"], "")
-    lines = [f"🔁 <b>Rollover</b> {icon} {esc(rec['status'])} · target <b>{d['target']:g}</b>/day · "
+    lines = [f"<b>Rollover</b> · {esc(rec['status']).upper()} · target <b>{d['target']:g}</b>/day · "
              f"day <b>{min(d['current_day'], d['days'])}/{d['days']}</b>"
              + (" · unders allowed" if d.get("allow_unders") else " · no unders")]
     if d.get("stake"):
         lines.append(f"Stake {d['stake']:,.0f} → now <b>{(d.get('value') or 0):,.0f}</b>")
     lines.append(RULE)
     for x in d.get("log", [])[-15:]:
-        st = {"no_slip": "⏸", "skipped": "⏭"}.get(x["status"], STATUS_ICON.get(x["status"], ""))
-        lines.append(f"{st} Day {x['day']} · {esc(x['date'])}" + (f" · {_code_cell(x['code'], x.get('status') == 'pending')}" if x.get("code") else "")
+        st = STATUS_LABEL.get(x["status"], str(x["status"]).upper())
+        lines.append(f"Day {x['day']} · <b>{st}</b> · {esc(x['date'])}" + (f" · {_code_cell(x['code'], x.get('status') == 'pending')}" if x.get("code") else "")
                      + (f" · {x['total_odds']:.2f}" if x.get("total_odds") else "")
                      + (f" · won early ({x['won_early']}')" if x.get("won_early") else "")
-                     + (" · replaced" if x["status"] == "replaced" else "")
                      + (f" · bankroll {x['bankroll']:,.0f}" if x.get("bankroll") else "")
                      + (f" · <i>{esc(x['note'][:90])}</i>" if x.get("note") and x["status"] in ("no_slip", "skipped") else ""))
     if not d.get("log"):
@@ -945,26 +943,26 @@ def _ro_kb(rec: dict | None) -> Kb:
         rows = [[Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (2, 3)],
                 [Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (4, 5)]]
         if rec:
-            rows.insert(0, [Btn("🎟 Tickets of this plan", callback_data=f"RO|tix|{rec['id']}")])
+            rows.insert(0, [Btn("Tickets of this plan", callback_data=f"RO|tix|{rec['id']}")])
         return Kb(rows)
-    rows = [[Btn("🎟 Tickets", callback_data=f"RO|tix|{rec['id']}"), Btn("⚡ Build today's slip now", callback_data="RO|now")]]
+    rows = [[Btn("Tickets", callback_data=f"RO|tix|{rec['id']}"), Btn("Build today's slip now", callback_data="RO|now")]]
     last = next((x for x in reversed(rec["data"].get("log") or []) if x.get("slip_id")), None)
     if last and last.get("status") == "pending":
-        rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{last['slip_id']}"),
-                     Btn("🔀 Different picks", callback_data=f"RF|{last['slip_id']}|x")])
+        rows.append([Btn("Refresh picks", callback_data=f"RF|{last['slip_id']}"),
+                     Btn("Different picks", callback_data=f"RF|{last['slip_id']}|x")])
     if last:
-        rows.append([img_btn("h", last["slip_id"], f"🖼 Day {last['day']} slip image")])
-    rows.append([Btn("⏭ Skip today", callback_data="RO|skip"), Btn("⏹ Stop plan", callback_data="RO|stop")])
+        rows.append([img_btn("h", last["slip_id"], f"Day {last['day']} slip image")])
+    rows.append([Btn("Skip today", callback_data="RO|skip"), Btn("Stop plan", callback_data="RO|stop")])
     return Kb(rows)
 
 
-TICKET_ICON = {**STATUS_ICON, "live": "🔴", "replaced": "♻️", "no_slip": "⏸", "skipped": "⏭"}
+TICKET_LABEL = STATUS_LABEL
 
 
 def _tickets_msgs(plan: dict, tickets: list[dict]) -> list[str]:
     """Day-by-day tickets of one rollover plan (Telegram HTML, split under the 4096 limit)."""
     d = plan["data"]
-    head = [f"🎟 <b>Rollover tickets</b> · {d['target']:g}× a day · {d['days']} days · {esc(plan['status'])}"]
+    head = [f"<b>Rollover tickets</b> · {d['target']:g}× a day · {d['days']} days · {esc(plan['status'])}"]
     if d.get("stake"):
         head.append(f"Bankroll {d['stake']:,.0f} → now <b>{(d.get('value') or 0):,.0f}</b>"
                     + ("" if plan["status"] != "busted" else " (plan busted: 0)"))
@@ -973,7 +971,7 @@ def _tickets_msgs(plan: dict, tickets: list[dict]) -> list[str]:
         parts.append("No tickets yet.")
     for t in tickets:
         st = t["status"]
-        ln = (f"{TICKET_ICON.get(st, '')} <b>Day {t['day']}</b> · {esc(t['date'])} · {esc(st.replace('_', ' '))}"
+        ln = (f"<b>Day {t['day']}</b> · {esc(t['date'])} · <b>{TICKET_LABEL.get(st, esc(st.replace('_', ' ')).upper())}</b>"
               + (f" · won early ({t['won_early']}')" if t.get("won_early") else "")
               + (f" · {_code_cell(t['code'], st in ('pending', 'live'))}" if t.get("code") else "")
               + (f" · <b>{(t.get('effective_odds') or t['total_odds'] or 0):.2f}</b>" if t.get("total_odds") else "")
@@ -986,8 +984,8 @@ def _tickets_msgs(plan: dict, tickets: list[dict]) -> list[str]:
             ln += (f"\n    Stake {t['stake']:,.0f} → {t['expected_return']:,.0f}"
                    + (f" · bankroll {t['bankroll']:,.0f}" if st in ("won", "lost", "void") else ""))
         for l in t.get("legs") or []:
-            ic = STATUS_ICON.get(l.get("status") or "pending", "⏳")
-            ln += (f"\n    {ic} {esc(l.get('home', ''))} v {esc(l.get('away', ''))} · {esc(l.get('pick', ''))} "
+            ic = STATUS_LABEL.get(l.get("status") or "pending", "RUNNING")
+            ln += (f"\n    {ic} · {esc(l.get('home', ''))} v {esc(l.get('away', ''))} · {esc(l.get('pick', ''))} "
                    f"@ {(l.get('odds') or 0):.2f}"
                    + (f" · {esc(l['score'])}" if l.get("score") else "")
                    + (f" · <i>{esc(l['note'][:40])}</i>" if l.get("note") and l.get("status") != "pending" else ""))
@@ -1018,17 +1016,17 @@ async def _send_tickets(msg, ctx, plan_id: str | None) -> None:
             rows = []
             cur = next((t for t in reversed(tickets) if t.get("can_refresh")), None)
             if cur:
-                rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{cur['slip_id']}"),
-                             Btn("🔀 Different picks", callback_data=f"RF|{cur['slip_id']}|x")])
+                rows.append([Btn("Refresh picks", callback_data=f"RF|{cur['slip_id']}"),
+                             Btn("Different picks", callback_data=f"RF|{cur['slip_id']}|x")])
             pics = [t for t in tickets if t.get("slip_id") and t.get("legs")][-6:]
             for j in range(0, len(pics), 3):
-                rows.append([img_btn("h", t["slip_id"], f"🖼 Day {t['day']}") for t in pics[j:j + 3]])
+                rows.append([img_btn("h", t["slip_id"], f"Image day {t['day']}") for t in pics[j:j + 3]])
             past = [r for r in await tr.rollovers(6) if r["id"] != plan["id"]][:3]
             for r in past:
-                rows.append([Btn(f"🎟 {r['data']['target']:g}× · {r['data']['days']} days · {r['status']} "
+                rows.append([Btn(f"{r['data']['target']:g}× · {r['data']['days']} days · {r['status']} "
                                  f"({(r.get('created_at') or '')[:10]})", callback_data=f"RO|tix|{r['id']}")])
             if url:
-                rows.append([Btn("📱 Open Rollover in the app", web_app=WebAppInfo(url + "#rollover"))])
+                rows.append([Btn("Open Rollover in the app", web_app=WebAppInfo(url + "#rollover"))])
             kb = Kb(rows) if rows else None
         await msg.reply_text(m, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
 
@@ -1038,11 +1036,11 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
     from tracker import day_markup
     tr = svc(ctx).tracker
     await q.answer("Refreshing picks… ~30–60 s")
-    note = await q.message.reply_text("🔄 Re-reading today's top-league prices for this rollover day… ~30–60 s")
+    note = await q.message.reply_text("Re-reading today's top-league prices for this rollover day… ~30–60 s")
     try:
         out = await tr.refresh_day(slip_id, exclude_prev=exclude_prev)
     except ValueError as exc:
-        await note.edit_text(f"⚠️ {esc(str(exc))}", parse_mode=ParseMode.HTML)
+        await note.edit_text(f"{esc(str(exc))}", parse_mode=ParseMode.HTML)
         return
     except Exception as exc:
         log.warning("rollover refresh failed: %s", exc, exc_info=True)
@@ -1051,8 +1049,8 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
     if out["status"] in ("none", "same"):
         kb = None
         if out["status"] == "same":
-            kb = Kb([[Btn("🔀 Different picks", callback_data=f"RF|{slip_id}|x")]])
-        await note.edit_text(("🔄 " if out["status"] == "same" else "⚠️ ") + esc(out["note"]), parse_mode=ParseMode.HTML,
+            kb = Kb([[Btn("Different picks", callback_data=f"RF|{slip_id}|x")]])
+        await note.edit_text(esc(out["note"]), parse_mode=ParseMode.HTML,
                              reply_markup=kb)
         return
     res = out["slip"]
@@ -1063,15 +1061,15 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
         _remember(ctx, note, {"section": "rollover_preview", "token": out["token"], "slip_id": slip_id,
                               "code": out.get("old_code"), "legs": res["legs"]})
         await note.edit_text(
-            f"🔄 <b>New picks for today</b> (preview)\nYour current slip is booked as <code>{esc(out['old_code'])}</code>. "
+            f"<b>New picks for today</b> (preview)\nYour current slip is booked as <code>{esc(out['old_code'])}</code>. "
             "Confirm to book a <b>new code</b>; the old one is marked <i>replaced</i> (not counted as a loss) and "
             f"stops being tracked.\n{RULE}\n{body}\n{tail}", parse_mode=ParseMode.HTML,
-            reply_markup=Kb([[Btn("✅ Confirm: book new code", callback_data=f"RC|{out['token']}")],
-                             [Btn("Keep current slip", callback_data="NOOP"), img_btn("p", out["token"], "🖼 Image")]]))
+            reply_markup=Kb([[Btn("Confirm: book new code", callback_data=f"RC|{out['token']}")],
+                             [Btn("Keep current slip", callback_data="NOOP"), img_btn("p", out["token"], "Slip image")]]))
         return
     rec = out["record"]
     _remember(ctx, note, {"section": "rollover_day", "slip_id": rec["id"], "legs": res["legs"]})
-    await note.edit_text(f"🔄 <b>Picks refreshed</b> · Rollover day {rec['data']['rollover_day']}\n"
+    await note.edit_text(f"<b>Picks refreshed</b> · Rollover day {rec['data']['rollover_day']}\n"
                          f"The previous slip is marked replaced.\n{RULE}\n{body}\n{tail}", parse_mode=ParseMode.HTML,
                          reply_markup=day_markup(rec["id"], bool(rec["data"].get("code")), rec["data"].get("code")))
 
@@ -1098,7 +1096,7 @@ async def _ro_refresh_confirm(q, ctx, token: str) -> None:
                                                    "est_prob": round(combined(legs), 4), "reached": True})
             out = await tr.refresh_confirm(tok)
     except (ValueError, BookingError) as exc:
-        await q.message.reply_text(f"⚠️ {esc(str(exc))}", parse_mode=ParseMode.HTML)
+        await q.message.reply_text(f"{esc(str(exc))}", parse_mode=ParseMode.HTML)
         return
     rec = out["record"]
     try:
@@ -1106,7 +1104,7 @@ async def _ro_refresh_confirm(q, ctx, token: str) -> None:
     except Exception:
         pass
     sent = await q.message.reply_text(
-        f"📒 <b>New code: <code>{esc(out['code'])}</code></b> · Rollover day {rec['data']['rollover_day']} · "
+        f"<b>New code: <code>{esc(out['code'])}</code></b> · Rollover day {rec['data']['rollover_day']} · "
         f"{len(rec['data']['legs'])} legs · total odds {rec['data']['total_odds']:.2f}\n"
         f"<code>{esc(out.get('old_code') or '')}</code> is marked replaced (not a loss). Tracking the new one.",
         parse_mode=ParseMode.HTML, reply_markup=day_markup(rec["id"], True, out["code"]))
@@ -1142,12 +1140,12 @@ async def rollover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _ro_start(msg, ctx, target: float, days: int, stake: float | None, allow_unders: bool = False) -> None:
     tr = svc(ctx).tracker
-    note = await msg.reply_text(f"🔁 Starting a {target:g}× · {days}-day rollover and scanning today's top-league "
+    note = await msg.reply_text(f"Starting a {target:g}× · {days}-day rollover and scanning today's top-league "
                                 "matches… ~30–60 s")
     try:
         rec, day = await tr.create_rollover(target, days, stake, allow_unders=allow_unders)
     except ValueError as exc:
-        await note.edit_text(f"⚠️ {esc(str(exc))}", parse_mode=ParseMode.HTML)
+        await note.edit_text(f"{esc(str(exc))}", parse_mode=ParseMode.HTML)
         return
     except Exception as exc:
         log.warning("rollover start failed: %s", exc, exc_info=True)
@@ -1162,10 +1160,10 @@ async def _ro_action(msg, ctx, act: str) -> None:
     tr = svc(ctx).tracker
     if act == "stop":
         rec = await tr.stop_rollover()
-        await msg.reply_text("⏹ Rollover stopped." if rec else "No rollover is running.")
+        await msg.reply_text("Rollover stopped." if rec else "No rollover is running.")
     elif act == "skip":
         rec = await tr.skip_day()
-        await msg.reply_text("⏭ Today skipped. Next slip tomorrow at ~09:00." if rec else "No rollover is running.")
+        await msg.reply_text("Today skipped. Next slip tomorrow at ~09:00." if rec else "No rollover is running.")
     elif act in ("won", "lost"):
         rec = await tr.mark_day(act)
         await msg.reply_text(_ro_text(rec) if rec else "Nothing to mark.", parse_mode=ParseMode.HTML)
@@ -1178,10 +1176,10 @@ async def _ro_action(msg, ctx, act: str) -> None:
                 x["date"] == tr._today() and x["status"] != "no_slip" for x in rec["data"]["log"]):
             await msg.reply_text("Today's slip was already built: see /rollover or /history.")
             return
-        note = await msg.reply_text("🔎 Building today's rollover slip… ~30–60 s")
+        note = await msg.reply_text("Building today's rollover slip… ~30–60 s")
         entry = await tr.generate_day(rec, force=True)
         if entry.get("status") == "waiting":
-            await note.edit_text("⏳ " + entry["note"])
+            await note.edit_text(entry["note"])
         else:
             await note.delete()
 
@@ -1270,7 +1268,7 @@ async def _send_slip_image(msg, ctx, spec: dict, reply_to: int | None = None) ->
         pass
     png, key = await imgs.render(spec)
     w, h = png_size(png)
-    kb = Kb([[Btn("📄 Full-size file (sharper)", callback_data=f"IMG|f|{key}")]]) if max(w, h) > TELEGRAM_PHOTO_MAX else None
+    kb = Kb([[Btn("Full-size file (sharper)", callback_data=f"IMG|f|{key}")]]) if max(w, h) > TELEGRAM_PHOTO_MAX else None
     await msg.chat.send_photo(photo=png, filename=imgs.filename(spec), caption=imgs.caption(spec), reply_markup=kb,
                               reply_to_message_id=reply_to, allow_sending_without_reply=True)
 
@@ -1285,7 +1283,7 @@ async def _slip_image_cb(q, ctx, parts: list[str]) -> None:
     if kind == "f":                       # full-size PNG as a file
         png = imgs.cached(key)
         if not png:
-            await q.answer("That image expired: tap 🖼 Slip image again.", show_alert=True)
+            await q.answer("That image expired: tap Slip image again.", show_alert=True)
             return
         await q.answer("Sending the file…")
         await q.message.chat.send_document(document=png, filename=f"FraPredict-slip-{key[:6]}.png",
@@ -1352,7 +1350,7 @@ async def _image_request(update: Update, ctx, text: str) -> bool:
         if rt is None and not re.search(r"\b(slip|ticket|code|betslip|booking)\b", text, re.I):
             return False                  # e.g. "make me an image of Messi": not a slip request
         await msg.reply_text("Which slip? Reply to one of my slip messages with \"send slip image\" (or tap its "
-                             "🖼 Slip image button), or send \"image of CODE\".")
+                             "Slip image button), or send \"image of CODE\".")
         return True
     try:
         await _send_slip_image(msg, ctx, spec, reply_to=(rt.message_id if rt is not None else msg.message_id))
@@ -1422,7 +1420,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _record(ctx, legs, code, "chat-scan", tier=sl.get("tier", "custom"), label=sl.get("label", ""),
                       total_odds=sl.get("total_odds"), est_prob=sl.get("est_prob"), target=sl.get("target"))
         await q.message.reply_text(
-            f"📒 <b>Booking code: <code>{esc(code)}</code></b>\n{len(sels)} legs · total odds "
+            f"<b>Booking code: <code>{esc(code)}</code></b>\n{len(sels)} legs · total odds "
             f"{entry['slip']['total_odds']:.2f} · est. hit chance {entry['slip']['est_prob']:.0%}\n"
             f"Saved to /history: I'll ping you when it lands.\n\n{RG_NOTE}",
             parse_mode=ParseMode.HTML, reply_markup=open_code_kb(s.bookmaker, code))
@@ -1448,7 +1446,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await q.message.reply_text(f"Couldn't create a booking code: {esc(str(exc))}", parse_mode=ParseMode.HTML)
             return
         d = rec["data"]
-        await q.message.reply_text(f"📒 <b>Booking code: <code>{esc(d['code'])}</code></b> · {len(d['legs'])} legs · "
+        await q.message.reply_text(f"<b>Booking code: <code>{esc(d['code'])}</code></b> · {len(d['legs'])} legs · "
                                    f"total odds {d['total_odds']:.2f}", parse_mode=ParseMode.HTML,
                                    reply_markup=open_code_kb(s.bookmaker, d["code"]))
     elif kind == "IMG":
@@ -1458,7 +1456,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     elif kind == "CLR":
         s.storage.slip_clear(uid)
         await q.answer("Slip cleared")
-        await q.edit_message_text("🗑 Slip cleared.")
+        await q.edit_message_text("Slip cleared.")
     else:
         await q.answer()
 
@@ -1481,7 +1479,7 @@ async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
         except Exception as exc:
             await q.message.reply_text(f"No AI take right now ({esc(str(exc)[:100])}).", parse_mode=ParseMode.HTML)
             return
-        tag = "🧠 <b>AI take</b>" if out["source"] == "ai" else "🧠 <b>Summary</b>"
+        tag = "<b>AI take</b>" if out["source"] == "ai" else "<b>Summary</b>"
         await q.message.reply_text(f"{tag} · {_az_src(res)}\n{esc(out['text'])}",
                                    parse_mode=ParseMode.HTML)
         return
@@ -1491,7 +1489,7 @@ async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
         return
     if kind == "AZR":            # step 1: show exactly what would be booked
         await q.answer()
-        lines = [f"♻️ <b>Improved slip</b> from {_az_src(res)}"]
+        lines = [f"<b>Improved slip</b> from {_az_src(res)}"]
         lines += [f"• {esc(c)}" for c in imp["changes"]]
         lines.append(RULE)
         for i, l in enumerate(imp["legs"], 1):
@@ -1500,7 +1498,7 @@ async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
         lines.append(f"Total odds <b>{imp['total_odds']:.2f}</b> · est. hit chance <b>{imp['chance']:.0%}</b>")
         lines.append("<i>Tap Confirm to create the new booking code. Estimates, not guarantees.</i>")
         await q.message.reply_text("\n".join(lines)[:4000], parse_mode=ParseMode.HTML,
-                                   reply_markup=Kb([[Btn("✅ Confirm rebook", callback_data=f"AZC|{aid}")]]))
+                                   reply_markup=Kb([[Btn("Confirm rebook", callback_data=f"AZC|{aid}")]]))
         return
     await q.answer("Booking…")      # AZC: explicit confirmation tap
     try:
@@ -1513,7 +1511,7 @@ async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
     except Exception:
         pass
     await q.message.reply_text(
-        f"📒 <b>New booking code: <code>{esc(out['code'])}</code></b>\n{out['legs']} legs · total odds "
+        f"<b>New booking code: <code>{esc(out['code'])}</code></b>\n{out['legs']} legs · total odds "
         f"{out['total_odds']:.2f} · est. hit chance {out['chance']:.0%}"
         + ("\nSaved to /history: I'll ping you when it lands." if out.get("history_id") else "")
         + f"\n\n{RG_NOTE}", parse_mode=ParseMode.HTML,

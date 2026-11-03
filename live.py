@@ -190,7 +190,7 @@ def feed_view(timeline: dict | None, details: dict | None) -> dict:
                 if pl:
                     item["player"] = pl
                 if t == "substitution":
-                    item["player"] = f"{((e.get('playerin') or {}).get('name') or '')} ↔ {((e.get('playerout') or {}).get('name') or '')}".strip(" ↔")
+                    item["player"] = " for ".join(n for n in (((e.get('playerin') or {}).get('name') or ''), ((e.get('playerout') or {}).get('name') or '')) if n)
                 if t == "injurytimeshown":
                     item["name"] = f"+{e.get('minutes') or e.get('injurytime', '')} min added"
                 out["events"].append(item)

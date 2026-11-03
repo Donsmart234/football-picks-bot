@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+from fmt import strip_emoji
 
 log = logging.getLogger(__name__)
 TZ = ZoneInfo(config.LOCAL_TZ)
@@ -212,14 +213,15 @@ def norm_leg(l: dict) -> dict:
         est = est / 100 if est is not None else None
     if l.get("rated") is False:
         est = None
+    home, away, match = strip_emoji(home), strip_emoji(away), strip_emoji(match)   # text only on the image
     return {
-        "pick": (l.get("pick") or l.get("label") or "").strip() or "Selection",
+        "pick": strip_emoji((l.get("pick") or l.get("label") or "").strip()) or "Selection",
         "odds": _f(l.get("odds")) or _f(l.get("booked_odds")),
         "home": home, "away": away, "match": match,
         "home_uid": str(l.get("home_uid") or _uid(l.get("home_id")) or ""),
         "away_uid": str(l.get("away_uid") or _uid(l.get("away_id")) or ""),
-        "market": (l.get("market") or "").strip(),
-        "league": _league(l),
+        "market": strip_emoji((l.get("market") or "").strip()),
+        "league": strip_emoji(_league(l)),
         "kickoff": _dt(l.get("kickoff") or l.get("start")),
         "est": est if est is not None and 0 < est <= 1 else None,
         "status": st if st in STATUS_STYLE else "pending",
@@ -264,9 +266,9 @@ def make_spec(legs, code: str = "", total_odds=None, est_prob=None, label: str =
     return {
         "code": code, "preview": (not code) if preview is None else bool(preview),
         "total_odds": round(tot, 2) if priced else None, "est_prob": chance,
-        "legs": nl, "more": extra, "label": (label or "").strip(),
+        "legs": nl, "more": extra, "label": strip_emoji((label or "").strip()),
         "when": _dt(when) or datetime.now(timezone.utc),
-        "status": status or slip_status(nl), "stake": stake, "note": note,
+        "status": status or slip_status(nl), "stake": stake, "note": strip_emoji(note or ""),
         "unrated": len([l for l in nl if l["est"] is None and l["status"] != "void"]),
     }
 
@@ -869,7 +871,7 @@ class SlipImages:
 
     @staticmethod
     def caption(spec: dict) -> str:
-        bits = [f"🖼 {spec['label']}" if spec.get("label") else "🖼 FraPredict slip"]
+        bits = [spec["label"] if spec.get("label") else "FraPredict slip"]
         if spec.get("code") and not spec.get("preview"):
             bits.append(f"code {spec['code']}")
         else:

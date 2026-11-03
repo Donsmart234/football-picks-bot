@@ -11,7 +11,7 @@ Legs we can't model (player props, specials, single-price markets, other sports,
 Slip: total odds, combined estimated hit chance (legs treated as independent), weakest legs, an overall grade A-F,
 and concrete suggestions (drop a leg / safer swap in the same match) with the improved combined chance. An
 improved slip can be re-booked, but only when the user explicitly taps the button. The analysis ends with a
-plain verdict: ✅ go / ⚠️ go only after a change / ❌ skip. Analyzed codes are not saved or tracked.
+plain verdict: go / go only after a change / skip. Analyzed codes are not saved or tracked.
 
 Everything here is an estimate, never a guarantee.
 """
@@ -29,7 +29,7 @@ import leagues
 from matchstate import clock_overrun, sb_state
 from constraints import Constraints, leg_tags, parse_text, verify
 from markets import FAMILIES, pretty_pick, spec_value
-from scanner import Leg, _rec, apply_stats, uid_of
+from scanner import CAUTION, Leg, _rec, apply_stats, uid_of
 
 log = logging.getLogger(__name__)
 
@@ -314,8 +314,8 @@ def reason_line(leg: Leg, form, news: dict | None) -> str:
         parts.append("market-only estimate (stats can't price this market)")
     elif leg.verdict == "odds only":
         parts.append("odds-only (no team stats in the feed)")
-    if "⚠" in (leg.why or ""):
-        parts.append("⚠ " + leg.why.split("⚠", 1)[1].strip())
+    if CAUTION in (leg.why or ""):
+        parts.append("Caution: " + leg.why.split(CAUTION, 1)[1].strip())
     if news:
         out = []
         for side, name in (("home", leg.home), ("away", leg.away)):
@@ -871,19 +871,19 @@ def _change_words(c: str) -> str:
 
 
 def recommendation(res: dict) -> dict:
-    """The analyzer's last line: ✅ go / ⚠️ go only after a change / ❌ skip, from the grade, the combined chance
+    """The analyzer's last line: go / go only after a change / skip, from the grade, the combined chance
     and whether the suggested fix turns it into an A/B slip. Settled slips just say how they ended."""
     s = res["summary"]
     legs = res["legs"]
     if s["status"] == "lost":
-        return {"kind": "settled", "icon": "❌", "text": "❌ Already lost: a leg has gone down, nothing left to decide."}
+        return {"kind": "settled", "icon": "LOST", "text": "Already lost: a leg has gone down, nothing left to decide."}
     if s["grade"] is None:
-        return {"kind": "settled", "icon": "✅" if s["status"] == "won" else "➖",
-                "text": "✅ Already landed." if s["status"] == "won" else "➖ Every leg is settled."}
+        return {"kind": "settled", "icon": "WON" if s["status"] == "won" else "SETTLED",
+                "text": "Already landed." if s["status"] == "won" else "Every leg is settled."}
     open_ = [l for l in legs if l["result"] is None and l["state"] != "unavailable"]
     bad = [l for l in open_ if l.get("rating") in ("Avoid", "Weak")]
     if s["grade"] in ("A", "B") and not bad:
-        return {"kind": "go", "icon": "✅", "text": f"✅ I'd go for this (grade {s['grade']}, est. {_p(s['chance'])} "
+        return {"kind": "go", "icon": "GO", "text": f"I'd go for this (grade {s['grade']}, est. {_p(s['chance'])} "
                                                      "to land; still an estimate, not a guarantee)."}
     fix_txt, fix_grade, fix_p = "", None, None
     imp = (res.get("suggestions") or {}).get("improved")
@@ -892,8 +892,8 @@ def recommendation(res: dict) -> dict:
         n_chg = sum(1 for c in imp["changes"] if not c.startswith(("drop unavailable", "drop unmatched")))
         if g in ("A", "B") and n_chg > max(1, len(open_) // 2):
             why = f"grade {s['grade']}, est. {_p(s['chance'])} to land"
-            return {"kind": "skip", "icon": "❌",
-                    "text": f"❌ I'd skip this as built ({why}). The improved slip changes {n_chg} of {len(open_)} "
+            return {"kind": "skip", "icon": "SKIP",
+                    "text": f"I'd skip this as built ({why}). The improved slip changes {n_chg} of {len(open_)} "
                             f"legs (grade {g}, est. {_p(imp['chance'])}): really a different slip."}
         if g in ("A", "B"):
             words = [_change_words(c) for c in imp["changes"]]
@@ -908,17 +908,17 @@ def recommendation(res: dict) -> dict:
                 fix_grade, fix_p = g, d["chance"]
                 break
     if fix_txt:
-        return {"kind": "fix", "icon": "⚠️", "text": f"⚠️ I'd go for this only after {fix_txt}: grade {fix_grade}, "
+        return {"kind": "fix", "icon": "FIX", "text": f"I'd go for this only after {fix_txt}: grade {fix_grade}, "
                                                       f"est. {_p(fix_p)} to land."}
     if s["grade"] == "B":
         w = bad[0] if bad else None
-        return {"kind": "fix", "icon": "⚠️",
-                "text": "⚠️ Borderline: I'd only go for this if you're happy carrying "
+        return {"kind": "fix", "icon": "FIX",
+                "text": "Borderline: I'd only go for this if you're happy carrying "
                         + (f"{w['match'].replace(' vs ', ' v ')} ({w['pick']}, {w['rating']})." if w else "the risk.")}
     why = f"grade {s['grade']}, est. {_p(s['chance'])} to land"
     if s["ratings"].get("Avoid"):
         why += f", {s['ratings']['Avoid']} leg(s) to avoid"
-    return {"kind": "skip", "icon": "❌", "text": f"❌ I'd skip this ({why}) and no simple fix makes it solid."}
+    return {"kind": "skip", "icon": "SKIP", "text": f"I'd skip this ({why}) and no simple fix makes it solid."}
 
 
 def _p(x: float) -> str:

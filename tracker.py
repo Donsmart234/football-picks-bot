@@ -3,8 +3,8 @@
 - Every booked code (chat /scan + Book, /book, AI build_booking_code, Mini App book, rollover days) is saved as a
   'slip' record in the durable history (history.py).
 - A background loop (every 5 min while anything is pending, 15 min otherwise) settles each started leg from the
-  Sportradar result feed (settle.py). One final Telegram message per slip: 💥 when the whole slip lands, a short ❌
-  when it loses (sent as soon as one leg loses), ❔ when the rest won but a market needs a manual look.
+  Sportradar result feed (settle.py). One final Telegram message per slip: "Entered" when the whole slip lands, a short "lost"
+  when it loses (sent as soon as one leg loses), "check" when the rest won but a market needs a manual look.
 - Rollover plans: day N of M at a fixed daily target; each morning (≥ 09:00 Africa/Lagos) the day's slip is built
   from allowlisted top leagues (stats-confirmed legs ≥80% est.), booked, saved and pushed to the owner. A win
   advances the plan (stake compounds), a loss busts it; no qualifying slip = the day is skipped, not forced.
@@ -85,7 +85,7 @@ class Tracker:
         if not self.bot or not self.owner():
             return False
         if test:
-            text = "🧪 <b>TEST</b> (tracker check, not a real result)\n" + text
+            text = "<b>TEST</b> (tracker check, not a real result)\n" + text
         try:
             msg = await self.bot.send_message(self.owner(), text[:4096], parse_mode=ParseMode.HTML,
                                               disable_web_page_preview=True, reply_markup=markup)
@@ -266,7 +266,7 @@ class Tracker:
         elif corrected and d.get("corrected") and not d.get("correction_sent"):
             d["correction_sent"] = True
             await self.history.save(rec)
-            await self.send(f"⚠️ <b>Correction</b> · {esc(d.get('label') or 'Slip')}"
+            await self.send(f"<b>Correction</b> · {esc(d.get('label') or 'Slip')}"
                             + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f": a leg called early changed at full time; the slip is now <b>{esc(rec['status'])}</b>.",
                             test=d.get("test"), markup=img_markup(rec["id"]))
@@ -281,12 +281,12 @@ class Tracker:
             early = [l for l in d["legs"] if l.get("early")]
             running = [l for l in early if not (l.get("early") or {}).get("verified")]
             if running:
-                title = (f"✅ <b>Entered!</b> 💥 Your {esc(name)} slip is in 🎉\n"
+                title = (f"<b>WON · Entered!</b> Your {esc(name)} slip is in.\n"
                          f"Every leg is already certain from the live score{'s' if len(running) > 1 else ''} "
                          f"({len(running)} match{'es' if len(running) > 1 else ''} still playing) · total odds "
                          f"<b>{d.get('effective_odds') or d['total_odds']:.2f}</b>.")
             else:
-                title = (f"✅ <b>Entered!</b> 💥💥 <b>BOOM! Your {esc(name)} slip landed!</b> 🎉\n"
+                title = (f"<b>WON · Entered!</b> <b>Your {esc(name)} slip landed!</b>\n"
                          f"Every leg came in at total odds <b>{d.get('effective_odds') or d['total_odds']:.2f}</b>.")
             return await self.send(record_text(rec, title) + f"\n{RULE}\n<i>Estimates, not guarantees — enjoy this one. 18+.</i>",
                                    test=d.get("test"), markup=img_markup(rec["id"]))
@@ -294,17 +294,17 @@ class Tracker:
             lost = [l for l in d["legs"] if l.get("status") == "lost"]
             l = lost[0] if lost else {}
             more = f" (+{len(lost) - 1} more)" if len(lost) > 1 else ""
-            return await self.send(f"❌ <b>{esc(name)} slip lost</b>"
+            return await self.send(f"<b>LOST · {esc(name)} slip lost</b>"
                             + (f" · <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f"\n{esc(l.get('home', ''))} v {esc(l.get('away', ''))} · {esc(l.get('pick', ''))} "
                             f"({esc(l.get('score', ''))}){more}", test=d.get("test"), markup=img_markup(rec["id"]))
         elif st == "check":
             n = sum(1 for l in d["legs"] if l.get("status") == "check")
-            return await self.send(f"❔ <b>{esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
+            return await self.send(f"<b>CHECK · {esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f": no leg lost, but {n} leg(s) use a market I can't settle automatically. "
                             "Check it on SportyBet.", test=d.get("test"))
         elif st == "void":
-            return await self.send(f"➖ {esc(name)} slip: every match was cancelled or voided.", test=d.get("test"))
+            return await self.send(f"<b>VOID</b> · {esc(name)} slip: every match was cancelled or voided.", test=d.get("test"))
         return False
 
     # ---- rollover ----------------------------------------------------------------
@@ -366,8 +366,8 @@ class Tracker:
             d["log"].append(entry)
             await self.history.save(rec)
             if push:
-                await self.send(f"🔁 <b>Rollover day {n}/{m}</b> · target {d['target']:g}\n{RULE}\n"
-                                f"⏸ {esc(res['note'])}\nI'll try again tomorrow morning. The plan stays on day {n}.",
+                await self.send(f"<b>Rollover day {n}/{m}</b> · target {d['target']:g}\n{RULE}\n"
+                                f"No slip today: {esc(res['note'])}\nI'll try again tomorrow morning. The plan stays on day {n}.",
                                 test=d.get("test"))
             return entry
         code = ""
@@ -387,7 +387,7 @@ class Tracker:
             stake = ""
             if d.get("value"):
                 stake = f"\nStake in play: <b>{d['value']:,.0f}</b> → <b>{d['value'] * res['total_odds']:,.0f}</b> if it lands"
-            lines = [f"🔁 <b>Rollover day {n}/{m}</b> · target {d['target']:g}" + ("" if not code else
+            lines = [f"<b>Rollover day {n}/{m}</b> · target {d['target']:g}" + ("" if not code else
                      f"\nCode <code>{esc(code)}</code>"), RULE]
             for i, l in enumerate(res["legs"], 1):
                 lines.append(leg_lines(l, i, why=True))
@@ -458,17 +458,17 @@ class Tracker:
             if n >= m:
                 rec["status"] = "completed"
                 d["ended"] = now_iso()
-                await self.send(f"🏆🎉 <b>ROLLOVER COMPLETE!</b> {m}/{m} days landed at {d['target']:g} odds a day."
+                await self.send(f"<b>ROLLOVER COMPLETE!</b> {m}/{m} days landed at {d['target']:g} odds a day."
                                 + (f"\nStake grew from <b>{d['stake']:,.0f}</b> to <b>{d['value']:,.0f}</b>." if d.get("stake") else ""),
                                 test=d.get("test"))
             else:
-                await self.send(f"🔁 Rollover: day {n}/{m} ✅ done. Day {n + 1} slip comes tomorrow morning"
+                await self.send(f"Rollover: day {n}/{m} WON, done. Day {n + 1} slip comes tomorrow morning"
                                 + (f" · stake now <b>{d['value']:,.0f}</b>" if d.get("value") else "") + ".",
                                 test=d.get("test"))
         elif slip["status"] == "lost":
             rec["status"] = "busted"
             d["ended"] = now_iso()
-            await self.send(f"💔 Rollover busted on day {n}/{m}. Start a fresh plan any time with /rollover.",
+            await self.send(f"<b>LOST</b> · Rollover busted on day {n}/{m}. Start a fresh plan any time with /rollover.",
                             test=d.get("test"))
         await self.history.save(rec)
 
@@ -591,7 +591,7 @@ class Tracker:
                                                + "). Your current slip stays."), "slip": res}
         if {sel_key(l) for l in res["legs"]} == prev:
             return {"status": "same", "note": ("Fresh prices give the same picks: they're still the strongest. "
-                                               "Tap 🔀 Different picks to leave them out."), "slip": res}
+                                               "Tap Different picks to leave them out."), "slip": res}
         if slip["data"].get("code"):
             token = new_id("rf")
             self._previews = {k: v for k, v in self._previews.items() if time.time() - v["ts"] < 900}
@@ -680,16 +680,16 @@ def day_markup(slip_id: str, booked: bool, code: str | None = None):
     from bookmakers import sportybet_share_url
     rows = []
     if code:
-        rows.append([Btn(f"📲 Open {code} in SportyBet", url=sportybet_share_url(code))])
+        rows.append([Btn(f"Open {code} in SportyBet", url=sportybet_share_url(code))])
     if not booked:
-        rows.append([Btn("📒 Book this day on SportyBet", callback_data=f"HB|{slip_id}")])
-    rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{slip_id}"),
-                 Btn("🔀 Different picks", callback_data=f"RF|{slip_id}|x")])
-    rows.append([Btn("🖼 Slip image", callback_data=f"IMG|h|{slip_id}"[:64])])
+        rows.append([Btn("Book this day on SportyBet", callback_data=f"HB|{slip_id}")])
+    rows.append([Btn("Refresh picks", callback_data=f"RF|{slip_id}"),
+                 Btn("Different picks", callback_data=f"RF|{slip_id}|x")])
+    rows.append([Btn("Slip image", callback_data=f"IMG|h|{slip_id}"[:64])])
     return Kb(rows)
 
 
 def img_markup(record_id: str):
-    """🖼 Slip image button under a result ping (won / lost / correction) for that history record."""
+    """Slip image button under a result ping (won / lost / correction) for that history record."""
     from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb
-    return Kb([[Btn("🖼 Slip image", callback_data=f"IMG|h|{record_id}"[:64])]])
+    return Kb([[Btn("Slip image", callback_data=f"IMG|h|{record_id}"[:64])]])

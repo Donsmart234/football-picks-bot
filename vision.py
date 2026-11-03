@@ -29,6 +29,7 @@ import time
 from datetime import datetime
 
 from analyzer import bare_code
+from fmt import strip_emoji
 from markets import FAMILIES, spec_value
 from matching import team_score
 
@@ -118,12 +119,12 @@ ONLY a JSON object, no prose, with these keys:
  "matches": [ {"home": "", "away": "", "kickoff": "", "league": "", "odds": ""} ],
  "header": "",                      // first line(s) of text of the slip / message as shown (for bot_slip)
  "summary": "",                     // one short sentence: what the image shows
- "answer": ""                       // for kind "other" only: a brief, honest answer to the user's caption (or a
+ "answer": ""                       // for kind "other" only: a brief, honest answer (plain text, no emoji) to the user's caption (or a
                                     // 1-2 sentence description when there is no caption), from what is visible
 }
 Kinds:
 - "bot_slip": a message from the bot "Fra Prediction" (or "FraPredictbot") showing a slip: headers like "New picks
-  for today", "Rollover day", "SAFE SLIP", "BET ANALYZER", "Edited slip", legs with "est 83% ✓", "Estimates, not
+  for today", "Rollover day", "SAFE SLIP", "BET ANALYZER", "Edited slip", legs with "est 83% · stats ok" (older ones: a check mark), "Estimates, not
   guarantees", buttons like "Confirm: book new code". Fill legs and header. Takes priority over "betslip".
 - "betslip": a bookmaker betslip / booking-code screen / bet history ticket (SportyBet, Bet9ja, 1xBet, ...). Fill
   booking_code (only if printed) and legs (one per selection).
@@ -504,7 +505,7 @@ async def handle_image(ai, chat_id: int, data: bytes, mime: str | None, caption:
     try:
         data, mime = prepare_image(data, mime)
     except ImageError as exc:
-        return {"kind": "error", "reply": f"⚠️ {exc}", "tools": []}
+        return {"kind": "error", "reply": str(exc), "tools": []}
     if not ai.enabled:
         code = bare_code(caption)
         msg = "I can't read images right now (the AI model isn't configured)."
@@ -520,6 +521,8 @@ async def handle_image(ai, chat_id: int, data: bytes, mime: str | None, caption:
     tools = ["read_image"]
     out = await _route(ai, chat_id, data, mime, caption, info, tools)
     out.setdefault("tools", tools)
+    if out.get("reply"):
+        out["reply"] = strip_emoji(out["reply"])      # model-written text: never show emoji
     out["read"] = {k: info.get(k) for k in ("kind", "readable", "bookmaker", "booking_code", "summary")}
     out["read"]["legs"] = len(info.get("legs") or [])
     out["read"]["matches"] = len(info.get("matches") or [])
@@ -564,7 +567,7 @@ async def _route(ai, chat_id, data, mime, caption, info, tools) -> dict:
             tools.extend(res.get("tools") or [])
             return {"kind": "edit", "reply": res["reply"], "edit": res.get("edit"), "context": ctx, "tools": tools}
         legs = ctx.get("legs") or []
-        lines = [f"📷 That's your **{label}** ({len(legs)} legs"
+        lines = [f"That's your **{label}** ({len(legs)} legs"
                  + (f", code `{ctx['code']}`" if ctx.get("code") else "") + "):"]
         lines += [f"{i}. {leg_name(l)} · {l.get('pick', '')} @{float(l.get('odds') or 0):.2f}"
                   for i, l in enumerate(legs[:12], 1)]
@@ -581,7 +584,7 @@ async def _route(ai, chat_id, data, mime, caption, info, tools) -> dict:
             res = await an.analyze(code, _rules_from(caption))
             if res.get("ok"):
                 return {"kind": "analysis", "analysis": res, "code_read": code,
-                        "reply": f"📷 Read booking code `{code}` from your screenshot.\n{res['recommendation']['text']}"}
+                        "reply": f"Read booking code `{code}` from your screenshot.\n{res['recommendation']['text']}"}
             if res.get("kind") == "invalid":
                 note = (f"The code I read ({code}) isn't valid on SportyBet (misread, expired or from another "
                         "bookmaker).")
@@ -607,7 +610,7 @@ async def _route(ai, chat_id, data, mime, caption, info, tools) -> dict:
             return {"kind": "error", "reply": "The analysis failed on my side (SportyBet or the stats feed didn't "
                                               "answer). Send it again in a minute."}
         head = (note + " " if note else "") + (
-            f"📷 Matched {len(mapped)} of {len(mapped) + len(unmatched)} legs from your screenshot to SportyBet"
+            f"Matched {len(mapped)} of {len(mapped) + len(unmatched)} legs from your screenshot to SportyBet"
             + (f"; {len(unmatched)} couldn't be matched." if unmatched else "."))
         return {"kind": "analysis", "analysis": res, "reply": head + "\n" + res["recommendation"]["text"]}
 

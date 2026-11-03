@@ -9,7 +9,7 @@ last, from its header text (rollover messages -> the plan's current day).
 
 SlipEditor.run(ctx, op) applies one slipedit op under the section's constraints and returns an outcome; nothing is
 booked or written to History here:
-  rollover -> an edited preview (tracker.edit_preview): booked + replaces the day only on "✅ Confirm: book new code"
+  rollover -> an edited preview (tracker.edit_preview): booked + replaces the day only on "Confirm: book new code"
   scan / ai -> a new in-memory scan slip (same scan_args, constraint_check re-run) with Book / Refresh buttons
   analysis / history -> a new in-memory custom slip with a Book button
 """
@@ -174,7 +174,7 @@ class SlipEditor:
     @staticmethod
     def from_text(text: str) -> dict | None:
         t = text or ""
-        if re.search(r"New picks for today|Rollover day \d|Picks refreshed|Edited rollover|Rollover tickets|🔁 Rollover", t):
+        if re.search(r"New picks for today|Rollover day \d|Picks refreshed|Edited rollover|Rollover tickets|Rollover", t):
             return {"section": "rollover_day", "slip_id": "", "from_text": True}
         return None
 

@@ -754,8 +754,8 @@ class MiniApp:
         elif sec == "analysis" and sc.get("aid"):
             app_ctx = {"kind": "analysis", "aid": sc["aid"], "label": f"Analyzed {sc.get('code') or 'slip'}"}
         reply = out.get("reply") or ""
-        if out.get("kind") == "edit" and out.get("edit") is not None and not reply.startswith(("✏️", "⚠️")):
-            reply = reply or ("✏️ " + (out["edit"].get("change") or ""))
+        if out.get("kind") == "edit" and out.get("edit") is not None and not reply:
+            reply = "Edited: " + (out["edit"].get("change") or "")
         if "estimate" not in reply.lower() and "guarantee" not in reply.lower() and out.get("kind") in ("analysis",
                                                                                                            "edit"):
             reply += "\n\n_Estimates, not guarantees. 18+._"
@@ -918,10 +918,10 @@ class MiniApp:
             w, h = png_size(png)
             if max(w, h) > TELEGRAM_PHOTO_MAX:
                 await bot.send_document(int(user["id"]), document=png, filename=name,
-                                        caption="🖼 FraPredict slip (full size). Estimates, not guarantees. 18+.")
+                                        caption="FraPredict slip (full size). Estimates, not guarantees. 18+.")
             else:
                 await bot.send_photo(int(user["id"]), photo=png, filename=name,
-                                     caption="🖼 FraPredict slip. Estimates, not guarantees. 18+.")
+                                     caption="FraPredict slip. Estimates, not guarantees. 18+.")
         except Exception as exc:
             log.warning("slip image send failed: %s", exc.__class__.__name__)
             return web.json_response({"error": "Telegram didn't take the image just now."}, status=502)

@@ -202,9 +202,9 @@ async def flow_early():
     assert r["data"]["legs"][0]["score"].startswith("3-0") and r["data"]["legs"][0]["note"] == "Won early (53')"
     await tr.tick()
     assert len(tr.bot.sent) == 1, tr.bot.sent
-    print("flow: live -> first look -> confirmed early win -> one '✅ Entered' ping -> verified at FT, no repeats OK")
+    print("flow: live -> first look -> confirmed early win -> one 'Entered' ping -> verified at FT, no repeats OK")
 
-    # lost early: Under 2.5 exceeded -> one ❌ ping straight away
+    # lost early: Under 2.5 exceeded -> one 'lost' ping straight away
     c = "sr:match:103"
     rec2 = await tr.record([L("18", "13", "total=2.5", "Under 2.5", "Over/Under", 1.5, c)], "TESTE2", "test", "test",
                            "Test", test=True)
@@ -214,7 +214,7 @@ async def flow_early():
     r2 = await tr.history.get(rec2["id"])
     assert r2["status"] == "lost" and r2["data"]["legs"][0]["note"] == "Lost early (70')", r2
     assert len(tr.bot.sent) == 2 and "lost" in tr.bot.sent[1][1]
-    print("flow: Under exceeded -> lost early, one ❌ ping OK")
+    print("flow: Under exceeded -> lost early, one 'lost' ping OK")
 
     # VAR-style correction: locked Over 2.5 at 3 goals, final shows 2 -> one correction ping
     e = "sr:match:104"
