@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import abc
+import re
 import asyncio
 import logging
 import math
@@ -85,11 +86,42 @@ class BookingError(RuntimeError):
     pass
 
 
+# SportyBet's own share link for a booking code (the format SportyBet posts itself). www.sportybet.com is an
+# app-claimed domain: its apple-app-site-association lists "/" + ?shareCode=*&c=xx as "Open share code" for the iOS
+# app (7423W9V4WF.com.sportybet.SportyBet) and its assetlinks.json verifies com.sportybet.android(.gp) on Android, so
+# the link opens the installed app straight on the code and falls back to the website (which loads the code) otherwise.
+SPORTYBET_SHARE = "https://www.sportybet.com/?shareCode={code}&c={country}"
+
+
+def sportybet_share_url(code: str, country: str = "ng") -> str:
+    c = re.sub(r"[^A-Za-z0-9]", "", str(code or ""))[:16]
+    if not c:
+        return "https://www.sportybet.com/ng/m/code-hub/load-code"
+    return SPORTYBET_SHARE.format(code=c.upper(), country=country)
+
+
+def code_link(bookmaker, code: str | None) -> str:
+    """Best link for `code` on `bookmaker` (works with any adapter-like object); load-code page without a code."""
+    if bookmaker is None:
+        return sportybet_share_url(code or "")
+    fn = getattr(bookmaker, "code_url", None)
+    if code and callable(fn):
+        try:
+            return fn(code) or getattr(bookmaker, "load_code_url", "")
+        except Exception:
+            pass
+    return getattr(bookmaker, "load_code_url", "") or "https://www.sportybet.com/ng/m/code-hub/load-code"
+
+
 class BookmakerAdapter(abc.ABC):
     """Interface every bookmaker integration implements."""
 
     name: str = "bookmaker"
     load_code_url: str = ""
+
+    def code_url(self, code: str) -> str:
+        """Link that opens this booking code (default: the generic load-code page)."""
+        return self.load_code_url
 
     @abc.abstractmethod
     async def list_events(self, hours: int = 24) -> list[Event]:
@@ -114,6 +146,9 @@ class SportyBetNG(BookmakerAdapter):
     name = "SportyBet NG"
     load_code_url = "https://www.sportybet.com/ng/m/code-hub/load-code"
     BASE = "https://www.sportybet.com/api/ng"
+
+    def code_url(self, code: str) -> str:
+        return sportybet_share_url(code)
     HEADERS = {
         # A plain/library User-Agent gets a CloudFront 403; a browser UA is required.
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

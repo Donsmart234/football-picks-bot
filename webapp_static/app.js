@@ -22,6 +22,9 @@
     try { ["viewportChanged", "safeAreaChanged", "contentSafeAreaChanged", "fullscreenChanged"].forEach((ev) => tg.onEvent(ev, syncVp)); } catch (e) {}
   }
   const LOAD_URL = "https://www.sportybet.com/ng/m/code-hub/load-code";
+  // SportyBet's own share link: www.sportybet.com is app-claimed (iOS universal link "Open share code", Android
+  // verified App Link), so it opens the installed app on the code and the website (which loads it) otherwise.
+  const codeUrl = (c) => { const k = String(c || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 16); return k ? `https://www.sportybet.com/?shareCode=${encodeURIComponent(k)}&c=ng` : LOAD_URL; };
   const SLIP_KEY = "fra_slip_v2";
   const TIERS = {
     safe: { label: "Safe", target: 5, quick: [2, 3, 5, 8, 10], rule: "Every leg est. ≥80% after the stats check · odds 1.05–1.35 · estimates, not guarantees" },
@@ -96,7 +99,8 @@
     try { await navigator.clipboard.writeText(text); return true; } catch (e) {}
     try { const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta); ta.select(); const ok = document.execCommand("copy"); ta.remove(); return ok; } catch (e) { return false; }
   }
-  const openLink = (u) => (tg && tg.openLink ? tg.openLink(u) : window.open(u, "_blank"));
+  // tg.openLink leaves the Mini App webview (no Instant View) so the OS can route an app-claimed link to the app.
+  const openLink = (u) => (tg && tg.openLink ? tg.openLink(u, { try_instant_view: false }) : window.open(u, "_blank"));
   // ---------------------------------------------------------------- crests & flags
   const CREST = (uid, big) => (uid && /^\d{1,9}$/.test(String(uid)) ? `https://img.sportradar.com/ls/crest/${big ? "medium" : "small"}/${uid}.png` : "");
   function initials(n) {
@@ -323,9 +327,9 @@
       openSheet(`<div class="label" style="text-align:center">SportyBet booking code</div>
         <div class="code" id="codeText">${esc(r.code)}</div>
         <div class="sub" style="text-align:center">${legs.length} legs · total odds ${f2(total)}${prob != null ? ` · est. hit ${pct(prob, 1)}` : ""}${r.loaded != null && r.loaded !== legs.length ? ` · ⚠ ${r.loaded}/${legs.length} loaded` : ""}</div>
-        <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="openhub">Open SportyBet</button></div>
+        <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="opencode" data-c="${esc(r.code)}">📲 Open in SportyBet</button></div>
         <div class="sub" style="text-align:center;margin-top:8px">${r.history_id ? "Saved to History · you'll get a Telegram ping when it lands" : ""}</div>
-        <div class="disc">Load it under Load Code on SportyBet and check every selection before staking. Estimates, not guarantees. 18+.</div>`);
+        <div class="disc">Opens in the SportyBet app if installed (website otherwise), or paste the code under Load Code. Check every selection before staking. Estimates, not guarantees. 18+.</div>`);
     } catch (e) {
       hapN("error");
       openSheet(`<div class="label" style="text-align:center">Booking failed</div><div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="closesheet">Close</button>`);
@@ -623,7 +627,7 @@
         if (m.analysis && m.analysis.summary) { const a = m.analysis, s2 = a.summary;
           h += `<div class="card" style="max-width:88%;margin:4px 0 8px"><div class="sub">${a.code ? "Code " + esc(a.code) : "📷 From your screenshot"} · ${s2.legs} legs${s2.unmatched ? " · " + s2.unmatched + " couldn't match" : ""}</div><div style="margin:4px 0"><b>Grade ${esc(s2.grade || "–")}</b> · ${esc(a.verdict || "")}</div><div class="sub">Total odds ${s2.odds_known === false ? "n/a" : f2(s2.total_odds)} · est. hit chance ${pc(s2.chance)}</div></div><div class="btnrow" style="max-width:88%"><button class="btn small" data-act="aiaz" data-k="${i}">Open full analysis</button></div>`; }
         if (m.slip && m.slip.legs && m.slip.legs.length && !m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="bookslip" data-k="chat:${i}">Book this slip</button><button class="btn small secondary" data-act="slipall" data-k="chat:${i}">Add to slip</button></div>`;
-        if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="openhub">Open SportyBet</button></div>`;
+        if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="opencode" data-c="${esc(m.code)}">📲 Open in SportyBet</button></div>`;
       }
     });
     if (state.aiBusy) h += `<div class="msg bot"><span class="typing"><i></i><i></i><i></i></span> <span class="sub">analysing… scans take ~30 s</span></div>`;
@@ -715,7 +719,7 @@
       ${counts ? `<div class="rchips">${counts}${s.outside_top ? `<span class="rchip r-top">${s.outside_top} outside top leagues</span>` : ""}</div>` : ""}
       ${s.approx_legs ? `<div class="note">${s.approx_legs} leg(s) can't be rated (props, specials, in play): the combined chance counts them at the bookmaker's de-margined price.</div>` : ""}
       ${s.started ? `<div class="sub" style="margin-top:8px">${s.started} leg(s) started or finished; the rest can still change.</div>` : ""}
-      <div class="btnrow"><button class="btn small secondary" data-act="aztake" ${state.azTakeBusy ? "disabled" : ""}>${state.azTakeBusy ? "Thinking…" : "🧠 AI take"}</button><button class="btn small secondary" data-act="openhub">Open SportyBet</button></div>
+      <div class="btnrow"><button class="btn small secondary" data-act="aztake" ${state.azTakeBusy ? "disabled" : ""}>${state.azTakeBusy ? "Thinking…" : "🧠 AI take"}</button><button class="btn small secondary" data-act="opencode" data-c="${esc(r.code || "")}">${r.code ? "📲 Open in SportyBet" : "Open SportyBet"}</button></div>
       ${state.azTake ? `<div class="note ai-take" style="background:var(--bg2);border-color:var(--line);color:var(--text)">${esc(state.azTake)}</div>` : ""}</div>`;
     h += `<div class="section"><span class="label">Legs</span><span class="sub">est. · fair odds · value</span></div><div class="card flush">${r.legs.map(azLeg).join("")}</div>`;
     const rows = [];
@@ -775,7 +779,7 @@
       state.hist = null; store.set("hist", null); hapN("success");
       openSheet(`<div class="label" style="text-align:center">Improved slip booked</div><div class="code" id="codeText">${esc(r.code)}</div>
         <div class="sub" style="text-align:center">${r.legs} legs · total odds ${f2(r.total_odds)} · est. hit ${pc(r.chance)}${r.loaded != null && r.loaded !== r.legs ? ` · ⚠ ${r.loaded}/${r.legs} loaded` : ""}</div>
-        <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="openhub">Open SportyBet</button></div>
+        <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="opencode" data-c="${esc(r.code)}">📲 Open in SportyBet</button></div>
         <div class="sub" style="text-align:center;margin-top:8px">${r.history_id ? "Saved to History · you'll get a Telegram ping when it lands" : ""}</div>`);
     } catch (e) { hapN("error"); openSheet(`<div class="label" style="text-align:center">Rebook failed</div><div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="closesheet">Close</button>`); }
   }
@@ -798,6 +802,7 @@
         ${l.score || l.note ? `<div class="score">${esc(l.score)}${l.note ? ` <span class="sub">${esc(l.note)}</span>` : ""}</div>` : ""}</div>
       <div class="hodds num">${f2(l.odds)}${l.est != null ? `<small>${pct(l.est)}</small>` : ""}</div></div>`;
   }
+  function openChip(c) { return ` <button class="codechip open" data-act="opencode" data-c="${esc(c)}" aria-label="Open ${esc(c)} in the SportyBet app">📲 Open</button>`; }
   function histCard(r) {
     const d = r.data, legs = d.legs || [];
     const won = legs.filter((l) => l.status === "won").length, lost = legs.filter((l) => l.status === "lost").length, live = legs.filter((l) => l.status === "live").length;
@@ -806,7 +811,7 @@
     const tag = (d.rollover_id ? `Rollover · day ${d.rollover_day}` : (d.label || d.tier || "Slip")) + (early.length && r.status === "won" ? ` · won early (${Math.max(...early)}')` : "");
     const seg = legs.map((l) => `<i class="${(STATUS[l.status] || STATUS.pending)[2]}"></i>`).join("");
     return `<div class="card hcard s-${r.status}">
-      <div class="hhead"><div class="grow"><div class="label">${esc(tag)}${d.test ? " · test" : ""}</div><div class="hcode">${d.code ? `<button class="codechip" data-act="copytext" data-t="${esc(d.code)}">${esc(d.code)}</button>` : `<span class="sub">no code</span>`}<span class="sub">${esc(fmtWhen(r.created_at))}</span></div></div>
+      <div class="hhead"><div class="grow"><div class="label">${esc(tag)}${d.test ? " · test" : ""}</div><div class="hcode">${d.code ? `<button class="codechip" data-act="copytext" data-t="${esc(d.code)}">${esc(d.code)}</button>${r.status === "pending" ? openChip(d.code) : ""}` : `<span class="sub">no code</span>`}<span class="sub">${esc(fmtWhen(r.created_at))}</span></div></div>
         <div class="hright"><div class="num hbig">${f2(d.effective_odds || d.total_odds)}</div>${statusPill(r.status)}</div></div>
       <div class="segbar">${seg}</div>
       <div class="hstats"><span>${won}/${legs.length} won</span>${lost ? `<span class="c-red">${lost} lost</span>` : ""}${live ? `<span class="c-live">${live} live</span>` : ""}${d.est_prob != null ? `<span>est ${pct(d.est_prob, 1)}</span>` : ""}
@@ -862,7 +867,7 @@
       const odds = t.effective_odds || t.total_odds;
       h += `<div class="card hcard tix s-${t.status}${t.status === "replaced" ? " dim" : ""}">
         <div class="hhead"><div class="grow"><div class="label">Day ${t.day} · ${esc(t.date || "")}${t.refreshed ? " · refreshed" : ""}${t.won_early ? ` · won early (${t.won_early}')` : ""}</div>
-          <div class="hcode">${t.code ? `<button class="codechip" data-act="copytext" data-t="${esc(t.code)}">${esc(t.code)}</button>` : `<span class="sub">${t.status === "no_slip" || t.status === "skipped" ? esc((t.note || "").slice(0, 70)) : "no code"}</span>`}</div></div>
+          <div class="hcode">${t.code ? `<button class="codechip" data-act="copytext" data-t="${esc(t.code)}">${esc(t.code)}</button>${t.status === "pending" || t.status === "live" ? openChip(t.code) : ""}` : `<span class="sub">${t.status === "no_slip" || t.status === "skipped" ? esc((t.note || "").slice(0, 70)) : "no code"}</span>`}</div></div>
           <div class="hright">${odds ? `<div class="num hbig">${f2(odds)}</div>` : ""}${statusPill(t.status)}</div></div>
         ${legs.length ? `<div class="segbar">${seg}</div>` : ""}
         <div class="hstats">${t.stake != null && t.status !== "replaced" ? `<span>Stake ${Math.round(t.stake).toLocaleString("en-GB")} → ${Math.round(t.expected_return).toLocaleString("en-GB")}</span>` : ""}${t.bankroll != null && ["won", "lost", "void"].includes(t.status) ? `<span>Bankroll ${Math.round(t.bankroll).toLocaleString("en-GB")}</span>` : ""}${t.status === "replaced" ? `<span>Replaced by a refresh · not a loss</span>` : ""}
@@ -924,7 +929,7 @@
       if (ds) {
         const dd = ds.data;
         h += `<div class="section"><span class="label">Day ${dd.rollover_day} slip</span>${statusPill(ds.status)}</div>
-          <div class="card"><div class="hhead"><div class="grow">${dd.code ? `<button class="codechip" data-act="copytext" data-t="${esc(dd.code)}">${esc(dd.code)}</button>` : `<button class="btn small" style="margin:0;width:auto;padding:0 14px" data-act="robook" data-id="${esc(ds.id)}">Book code</button>`}</div><div class="hright"><div class="num hbig">${f2(dd.total_odds)}</div><span class="sub">est ${pct(dd.est_prob, 1)}</span></div></div>
+          <div class="card"><div class="hhead"><div class="grow">${dd.code ? `<button class="codechip" data-act="copytext" data-t="${esc(dd.code)}">${esc(dd.code)}</button>${ds.status === "pending" ? openChip(dd.code) : ""}` : `<button class="btn small" style="margin:0;width:auto;padding:0 14px" data-act="robook" data-id="${esc(ds.id)}">Book code</button>`}</div><div class="hright"><div class="num hbig">${f2(dd.total_odds)}</div><span class="sub">est ${pct(dd.est_prob, 1)}</span></div></div>
           <div class="hlegs">${(dd.legs || []).map(histLeg).join("")}</div>
           ${ds.can_refresh ? `<div class="btnrow"><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="0" ${state.roPicking ? "disabled" : ""}>${state.roPicking ? "Refreshing…" : "🔄 Refresh picks"}</button><button class="btn small secondary" data-act="ropicks" data-id="${esc(ds.id)}" data-x="1" ${state.roPicking ? "disabled" : ""}>🔀 Different picks</button></div><button class="btn ghost" data-act="aiedit" data-kind="rollover" data-id="${esc(ds.id)}" data-day="${esc(dd.rollover_day)}">✏️ Edit with AI</button><div class="sub" style="text-align:center;margin-top:6px">Same rules · only before the first kick-off${dd.code ? " · a new code only after you confirm" : ""}</div>` : ""}</div>`;
       }
@@ -1017,6 +1022,7 @@
     else if (a === "copycode") { const c = document.getElementById("codeText").textContent; toast((await copy(c)) ? "Code copied" : "Press and hold the code to copy"); hap("light"); }
     else if (a === "copytext" || a === "copyinline") { const c = t.dataset.t || t.textContent; toast((await copy(c)) ? `Copied ${c}` : "Couldn't copy"); hap("light"); }
     else if (a === "openhub") openLink(LOAD_URL);
+    else if (a === "opencode") { hap("light"); openLink(codeUrl(t.dataset.c)); }
     else if (a === "mrange") { saveScroll(); stopLive(); state.mRange = t.dataset.r; renderLeagues(); restoreScroll(); }
     else if (a === "livematch") { saveScroll(); state.lm = null; state.mStack.push({ name: "live", arg: t.dataset.id }); render(); window.scrollTo(0, 0); }
     else if (a === "openurl") openLink(t.dataset.u);
@@ -1047,7 +1053,7 @@
     else if (a === "roconfirm") {
       t.disabled = true; t.textContent = "Booking…";
       try { const r = await api("/api/rollover", { action: "refresh_confirm", token: t.dataset.t }); hapN("success"); state.hist = null; store.set("hist", null);
-        openSheet(`<div class="label" style="text-align:center">New booking code</div><div class="code" id="codeText">${esc(r.code)}</div><div class="sub" style="text-align:center">${esc(r.old_code || "")} is marked replaced · not a loss</div><div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="openhub">Open SportyBet</button></div>`); }
+        openSheet(`<div class="label" style="text-align:center">New booking code</div><div class="code" id="codeText">${esc(r.code)}</div><div class="sub" style="text-align:center">${esc(r.old_code || "")} is marked replaced · not a loss</div><div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="opencode" data-c="${esc(r.code)}">📲 Open in SportyBet</button></div>`); }
       catch (e) { hapN("error"); openSheet(`<div class="label" style="text-align:center">Refresh failed</div><div class="error">${esc(e.message)}</div><button class="btn secondary" data-act="closesheet">Close</button>`); }
       state.ro = null; store.set("ro", null); if (state.tab === "rollover") renderRollover();
     }

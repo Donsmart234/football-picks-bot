@@ -13,10 +13,10 @@ from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHand
                           ContextTypes, MessageHandler, TypeHandler, filters)
 
 import config
-from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
+from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection, code_link
 from ai import md_to_html
 from analyzer import bare_code, extract_code
-from fmt import RULE, STATUS_ICON, analysis_messages, record_text, slip_text
+from fmt import RULE, STATUS_ICON, analysis_messages, code_html, record_text, slip_text
 from predictor import Prediction
 from constraints import parse_text
 from scanner import TIER_ALIASES
@@ -197,6 +197,14 @@ async def analyze_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await _run_analysis(update, ctx, code, " ".join(args.split()[1:]))
 
 
+def open_code_kb(bookmaker, code: str | None) -> Kb:
+    """One url button that opens the booking code in the SportyBet app when installed (website otherwise).
+    A url button (not a web_app one) so Telegram hands the link to the OS, which routes the app-claimed link."""
+    if not code:
+        return Kb([[Btn("Open SportyBet code hub", url=code_link(bookmaker, None))]])
+    return Kb([[Btn(f"📲 Open {code} in SportyBet", url=code_link(bookmaker, code))]])
+
+
 def _analysis_kb(res: dict) -> Kb | None:
     rows = []
     imp = (res.get("suggestions") or {}).get("improved")
@@ -204,7 +212,8 @@ def _analysis_kb(res: dict) -> Kb | None:
         rows.append([Btn(f"♻️ Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
                          callback_data=f"AZR|{res['id']}")])
     rows.append([Btn("🧠 AI take", callback_data=f"AZN|{res['id']}"),
-                 Btn("Open SportyBet", url=res.get("load_url") or "https://www.sportybet.com/ng/m/code-hub/load-code")])
+                 Btn("📲 Open in SportyBet" if res.get("code") else "Open SportyBet",
+                     url=res.get("load_url") or code_link(None, res.get("code")))])
     return Kb(rows)
 
 
@@ -303,7 +312,7 @@ async def _deliver_ai(update: Update, ctx, res: dict, note=None) -> None:
             rows.append([Btn(f"♻️ Rebook improved slip ({imp['total_odds']:.2f} · {imp['chance']:.0%})",
                              callback_data=f"AZR|{an_res['id']}")])
     if res.get("code"):
-        rows.append([Btn("Open SportyBet code hub", url=s.bookmaker.load_code_url)])
+        rows.append([Btn(f"📲 Open {res['code']} in SportyBet", url=code_link(s.bookmaker, res["code"]))])
     elif res.get("slip") and res["slip"].get("slip_id") and res["slip"].get("legs"):
         rows.append([Btn("📒 Book this slip on SportyBet", callback_data=f"SB|{res['slip']['slip_id']}")])
     if rows:
@@ -801,16 +810,16 @@ async def _book(user_id: int, ctx) -> dict:
     except BookingError as exc:
         return {"text": f"Couldn't create a booking code: {esc(str(exc))}\nA match may have started or "
                         "a market closed: check /slip and remove it.", "parse_mode": ParseMode.HTML}
-    url = s.bookmaker.load_code_url
     total = 1.0
     for p in picks:
         total *= p["odds"] or 1.0
     await _record(ctx, [{**p, "pick": p["label"], "market": _mkt_name(p["market_id"]),
                          "match": p["match_name"]} for p in picks], code, "chat-slip", total_odds=total)
     return {"text": (f"📒 <b>Booking code: <code>{esc(code)}</code></b>\n{len(picks)} selection(s), "
-                     f"approx. total odds {total:.2f}.\nLoad it on {esc(s.bookmaker.name)}: {url}\n\n{RG_NOTE}"),
+                     f"approx. total odds {total:.2f}.\nTap below to open it in the {esc(s.bookmaker.name)} app (or the website if "
+                     f"the app isn't installed), or copy the code into Load Code.\n\n{RG_NOTE}"),
             "parse_mode": ParseMode.HTML, "disable_web_page_preview": True,
-            "reply_markup": Kb([[Btn("Open SportyBet code hub", url=url)]])}
+            "reply_markup": open_code_kb(s.bookmaker, code)}
 
 
 def _mkt_name(mid: str) -> str:
@@ -818,6 +827,13 @@ def _mkt_name(mid: str) -> str:
 
 
 # ---------------------------------------------------------------- history / rollover
+def _code_cell(code: str | None, live: bool) -> str:
+    """A code in a list: monospace (tap to copy); running slips also get the open-in-SportyBet-app link."""
+    if not code:
+        return "<code>—</code>"
+    return code_html(code, "📲 open") if live else f"<code>{esc(code)}</code>"
+
+
 def _hist_line(r: dict) -> str:
     d = r["data"]
     legs = d.get("legs") or []
@@ -832,7 +848,7 @@ def _hist_line(r: dict) -> str:
     early = [l["early"]["min"] for l in legs if (l.get("early") or {}).get("min")]
     if early and r["status"] == "won":
         tag += f" · won early ({max(early)}')"
-    return (f"{({'replaced': '♻️'}).get(r['status']) or STATUS_ICON.get(r['status'], '⏳')} <b>{esc(tag)}</b> · <code>{esc(d.get('code') or '—')}</code> · "
+    return (f"{({'replaced': '♻️'}).get(r['status']) or STATUS_ICON.get(r['status'], '⏳')} <b>{esc(tag)}</b> · {_code_cell(d.get('code'), r['status'] == 'pending')} · "
             f"<b>{d.get('total_odds') or 0:.2f}</b> · {won}/{len(legs)} legs won · <i>{esc(when)}</i>")
 
 
@@ -877,7 +893,7 @@ def _ro_text(rec: dict | None) -> str:
     lines.append(RULE)
     for x in d.get("log", [])[-15:]:
         st = {"no_slip": "⏸", "skipped": "⏭"}.get(x["status"], STATUS_ICON.get(x["status"], ""))
-        lines.append(f"{st} Day {x['day']} · {esc(x['date'])}" + (f" · <code>{esc(x['code'])}</code>" if x.get("code") else "")
+        lines.append(f"{st} Day {x['day']} · {esc(x['date'])}" + (f" · {_code_cell(x['code'], x.get('status') == 'pending')}" if x.get("code") else "")
                      + (f" · {x['total_odds']:.2f}" if x.get("total_odds") else "")
                      + (f" · won early ({x['won_early']}')" if x.get("won_early") else "")
                      + (" · replaced" if x["status"] == "replaced" else "")
@@ -922,7 +938,7 @@ def _tickets_msgs(plan: dict, tickets: list[dict]) -> list[str]:
         st = t["status"]
         ln = (f"{TICKET_ICON.get(st, '')} <b>Day {t['day']}</b> · {esc(t['date'])} · {esc(st.replace('_', ' '))}"
               + (f" · won early ({t['won_early']}')" if t.get("won_early") else "")
-              + (f" · <code>{esc(t['code'])}</code>" if t.get("code") else "")
+              + (f" · {_code_cell(t['code'], st in ('pending', 'live'))}" if t.get("code") else "")
               + (f" · <b>{(t.get('effective_odds') or t['total_odds'] or 0):.2f}</b>" if t.get("total_odds") else "")
               + (f" · {t['n_legs']} legs" if t.get("n_legs") else ""))
         if st == "replaced":
@@ -1017,7 +1033,7 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
     _remember(ctx, note, {"section": "rollover_day", "slip_id": rec["id"], "legs": res["legs"]})
     await note.edit_text(f"🔄 <b>Picks refreshed</b> · Rollover day {rec['data']['rollover_day']}\n"
                          f"The previous slip is marked replaced.\n{RULE}\n{body}\n{tail}", parse_mode=ParseMode.HTML,
-                         reply_markup=day_markup(rec["id"], bool(rec["data"].get("code"))))
+                         reply_markup=day_markup(rec["id"], bool(rec["data"].get("code")), rec["data"].get("code")))
 
 
 async def _ro_refresh_confirm(q, ctx, token: str) -> None:
@@ -1053,7 +1069,7 @@ async def _ro_refresh_confirm(q, ctx, token: str) -> None:
         f"📒 <b>New code: <code>{esc(out['code'])}</code></b> · Rollover day {rec['data']['rollover_day']} · "
         f"{len(rec['data']['legs'])} legs · total odds {rec['data']['total_odds']:.2f}\n"
         f"<code>{esc(out.get('old_code') or '')}</code> is marked replaced (not a loss). Tracking the new one.",
-        parse_mode=ParseMode.HTML, reply_markup=day_markup(rec["id"], True))
+        parse_mode=ParseMode.HTML, reply_markup=day_markup(rec["id"], True, out["code"]))
     _remember(ctx, sent, {"section": "rollover_day", "slip_id": rec["id"], "legs": rec["data"]["legs"]})
 
 
@@ -1186,7 +1202,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         except BookingError as exc:
             await q.message.reply_text(f"Couldn't create a booking code: {esc(str(exc))}", parse_mode=ParseMode.HTML)
             return
-        url = s.bookmaker.load_code_url
         sl = entry["slip"]
         await _record(ctx, legs, code, "chat-scan", tier=sl.get("tier", "custom"), label=sl.get("label", ""),
                       total_odds=sl.get("total_odds"), est_prob=sl.get("est_prob"), target=sl.get("target"))
@@ -1194,7 +1209,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"📒 <b>Booking code: <code>{esc(code)}</code></b>\n{len(sels)} legs · total odds "
             f"{entry['slip']['total_odds']:.2f} · est. hit chance {entry['slip']['est_prob']:.0%}\n"
             f"Saved to /history: I'll ping you when it lands.\n\n{RG_NOTE}",
-            parse_mode=ParseMode.HTML, reply_markup=Kb([[Btn("Open SportyBet code hub", url=url)]]))
+            parse_mode=ParseMode.HTML, reply_markup=open_code_kb(s.bookmaker, code))
     elif kind == "RF":
         await _ro_refresh(q, ctx, parts[1], len(parts) > 2 and parts[2] == "x")
     elif kind == "RC":
@@ -1219,7 +1234,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         d = rec["data"]
         await q.message.reply_text(f"📒 <b>Booking code: <code>{esc(d['code'])}</code></b> · {len(d['legs'])} legs · "
                                    f"total odds {d['total_odds']:.2f}", parse_mode=ParseMode.HTML,
-                                   reply_markup=Kb([[Btn("Open SportyBet code hub", url=s.bookmaker.load_code_url)]]))
+                                   reply_markup=open_code_kb(s.bookmaker, d["code"]))
     elif kind in ("AZR", "AZC", "AZN"):
         await _analyzer_callback(q, ctx, kind, parts[1] if len(parts) > 1 else "")
     elif kind == "CLR":
@@ -1284,7 +1299,7 @@ async def _analyzer_callback(q, ctx, kind: str, aid: str) -> None:
         f"{out['total_odds']:.2f} · est. hit chance {out['chance']:.0%}"
         + ("\nSaved to /history: I'll ping you when it lands." if out.get("history_id") else "")
         + f"\n\n{RG_NOTE}", parse_mode=ParseMode.HTML,
-        reply_markup=Kb([[Btn("Open SportyBet code hub", url=out["url"])]]))
+        reply_markup=open_code_kb(s.bookmaker, out["code"]))
 
 
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:

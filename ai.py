@@ -12,7 +12,7 @@ from datetime import datetime
 
 import httpx
 
-from bookmakers import BookingError, Selection
+from bookmakers import BookingError, Selection, code_link
 from markets import valid_token
 from constraints import MARKET_TYPES, Constraints, detect_teams, parse_text, verify
 from scanner import TIER_ALIASES, apply_stats
@@ -757,7 +757,7 @@ class Analyst:
                 saved = await tr.record(legs, code, "ai", meta.get("tier", "custom"), meta.get("label", ""),
                                         meta.get("total_odds"), meta.get("est_prob"), target=meta.get("target"))
             return {"code": code, "selections": len(sels), "verified_on_load": check,
-                    "load_at": self.s.bookmaker.load_code_url, "saved_to_history": bool(saved)}
+                    "load_at": code_link(self.s.bookmaker, code), "saved_to_history": bool(saved)}
         if name == "analyze_booking_code":
             an = getattr(self.s, "analyzer", None)
             if an is None:

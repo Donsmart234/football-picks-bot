@@ -88,11 +88,26 @@ def slip_text(sl: dict, title: str, why: bool = True) -> str:
     return "\n".join(lines)
 
 
+def open_link(code: str | None, label: str = "📲 open in app") -> str:
+    """Telegram-HTML link that opens a SportyBet booking code in the app (website fallback); '' without a code."""
+    if not code:
+        return ""
+    from bookmakers import sportybet_share_url
+    return f'<a href="{html.escape(sportybet_share_url(code), quote=True)}">{esc(label)}</a>'
+
+
+def code_html(code: str | None, label: str = "📲 open in app") -> str:
+    """The code itself (monospace: tap to copy) plus the app link."""
+    if not code:
+        return ""
+    return f"<code>{esc(code)}</code> · {open_link(code, label)}"
+
+
 def record_text(rec: dict, title: str, limit_legs: int = 25) -> str:
     d = rec["data"]
     lines = [title]
     if d.get("code"):
-        lines.append(f"Code <code>{esc(d['code'])}</code> · total odds <b>{d.get('total_odds') or 0:.2f}</b>")
+        lines.append(f"Code {code_html(d['code'])} · total odds <b>{d.get('total_odds') or 0:.2f}</b>")
     lines.append(RULE)
     for i, l in enumerate((d.get("legs") or [])[:limit_legs], 1):
         lines.append(leg_lines(l, i, status=True))

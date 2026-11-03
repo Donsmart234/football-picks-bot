@@ -7,6 +7,16 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+**Booking-code links open the SportyBet app** (2026-11-03). Every code the bot shows (/book, scan and AI bookings,
+rollover days and refreshes, analyzer rebooks, /history and ticket lists for running slips, Mini App sheets, History and
+Rollover cards) links to SportyBet's own share URL `https://www.sportybet.com/?shareCode=CODE&c=ng`
+(`bookmakers.sportybet_share_url` / `code_link`, `fmt.code_html`, `handlers.open_code_kb`, `tracker.day_markup`,
+`app.js codeUrl`). `www.sportybet.com` is app-claimed: its apple-app-site-association maps `/` + `?shareCode=*&c=xx` to
+"Open share code" (iOS app `com.sportybet.SportyBet`) and its assetlinks.json verifies `com.sportybet.android` (APK) and
+`com.sportybet.android.gp` (Play) for App Links, so the phone opens the installed app on the code and the website
+(which loads the code) otherwise. Telegram: url buttons only; Mini App uses `Telegram.WebApp.openLink(url,
+{try_instant_view:false})`. The code stays in `<code>` (tap to copy). Test: `tests/test_links.py`.
+
 ## What's new (2026-11-03): named leagues / teams are hard filters
 Bug: "Champions League selections" returned picks from other leagues. **Cause:** the deterministic parser only read a
 league after "only / from / in" (or before "only / games / matches"), so "champions league selections", "ucl picks",
@@ -455,6 +465,7 @@ python tests/test_webapp.py --book # + ONE real anonymous booking code via /api/
 python tests/test_constraints.py   # offline: Under tagging, rule parsing, scanner/rollover enforcement, AI rule merge + booking refusals
 python tests/test_analyzer.py      # offline: code detection, share parsing (fixtures), ratings, grade, swaps, verdict, top-leagues ids, no history writes
 python tests/test_early_settle.py  # offline: 40 early-settlement cases, Entered ping once, corrections, rollover tickets, refresh picks
+python tests/test_links.py         # offline: booking-code links = SportyBet share URL (app link), buttons, HTML escaping, Mini App
 python tests/test_tracker.py       # 26 settlement cases + tracker run on real finished matches (SQLite, fake bot, 1 ping per slip)
 ```
 

@@ -23,7 +23,7 @@ from aiohttp import web
 import os
 
 import config
-from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection
+from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection, code_link
 from markets import valid_token
 from constraints import Constraints, norm_market
 import model
@@ -434,7 +434,7 @@ class MiniApp:
                 meta["tier"] = str(data["tier"])
             saved = await tr.record(legs, code, "app", meta["tier"], meta.get("label", ""), meta.get("total_odds"),
                                     meta.get("est_prob"), target=meta.get("target"))
-        return web.json_response({"code": code, "url": self.s.bookmaker.load_code_url,
+        return web.json_response({"code": code, "url": code_link(self.s.bookmaker, code),
                                   "bookmaker": self.s.bookmaker.name, "requested": len(sels),
                                   "loaded": check["legs"] if check else None,
                                   "history_id": saved["id"] if saved else None})

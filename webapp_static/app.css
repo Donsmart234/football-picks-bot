@@ -243,6 +243,7 @@ h2 { font-size: 19px; margin: 0; letter-spacing: -.2px; }
 .hcard.s-lost { opacity: .92; }
 .hhead { display: flex; align-items: flex-start; gap: 10px; }
 .hcode { display: flex; align-items: center; gap: 8px; margin-top: 5px; flex-wrap: wrap; }
+.codechip.open { font: 700 12px -apple-system, system-ui, sans-serif; letter-spacing: 0; margin-left: 6px; }
 .codechip { font: 800 14px ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 1.5px; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(0,229,143,.25); padding: 4px 9px; border-radius: 8px; }
 .hright { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
 .hbig { font-size: 22px; font-weight: 800; letter-spacing: -.4px; }

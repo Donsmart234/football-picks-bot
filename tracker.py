@@ -396,7 +396,7 @@ class Tracker:
                       "<i>Top leagues only, stats-confirmed legs ≥80% est."
                       + ("" if d.get("allow_unders") else " No under selections.")
                       + " Estimates, not guarantees. 18+.</i>"]
-            markup = day_markup(srec["id"], bool(code)) if srec else None
+            markup = day_markup(srec["id"], bool(code), code) if srec else None
             ref = {"section": "rollover_day", "slip_id": srec["id"], "plan_id": rec["id"], "day": n,
                    "target": float(d["target"]), "allow_unders": bool(d.get("allow_unders")),
                    "code": code, "legs": res["legs"]} if srec else None
@@ -673,10 +673,14 @@ class Tracker:
         await self.history.save(rec)
 
 
-def day_markup(slip_id: str, booked: bool):
-    """Telegram buttons under a rollover day's slip: book (if no code yet) and refresh."""
+def day_markup(slip_id: str, booked: bool, code: str | None = None):
+    """Telegram buttons under a rollover day's slip: open the code in the SportyBet app (url button, so the OS hands
+    the app-claimed link to the app), book (if no code yet) and refresh."""
     from telegram import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb
+    from bookmakers import sportybet_share_url
     rows = []
+    if code:
+        rows.append([Btn(f"📲 Open {code} in SportyBet", url=sportybet_share_url(code))])
     if not booked:
         rows.append([Btn("📒 Book this day on SportyBet", callback_data=f"HB|{slip_id}")])
     rows.append([Btn("🔄 Refresh picks", callback_data=f"RF|{slip_id}"),

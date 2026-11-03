@@ -32,6 +32,13 @@ from scanner import Leg, _rec, apply_stats, uid_of
 
 log = logging.getLogger(__name__)
 
+
+def code_link(bookmaker, code):
+    """App-opening link for a booking code (bookmakers.code_link, imported lazily like the rest of bookmakers here)."""
+    from bookmakers import code_link as _cl
+    return _cl(bookmaker, code)
+
+
 DISCLAIMER = "Estimates from prices + team stats, not guarantees. Combined chance assumes independent legs. 18+."
 RATINGS = ("Strong", "OK", "Weak", "Avoid")
 RATING_POINTS = {"Strong": 100, "OK": 75, "Weak": 45, "Avoid": 10, "Not rated": 50}
@@ -688,7 +695,7 @@ class Analyzer:
                 "legs": legs, "summary": summary, "suggestions": sug,
                 "rules": rules.to_dict() if rules else None, "rules_text": rules.describe() if rules else "",
                 "verdict": verdict_line(summary), "disclaimer": DISCLAIMER,
-                "load_url": getattr(self.s.bookmaker, "load_code_url", "")}
+                "load_url": code_link(self.s.bookmaker, code)}
         out["recommendation"] = recommendation(out)
         return out
 
@@ -743,7 +750,7 @@ class Analyzer:
                 if "started" in str(exc):
                     raise
         if imp.get("code"):
-            return {"code": imp["code"], "url": self.s.bookmaker.load_code_url, "legs": len(imp["legs"]),
+            return {"code": imp["code"], "url": code_link(self.s.bookmaker, imp["code"]), "legs": len(imp["legs"]),
                     "total_odds": imp["total_odds"], "chance": imp["chance"], "reused": True}
         sels = [Selection(l["event_id"], l["market_id"], l.get("specifier") or "", l["outcome_id"]) for l in imp["legs"]]
         try:
@@ -758,7 +765,7 @@ class Analyzer:
             saved = await tr.record(imp["legs"], code, "analyzer", "custom",
                                     f"Improved {res['code'] or 'screenshot slip'}",
                                     imp["total_odds"], imp["chance"])
-        return {"code": code, "url": self.s.bookmaker.load_code_url, "legs": len(sels),
+        return {"code": code, "url": code_link(self.s.bookmaker, code), "legs": len(sels),
                 "loaded": check["legs"] if check else None, "total_odds": imp["total_odds"],
                 "chance": imp["chance"], "history_id": saved["id"] if saved else None}
 
