@@ -40,6 +40,7 @@
 
   const state = {
     tab: "home", tier: "safe", target: 5, day: "today", scan: null, scanning: false, scanErr: "",
+    dir: (() => { try { const v = localStorage.getItem("fra_dir"); return v === "over" || v === "under" ? v : "any"; } catch (e) { return "any"; } })(),
     mRange: "today", mData: {}, mStack: [], mQuery: "", pred: null, markets: null,
     live: null, liveAt: 0, liveErr: "", lm: null, lmErr: "", scroll: {},
     chat: [], aiBusy: false, aiCtx: null,
@@ -241,14 +242,16 @@
   }
   function portfolio(s, key) {
     const t = TIERS[s.tier] || TIERS.safe;
+    const mode = s.constraints && s.constraints.direction ? (s.constraints.direction === "over" ? "Overs only · " : "Unders only · ") : "";
     return `<div class="card port t-${s.tier}">
-      <div class="head"><span class="label">${esc(s.label)} slip · ${esc(s.day)}</span><span class="pill">${s.legs.length} legs</span></div>
+      <div class="rules rulesline"><b>Rules:</b> ${esc(s.constraints_text || (s.label + (s.rules && s.rules.min_p ? ", every leg ≥" + Math.round(s.rules.min_p * 100) + "%" : "") + " · top leagues"))}</div>
+      <div class="head"><span class="label">${esc(mode)}${esc(s.label)} slip · ${esc(s.day)}</span><span class="pill">${s.legs.length} legs</span></div>
       <div class="big num">${f2(s.total_odds)}<small>total odds</small></div>
       <div class="kpis"><div class="kpi"><b>${pct(s.est_prob, 1)}</b><span>Est. hit chance</span></div>
         <div class="kpi"><b>${s.target ? Number(s.target).toFixed(s.target % 1 ? 2 : 0) : "–"}</b><span>Target</span></div>
         <div class="kpi"><b>${s.with_stats}/${s.scanned}</b><span>Stats-checked</span></div></div>
       ${meter(s.est_prob)}
-      ${s.constraints_text ? `<div class="rules">${IC.rules}${esc(s.constraints_text)}${s.constraint_check && s.constraint_check.ok && s.legs.length ? " · every leg re-checked" : ""}</div>` : ""}
+      ${s.constraints_text && s.constraint_check && s.constraint_check.ok && s.legs.length ? `<div class="rules">${IC.rules}Every leg re-checked against these rules</div>` : ""}
       ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
       ${s.legs.length ? `<div class="btnrow"><button class="btn" data-act="bookslip" data-k="${esc(key)}">Book on SportyBet</button>
         <button class="btn secondary" style="flex:.7" data-act="slipall" data-k="${esc(key)}">Add to slip</button></div>
@@ -272,6 +275,10 @@
         <div class="quick">${t.quick.map((q) => `<button data-act="quick" data-q="${q}" class="${Number(state.target) === q ? "on" : ""}">${q}×</button>`).join("")}</div>`;
     }
     html += `<div class="label" style="margin-top:12px">Filters</div><div class="chips fchips">${EXCL.map(([k, v]) => `<button class="chip${state.ex.includes(k) ? " on" : ""}" data-act="excl" data-k="${k}" aria-pressed="${state.ex.includes(k)}">${state.ex.includes(k) ? IC.check : ""}${v}</button>`).join("")}</div>`;
+    if (state.tier !== "audit") {
+      html += `<div class="label" style="margin-top:12px">Goals</div><div class="seg" role="radiogroup" aria-label="Goals direction">${[["any", "Any"], ["over", "Overs only"], ["under", "Unders only"]].map(([k, v]) => `<button data-act="dir" data-v="${k}" role="radio" aria-checked="${state.dir === k}" class="${state.dir === k ? "on" : ""}">${v}</button>`).join("")}</div>`;
+      if (state.dir !== "any") html += `<div class="sub" style="margin:6px 2px 0">${state.dir === "over" ? "Over" : "Under"} goal lines only (match, team, Asian lines) · full match, no half or minute markets · every leg Safe, est. ≥80% (Asian: full wins only, a push returns the stake)</div>`;
+    }
     html += `<div class="chips fchips" style="margin-top:6px"><button class="chip${state.allLg ? " on" : ""}" data-act="alllg" aria-pressed="${state.allLg}">${state.allLg ? IC.check + "All leagues" : "Top leagues only (tap for all)"}</button></div>`;
     html += `<div class="rules">${esc(t.rule)}</div>
         <button class="btn" data-act="scan" ${state.scanning ? "disabled" : ""}>${state.scanning ? "Scanning…" : state.tier === "audit" ? "Run grand audit" : "Generate slip"}</button></div>`;
@@ -325,6 +332,7 @@
     state.scanning = true; state.scanErr = ""; state.scan = null; state.viewSlip = null; hap("medium"); renderHome();
     try {
       state.scanReq = { tier: state.tier, target: state.tier === "audit" ? null : state.target, day: state.day, exclude_markets: state.ex, all_leagues: state.allLg };
+      if (state.tier !== "audit" && state.dir !== "any") state.scanReq.direction = state.dir;
       state.scan = await api("/api/scan", state.scanReq);
       hapN("success");
     } catch (e) { state.scanErr = e.message; hapN("error"); }
@@ -1080,6 +1088,7 @@
     else if (a === "azrebook") { hap("medium"); azRebookSheet(); }
     else if (a === "azconfirm") azConfirm();
     else if (a === "aztake") azTake();
+    else if (a === "dir") { state.dir = t.dataset.v; try { localStorage.setItem("fra_dir", state.dir); } catch (e) {} hapSel(); renderHome(); }
     else if (a === "alllg") { state.allLg = !state.allLg; try { localStorage.setItem("fra_alllg", state.allLg ? "1" : "0"); } catch (e) {} hapSel(); renderHome(); }
     else if (a === "viewslip") { state.viewSlip = t.dataset.k; renderHome(); window.scrollTo(0, 0); }
     else if (a === "auditback") { state.viewSlip = null; renderHome(); }

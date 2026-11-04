@@ -131,7 +131,7 @@ def parse_share(data: dict) -> list[dict]:
             "sport": sport.get("id") or "sr:sport:1",
             "kickoff": datetime.fromtimestamp(start / 1000, timezone.utc).isoformat() if start else "",
             "market": mk.get("desc") or mk.get("name") or (fam.name if fam else f"Market {mid}"),
-            "pick": pretty_pick(fam, desc, home, away) if fam else desc,
+            "pick": pretty_pick(fam, desc, home, away, spec) if fam else desc,
             "odds": _f(oc.get("odds")), "feed_prob": _f(oc.get("probability")),
             "active": bool(int(oc.get("isActive") or 0)) and int(mk.get("status") or 0) == 0,
             "group": mk.get("group") or "",

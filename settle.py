@@ -194,7 +194,10 @@ def _cmp(i: int, j: int, o: str, ids=("1", "2", "3")) -> bool | None:
 
 
 def _over_under(total: float, line: float, o: str, over_ids=("12",), under_ids=("13",)) -> str:
-    if total == line:
+    if abs(line * 4) % 2 == 1:      # Asian quarter line (x.25 / x.75): split stake, half results -> manual look
+        return "check"
+    if total == line:               # whole (Asian) line landed exactly: push, stake back
+        return "void"
         return "void"
     if o in over_ids:
         return "won" if total > line else "lost"
@@ -371,6 +374,8 @@ def _lock_goals(kind: str, side: str | None, spec: str, o: str, i: int, j: int) 
         if line != line:
             return None
         t = i + j if kind == "total" else (i if side == "home" else j)
+        if abs(line * 4) % 2 == 1:        # quarter line: fully decided only past its upper half-line
+            line += 0.25
         if t > line:                      # line already passed: over has landed, under is gone
             return "won" if o == "12" else "lost" if o == "13" else None
         return None

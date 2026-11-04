@@ -27,7 +27,8 @@ from zoneinfo import ZoneInfo
 import config
 from bookmakers import Event, SportyBetNG
 from constraints import TOTAL_HI, TOTAL_LO, Constraints, leg_tags, market_tags, verify
-from markets import FAMILIES, Family, devig_group, model_prob, pretty_pick, side_of, spec_value, usable_line
+from markets import (FAMILIES, Family, asian_line, devig_group, line_kind, market_label, model_prob, outcome_parts,
+                     pretty_pick, side_of, spec_value, usable_line)
 import leagues
 import model
 from srstats import MatchForm, SportradarStats
@@ -146,15 +147,27 @@ class Leg:
     utid: str = ""                  # Sportradar unique tournament id (league goal averages for the stats model)
     p_raw: float | None = None      # blended probability before calibration
     category_id: str = ""           # sr:category:<id>
+    line_type: str = ""             # goal lines: "" (x.5 / not a goal line) | "asian" (whole) | "asian_quarter"
+    p_push: float = 0.0             # Asian lines: chance of a push (stake back); est never counts it as a win
+    p_half_win: float = 0.0         # Asian quarter lines: half the stake wins, half comes back
+    p_half_loss: float = 0.0        # Asian quarter lines: half the stake lost, half comes back
+    fit_parts: tuple = ()           # Asian lines: (push, half_win, half_loss) from the price fit
 
     @property
     def ev(self) -> float:
         return self.est * self.odds
 
     @property
+    def p_noloss(self) -> float:
+        """Chance the leg does not lose: a full win, or a push (stake back) / half win on an Asian line.
+        Equals est for every line that can't push."""
+        return min(0.999, self.est + self.p_push + self.p_half_win)
+
+    @property
     def conf(self) -> float:
+        # push treated as a refund when ranking: an Asian line that refunds where the x.5 line loses is safer
         gap = max(0.0, self.p_market - self.p_stats) if self.p_stats is not None else 0.02
-        return self.est - 0.3 * gap
+        return self.p_noloss - 0.3 * gap
 
     def selection(self) -> dict:
         return {"event_id": self.event_id, "market_id": self.market_id, "specifier": self.specifier,
@@ -167,6 +180,8 @@ class Leg:
                   "p_fit": None if self.p_fit is None else round(self.p_fit, 4),
                   "p_stats": None if self.p_stats is None else round(self.p_stats, 4),
                   "p_raw": None if self.p_raw is None else round(self.p_raw, 4),
+                  "p_push": round(self.p_push, 4), "p_half_win": round(self.p_half_win, 4),
+                  "p_half_loss": round(self.p_half_loss, 4), "p_noloss": round(self.p_noloss, 4),
                   "ev": round(self.ev, 3)})
         return d
 
@@ -320,7 +335,8 @@ class Scanner:
             if not outs:
                 continue
             fam = FAMILIES.get(m["id"])
-            modeled = bool(fam and usable_line(fam, m["specifier"]) and lam)
+            asian = bool(fam and asian_line(fam, m["specifier"]))
+            modeled = bool(fam and (usable_line(fam, m["specifier"]) or asian) and lam)
             n, over = len(outs), sum(1 / o["odds"] for o in outs)
             props = "playerprops" in m["specifier"] or any("playerprops" in o["id"] for o in outs) or \
                 m.get("source") == "SPORTING_RISK"
@@ -331,11 +347,24 @@ class Scanner:
             else:   # overlapping outcomes, partial lists, single-outcome props: price each outcome on its own
                 fair, mode = [min(0.985, 1 / (o["odds"] * 1.06)) for o in outs], "single"
             mk_name = m["desc"] or (fam.name if fam else f"Market {m['id']}")
+            if asian:
+                mk_name = market_label(fam, m["specifier"], mk_name)
             for o, pm in zip(outs, fair):
                 if o["odds"] < odds_range[0] or o["odds"] > odds_range[1]:
                     continue
                 pf = o["prob"] if o["prob"] and 0 < o["prob"] < 1 else None
                 pfit = model_prob(fam, m["specifier"], o["id"], *lam, grid_cache=grid) if modeled else None
+                ap = None
+                if asian:
+                    # Asian goal line: the de-margined price and the feed probability are win-vs-loss with pushes
+                    # (stake back) taken out. Convert both to a FULL-win probability with the model's push / half
+                    # chances, so est never counts a push as a win. No model fit -> no estimate for this line.
+                    ap = outcome_parts(fam, m["specifier"], o["id"], *lam, grid_cache=grid) if lam else None
+                    if ap is None:
+                        continue
+                    decisive = max(1e-6, ap["win"] + ap["loss"] + 0.5 * (ap["half_win"] + ap["half_loss"]))
+                    pm = pm * decisive
+                    pf = pf * decisive if pf is not None else None
                 if mode == "devig":
                     parts = [(pm, 0.55)] + ([(pf, 0.15)] if pf is not None else []) + (
                         [(pfit, 0.30)] if pfit is not None else [])
@@ -344,7 +373,7 @@ class Scanner:
                 base = sum(p * w for p, w in parts) / sum(w for _, w in parts)
                 level = "model" if pfit is not None else ("market" if mode == "devig" and not props else "thin")
                 base -= {"model": 0.0, "market": 0.015, "thin": 0.03}[level]
-                pick = pretty_pick(fam, o["desc"], e.home, e.away) if fam else o["desc"]
+                pick = pretty_pick(fam, o["desc"], e.home, e.away, m["specifier"]) if fam else o["desc"]
                 legs.append(Leg(
                     event_id=e.event_id, match=e.name, home=e.home, away=e.away, league=e.league_full,
                     kickoff=e.start.isoformat(), kickoff_local=local.strftime("%a %d %b %H:%M"),
@@ -353,7 +382,12 @@ class Scanner:
                     side=side_of(fam, o["id"]) if fam else None, level=level, group=m.get("group", ""),
                     home_uid=uid_of(e.home_id), away_uid=uid_of(e.away_id), category=e.category,
                     utid=model.utid_of(e.tournament_id), category_id=getattr(e, "category_id", ""),
-                    tags=market_tags(m["id"], mk_name, pick, m.get("group", ""), m["specifier"], e.home, e.away)))
+                    tags=market_tags(m["id"], mk_name, pick, m.get("group", ""), m["specifier"], e.home, e.away),
+                    line_type=("asian_quarter" if line_kind(fam, m["specifier"]) == "quarter" else "asian")
+                    if ap else "",
+                    p_push=ap["push"] if ap else 0.0, p_half_win=ap["half_win"] if ap else 0.0,
+                    p_half_loss=ap["half_loss"] if ap else 0.0,
+                    fit_parts=(ap["push"], ap["half_win"], ap["half_loss"]) if ap else ()))
         if len(legs) > keep:
             by_conf = sorted(legs, key=lambda l: -l.base)
             strong = by_conf[:keep]
@@ -373,9 +407,12 @@ class Scanner:
                     diverse.append(l)
                     for t in ts:
                         per_type[t] = per_type.get(t, 0) + 1
+            # every full-match goal Over/Under line (match + team totals, x.5 and Asian) stays: the Overs / Unders
+            # modes choose among exactly these, and there are only ~40 of them per match
+            core = [l for l in legs if l.market_id in ("18", "19", "20")]
             seen = set()
             out = []
-            for l in strong + value + mid_band + diverse:
+            for l in strong + value + mid_band + diverse + core:
                 if id(l) not in seen:
                     seen.add(id(l))
                     out.append(l)
@@ -505,12 +542,13 @@ class Scanner:
                         bands[b] = l
                 pool_legs += bands.values()
             found = search_combo(pool_legs, target * TOTAL_LO, target * 1.20, min(max_legs, 16), min_legs)
-            if found and (not g_ok or math.prod(l.est for l in found) > math.prod(l.est for l in legs) + 1e-9):
+            if found and (not g_ok or math.prod(_sv(l) for l in found) > math.prod(_sv(l) for l in legs) + 1e-9):
                 legs = found
         legs = [l for l in legs if l.est >= min_p and (c is None or c.leg_ok(l, min_p))]   # hard guard
         total = math.prod(l.odds for l in legs) if legs else 1.0
         legs.sort(key=lambda l: l.kickoff)
         prob = math.prod(l.est for l in legs) if legs else 0.0
+        noloss = math.prod(l.p_noloss for l in legs) if legs else 0.0
         reached = total >= target * 0.98 if not c else total >= target * TOTAL_LO
         rules_txt = c.describe() if c else ""
         if not legs:
@@ -525,9 +563,17 @@ class Scanner:
             note = f"Reached the target with {len(legs)} legs, fewer than the {min_legs} you asked for."
         else:
             note = ""
+        if c is not None and c.direction and (not legs or not reached or len(legs) < min_legs):
+            word = "Over" if c.direction == "over" else "Under"
+            asked = f" (you asked for {min_legs})" if min_legs > 1 and len(legs) < min_legs else ""
+            note = (f"{len(legs)} safe {word} leg{'s' if len(legs) != 1 else ''} qualif{'y' if len(legs) != 1 else 'ies'}"
+                    f"{asked}: only full-match {word} goal lines (incl. Asian) at est. ≥{min_p:.0%} count in this "
+                    "mode, so I stopped there and didn't pad it with other markets."
+                    + (f" Total odds {total:.2f}, short of the {target:g} target." if legs and not reached else ""))
         risk = 1 - prob if legs else 1.0
         out = {"tier": tier, "label": t["label"], "target": target, "total_odds": round(total, 2),
                "est_prob": round(prob, 4), "reached": reached, "risk_meter": round(risk, 3),
+               "noloss_prob": round(noloss, 4),
                "legs": [l.to_json() for l in legs], "candidates": len(cands), "note": note,
                "rules": {"min_p": min_p, "odds": (lo, hi)}, "day": pool.day,
                "scanned": pool.scanned, "with_stats": sum(1 for f in pool.forms.values() if f and f.ok)}
@@ -576,6 +622,8 @@ class Scanner:
                 c.include_leagues = [str(x) for x in leagues if x]
             leagues = None
         tier = TIER_ALIASES.get((tier or (c.tier if c else None) or "safe").lower().strip(), "safe")
+        if c is not None and c.direction and tier != "audit":
+            tier = "safe"          # Overs / Unders only: every leg must reach the Safe bar
         if c and c.day:
             day = c.day
         if c and target is None:
@@ -737,14 +785,19 @@ class Scanner:
 
 
 # ------------------------------------------------------------------ combination search
+def _sv(l) -> float:
+    """Survival probability used to choose legs: est, plus the push / half-win chance of an Asian line (a push is a
+    refund, not a loss). The reported est / est_prob stay full-win only."""
+    return min(0.999, getattr(l, "p_noloss", None) or l.est)
+
 def search_combo(legs: list[Leg], lo_t: float, hi_t: float, max_legs: int, min_legs: int = 1,
                  shortlist: int = 80, node_cap: int = 250000) -> list[Leg]:
     """Combination of legs (one per match) with the highest combined estimate whose total odds land in
     [lo_t, hi_t]; fewest legs on ties. Candidates are shortlisted by odds gained per unit of probability given
     up, then searched strongest-first so the probability bound prunes early. [] when nothing fits."""
     pool = [l for l in legs if 1.0 < l.odds <= hi_t and 0 < l.est < 1]
-    pool.sort(key=lambda l: -(math.log(l.odds) / -math.log(min(l.est, 0.995))))
-    cands = sorted(pool[:shortlist], key=lambda l: -l.est)
+    pool.sort(key=lambda l: -(math.log(l.odds) / -math.log(min(_sv(l), 0.995))))
+    cands = sorted(pool[:shortlist], key=lambda l: -_sv(l))
     best: dict = {"p": 0.0, "legs": []}
     nodes = [0]
 
@@ -766,7 +819,7 @@ def search_combo(legs: list[Leg], lo_t: float, hi_t: float, max_legs: int, min_l
                 continue
             chosen.append(l)
             used.add(l.event_id)
-            dfs(k + 1, chosen, used, odds * l.odds, p * l.est)
+            dfs(k + 1, chosen, used, odds * l.odds, p * _sv(l))
             chosen.pop()
             used.discard(l.event_id)
 
@@ -778,7 +831,7 @@ def search_combo(legs: list[Leg], lo_t: float, hi_t: float, max_legs: int, min_l
 _WIN_KINDS = {"1x2", "dnb", "ah", "eh", "dc"}
 
 
-def apply_stats(leg: Leg, form: MatchForm | None) -> None:
+def _apply_stats(leg: Leg, form: MatchForm | None) -> None:
     fam: Family | None = FAMILIES.get(leg.market_id)
     base = leg.base
     if leg.p_fit is None or fam is None:   # corners, bookings, combos, props, specials: no goals model
@@ -817,6 +870,35 @@ def apply_stats(leg: Leg, form: MatchForm | None) -> None:
     else:
         leg.verdict = "dropped"
     leg.why = _why(leg, fam, form) + (f"{CAUTION}{flag}" if flag else "")
+
+
+def apply_stats(leg: Leg, form: MatchForm | None) -> None:
+    _apply_stats(leg, form)
+    if leg.line_type:
+        _asian_stats(leg, form)
+
+
+def _asian_stats(leg: Leg, form: MatchForm | None) -> None:
+    """Asian goal line: average the push / half chances of the price fit and the stats model, and say what a push
+    means. est stays the FULL-win probability."""
+    fam = FAMILIES.get(leg.market_id)
+    lam = model.stats_lambdas_v2(form.home.games, form.away.games, leg.utid) if form and form.ok else None
+    fp = tuple(leg.fit_parts) or (leg.p_push, leg.p_half_win, leg.p_half_loss)
+    leg.p_push, leg.p_half_win, leg.p_half_loss = fp
+    if fam is not None and lam:
+        sp = outcome_parts(fam, leg.specifier, leg.outcome_id, *lam, rho=model.rho())
+        if sp:
+            leg.p_push = (fp[0] + sp["push"]) / 2
+            leg.p_half_win = (fp[1] + sp["half_win"]) / 2
+            leg.p_half_loss = (fp[2] + sp["half_loss"]) / 2
+    line = spec_value(leg.specifier, "total") or "?"
+    if leg.line_type == "asian":
+        note = (f"Asian line: exactly {line} goals = push (stake back), est. {leg.p_push:.0%}; the {leg.est:.0%} "
+                f"counts full wins only (no loss {leg.p_noloss:.0%})")
+    else:
+        note = (f"Asian quarter line {line}: stake split over the two nearest lines; half win {leg.p_half_win:.0%}, "
+                f"half loss {leg.p_half_loss:.0%}; the {leg.est:.0%} counts full wins only")
+    leg.why = (leg.why + " · " if leg.why else "") + note
 
 
 def _red_flag(leg: Leg, fam: Family, f: MatchForm) -> str:

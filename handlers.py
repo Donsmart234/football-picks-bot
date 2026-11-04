@@ -32,6 +32,8 @@ HELP = (
     "<b>Commands</b>\n"
     "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit). Filters: nounders, -corners, "
     "-cards, -props, only:1x2,dc, legs:4-8, minodds:1.2, league:epl, after:18:00, allleagues (top leagues by default)\n"
+    "/scan overs 3 · /scan unders 4 legs – Overs only / Unders only (goal lines incl. Asian, full match, every leg "
+    "Safe ≥80%); add asian for Asian lines only\n"
     "/ai question – ask the AI analyst (or just type any message)\n"
     "Send a screenshot (betslip, booking code, fixtures, one of my slips) and I'll read it; add a caption to say what you want\n"
     "/today – today's matches by league\n"
@@ -336,6 +338,10 @@ async def _deliver_ai(update: Update, ctx, res: dict, note=None) -> None:
     elif res.get("slip") and res["slip"].get("slip_id") and res["slip"].get("legs"):
         rows.append([Btn("Book this slip on SportyBet", callback_data=f"SB|{res['slip']['slip_id']}")])
         rows.append([img_btn("s", res["slip"]["slip_id"])])
+    sl0 = res.get("slip") or {}
+    if not res.get("code") and sl0.get("slip_id") and sl0.get("scan_args") and \
+            sl0.get("tier") in ("safe", "mid", "risk", "high"):
+        rows.append(scan_mode_row(sl0["slip_id"], sl0))     # Overs only / Unders only under the same rules
     elif an_res and an_res.get("id"):
         rows.append([img_btn("a", an_res["id"])])
     if rows:
@@ -494,14 +500,41 @@ async def _send_edit(update: Update, ctx, out: dict, sctx: dict) -> None:
 
 def format_slip(sl: dict, why: bool = True) -> str:
     rule = f"Each leg est. ≥{sl['rules']['min_p']:.0%} after the stats check" if sl.get("rules", {}).get("min_p") else ""
-    title = (f"<b>{esc(sl['label']).upper()} SLIP</b> · target {sl['target']:g} · {esc(sl.get('day', ''))}"
+    mode = slip_mode(sl)
+    rules_line = f"<b>Rules:</b> {esc(sl.get('constraints_text') or rules_default(sl))}\n"
+    title = (rules_line + f"<b>{esc((mode + ' · ') if mode else '')}{esc(sl['label']).upper()} SLIP</b> · target "
+             f"{sl['target']:g} · {esc(sl.get('day', ''))}"
              + (f"\n<i>{rule} · {sl.get('candidates', 0)} qualified · {sl.get('with_stats', 0)} matches stats-checked</i>"
                if rule and not sl.get("edited") else f"\n<i>{rule}</i>" if rule else ""))
     if sl.get("constraints_text"):
         chk = sl.get("constraint_check") or {}
-        title += (f"\nYour rules: {esc(sl['constraints_text'])}"
-                  + (" · every leg re-checked" if chk.get("ok") and sl.get("legs") else ""))
+        if chk.get("ok") and sl.get("legs"):
+            title += "\n<i>Every leg re-checked against these rules</i>"
     return slip_text(sl, title, why=why)
+
+
+def slip_mode(sl: dict) -> str:
+    d = (sl.get("constraints") or {}).get("direction")
+    return {"over": "OVERS ONLY", "under": "UNDERS ONLY"}.get(d or "", "")
+
+
+def rules_default(sl: dict) -> str:
+    t = sl.get("label") or "Safe"
+    mp = (sl.get("rules") or {}).get("min_p")
+    return f"{t}" + (f", every leg ≥{mp:.0%}" if mp else "") + " · top leagues"
+
+
+def scan_mode_row(sid: str, res: dict) -> list:
+    """Overs only / Unders only (and back to any market) for a scan or safe slip: re-runs it under the same rules."""
+    d = (res.get("constraints") or {}).get("direction")
+    row = []
+    if d != "over":
+        row.append(Btn("Overs only", callback_data=f"SR|{sid}|o"))
+    if d != "under":
+        row.append(Btn("Unders only", callback_data=f"SR|{sid}|u"))
+    if d:
+        row.append(Btn("Any market", callback_data=f"SR|{sid}|a"))
+    return row
 
 
 async def _record(ctx, legs, code, source, **kw) -> None:
@@ -524,6 +557,13 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     # country:england / team:arsenal / after:18:00 / before:21:00 / minp:85 (or plain words: "no unders")
     c = parse_text(" ".join(args))
     c.tier, c.target_odds = None, None
+    for a in args:      # "/scan over" / "/scan under" (singular) also pick the mode
+        if a in ("over", "under") and not c.direction:
+            c.set_direction(a)
+    if c.direction and "asian" in args and "asian" not in c.include_markets:
+        c.include_markets.append("asian")
+    if c.direction and tier != "audit":
+        tier = "safe"
     ai_ = getattr(svc(ctx), "ai", None)
     if ai_ is not None and args:
         try:     # team names typed after /scan ("/scan safe 5 arsenal bayern") are a hard scope too
@@ -593,13 +633,16 @@ def _scan_kb(sid: str | None, res: dict) -> Kb | None:
         return None
     rows = [[Btn("Book on SportyBet", callback_data=f"SB|{sid}")]] if res["legs"] else []
     rows.append([Btn("Refresh picks", callback_data=f"SR|{sid}"), Btn("Different picks", callback_data=f"SR|{sid}|x")])
+    if res.get("tier") in ("safe", "mid", "risk", "high"):
+        rows.append(scan_mode_row(sid, res))
     if res["legs"]:
         rows.append([img_btn("s", sid)])
     return Kb(rows)
 
 
-async def _scan_refresh(q, ctx, sid: str, exclude_prev: bool) -> None:
-    """Re-run a /scan slip with fresh prices and the same rules; nothing is saved until the user books."""
+async def _scan_refresh(q, ctx, sid: str, exclude_prev: bool, mode: str | None = None) -> None:
+    """Re-run a /scan slip with fresh prices and the same rules; nothing is saved until the user books.
+    mode: 'over' / 'under' = the same rules as Overs only / Unders only (Safe), 'any' = drop the mode."""
     from constraints import Constraints
     from scanner import sel_key
     s = svc(ctx)
@@ -609,12 +652,19 @@ async def _scan_refresh(q, ctx, sid: str, exclude_prev: bool) -> None:
     if not entry or not args:
         await q.answer("That slip expired. Run /scan again.", show_alert=True)
         return
-    await q.answer("Refreshing picks… ~30 s")
+    await q.answer("Refreshing picks… ~30 s" if not mode else
+                   {"over": "Overs only, Safe… ~30 s", "under": "Unders only, Safe… ~30 s"}.get(mode, "Any market… ~30 s"))
     old = entry["slip"]
     prev = {sel_key(l) for l in old.get("legs") or []}
     c = Constraints.from_dict(args["constraints"]) if args.get("constraints") else None
     if c is not None:
         c.tier, c.target_odds = None, None
+    if mode:
+        c = c or Constraints()
+        c.set_direction(mode if mode in ("over", "under") else None)
+        args = dict(args, tier="safe" if c.direction else args["tier"], constraints=c.to_dict())
+        exclude_prev = False
+        c = c if not c.empty() else None
     try:
         res = await s.scanner.scan(args["tier"], args.get("target"), args["day"], None, c,
                                    exclude=prev if exclude_prev else None, fresh=True)
@@ -623,6 +673,16 @@ async def _scan_refresh(q, ctx, sid: str, exclude_prev: bool) -> None:
         await q.message.reply_text("The refresh failed (SportyBet didn't answer). Try again in a minute.")
         return
     new = {sel_key(l) for l in res["legs"]}
+    if mode:
+        res["scan_args"] = args
+        nsid = ai.remember_slip(res)
+        lab = {"over": "Overs only", "under": "Unders only"}.get(mode, "Any market")
+        head = f"<b>{lab}</b> · not saved until you book\n"
+        sent = await q.message.reply_text(_scan_msg(res, head), parse_mode=ParseMode.HTML,
+                                          reply_markup=_scan_kb(nsid, res))
+        if res.get("legs"):
+            _remember(ctx, sent, _scan_ref(nsid, res))
+        return
     if not res["legs"]:
         await q.message.reply_text("No different valid slip exists right now under the same rules"
                                    + (" without the previous picks" if exclude_prev else "") + ". The last slip stands.")
@@ -1429,7 +1489,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     elif kind == "RC":
         await _ro_refresh_confirm(q, ctx, parts[1])
     elif kind == "SR":
-        await _scan_refresh(q, ctx, parts[1], len(parts) > 2 and parts[2] == "x")
+        flag = parts[2] if len(parts) > 2 else ""
+        await _scan_refresh(q, ctx, parts[1], flag == "x",
+                            {"o": "over", "u": "under", "a": "any"}.get(flag))
     elif kind == "RO":
         await q.answer()
         if parts[1] == "tix":

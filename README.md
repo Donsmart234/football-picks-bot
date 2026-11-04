@@ -7,6 +7,31 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-04): Overs only / Unders only, with Asian lines, all Safe
+**Goals mode** (`Constraints.direction` = over | under, constraints.py) shared by /scan, the AI, the Mini App and scan
+edits. **Overs only** keeps only Over goal lines (full-match total, team totals, Asian Over lines); **Unders only** only
+the Under ones. In both modes every leg must reach the Safe bar (calibrated est. >= 80%; a riskier tier is lifted to
+Safe), 1st/2nd-half and time-window markets (1-60 min, Early Goals...) are left out unless the user names them, top
+leagues by default, named leagues / teams / odds / leg counts stay hard filters, and the slip is never padded with other
+markets: too few safe legs -> fewer legs and a plain note ("2 safe Under legs qualify (you asked for 4)... didn't pad").
+Plain scans keep their own rules (rollover: no unders unless allowed). "only overs and btts" (mixed) stays a plain
+market-type rule.
+**Asian lines.** SportyBet lists Asian goal lines inside the plain Over/Under markets (18 match, 19 / 20 team) as
+whole-number specifiers (`total=3` -> "Over 3" / "Under 3"; quarter lines `total=2.25` would be read too). They are now
+mapped (`markets.line_kind / asian_line / outcome_parts`), labelled "Asian Under 3" in an "Asian Over/Under" market, tagged
+`asian`, and priced push-aware: SportyBet's de-margined price and the feed probability are win-vs-loss with pushes taken
+out, so both are converted with the model's push chance; `est` = probability of a FULL win (a push is never counted as
+a win, the 80% bar is on that), `p_push` / `p_half_win` / `p_half_loss` / `p_noloss` ride on the leg; leg choice treats a
+push as a refund (`Leg.conf`, `search_combo` use the no-loss chance, so "Asian Under 5" can beat "Under 4.5" at the same
+win chance). Settlement: whole line landed exactly -> void (stake back); quarter half results -> check (manual);
+early "won/lost" on quarter lines waits for the upper half-line.
+**Where:** `/scan overs`, `/scan unders 4 legs`, `/scan unders asian` (Asian lines only), plus **Overs only / Unders
+only** buttons (and **Any market** to go back) under every /scan, refreshed and AI safe slip (`SR|sid|o/u/a`, same rules,
+not saved). AI chat: "safe unders slip 4 legs", "asian unders only", "only over games" (deterministic parse + tool arg
+`goals_direction`). Mini App Scanner: **Goals: Any / Overs only / Unders only** selector (`POST /api/scan
+{"direction": "over"|"under"}`). Every slip opens with a **Rules:** line (Telegram, AI replies, Mini App card).
+Tests: `tests/test_ou_mode.py`.
+
 ## What's new (2026-11-03): no emoji anywhere
 The whole product is emoji-free. **Telegram**: messages, buttons, result pings, rollover/tickets/history lists and the
 analyzer use plain text labels (statuses spelled out: WON, LOST, VOID, LIVE, RUNNING, CHECK, REPLACED, CANCELLED, NO SLIP,

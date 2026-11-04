@@ -50,6 +50,13 @@ Rules:
   every Under line: match, team, half, corners, cards, Asian, and combos containing an Under). "Only overs" =>
   include_markets=["over"]. Example: "give me sure 5 odds without under selections" => scan_markets(tier="safe",
   target_odds=5, exclude_markets=["under"]).
+- OVERS ONLY / UNDERS ONLY MODE: "overs only", "only over games", "safe overs slip", "unders only", "safe unders slip
+  4 legs", "asian unders", "even Asian under" => scan_markets(tier="safe", goals_direction="over" | "under", ...).
+  The mode keeps only goal Over/Under lines in that direction (full-match total, team totals, Asian lines such as
+  "Asian Under 3"), every leg Safe (est. >=80%; on an Asian line est. counts full wins only, a push = stake back),
+  and leaves out 1st/2nd-half and time-window markets (1-60 min, Early Goals) unless the user asks for them. "Asian
+  ... only" => also include_markets=["asian"]. Never fill the slip with other markets: if too few legs qualify, say
+  how many did and that nothing was padded. Unders stay out of other slips unless the user asks for them.
 - The scanner enforces those rules and returns constraint_check (ok, violations, target_reached). Before you reply
   or book, read it: only present/book a slip whose constraint_check.ok is true, and state the rules you applied in
   one short line. If target_reached is false or no legs qualify, say plainly that the rules can't be met at the
@@ -128,6 +135,9 @@ TOOLS = [{"functionDeclarations": [
          "kickoff_after": {"type": "string", "description": "local time HH:MM (Africa/Lagos), or 'YYYY-MM-DD HH:MM'"},
          "kickoff_before": {"type": "string", "description": "local time HH:MM (Africa/Lagos), or 'YYYY-MM-DD HH:MM'"},
          "stats_confirmed_only": {"type": "boolean", "description": "only legs confirmed by the team-stats check"},
+         "goals_direction": {"type": "string", "enum": ["over", "under", "any"],
+                             "description": "Overs only / Unders only mode: only goal Over (or Under) lines incl. "
+                                            "Asian lines, full match, every leg Safe >=80%. 'any' = no mode"},
          "all_leagues": {"type": "boolean",
                          "description": "true ONLY if the user explicitly asks for all / any / lower leagues; scans "
                                         "use the top-leagues allowlist by default"}},
@@ -401,6 +411,9 @@ class Analyst:
         if not reply:
             reply = ("I didn't get an answer back from the AI model this time, so nothing was built or booked. "
                      "Send it again, or use /scan safe 5 for a slip right away.")
+        sl = turn.get("slip") or {}
+        if sl.get("constraints_text") and sl.get("tier") != "audit" and not reply.lstrip().lower().startswith("rules:"):
+            reply = f"Rules: {sl['constraints_text']}\n\n" + reply.lstrip()     # every slip reply opens with its rules
         reply += self._rules_footer(turn, reply)
         if turn["code"] and turn["code"] not in reply:
             reply += f"\n\nBooking code: `{turn['code']}`"
@@ -684,6 +697,9 @@ class Analyst:
             day = c.day or (a.get("day") if a.get("day") in ("today", "tomorrow", "24h", "48h") else "today")
             c.day = day
             res = await self.s.scanner.scan(tier, c.target_odds, day, None, c)
+            if tier != "audit":     # lets the Overs only / Unders only buttons re-run it under the same rules
+                res["scan_args"] = {"tier": res.get("tier", tier), "target": c.target_odds, "day": day,
+                                    "constraints": c.to_dict()}
             if tier == "audit":
                 for sl in res["slips"].values():
                     self.remember_slip(sl)

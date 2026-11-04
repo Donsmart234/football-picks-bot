@@ -610,6 +610,10 @@ class MiniApp:
             c.exclude_markets.append("under")
         if data.get("all_leagues"):
             c.all_leagues = True        # lift the default top-leagues allowlist
+        if data.get("direction") is not None:      # Mini App goals selector: any | over | under
+            c.set_direction(data.get("direction"))
+            if c.direction and tier != "audit":
+                tier = "safe"                       # Overs / Unders only: every leg at the Safe bar
         prev = {str(x)[:120] for x in (data.get("exclude") or []) if isinstance(x, str)}
         prev = prev if len(prev) <= 40 else set()
         try:

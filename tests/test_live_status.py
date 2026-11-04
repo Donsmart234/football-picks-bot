@@ -21,6 +21,11 @@ os.environ["SUPABASE_URL"] = ""
 import httpx  # noqa: E402
 
 import live  # noqa: E402
+
+# The fixtures are a real snapshot from 2026-11-03 ~08:13 WAT and the live rules are clock-based (kickoff + 5 h,
+# Ended kept 45 min): run the wall clock from that moment so the suite does not expire with the calendar.
+_REAL_TIME, _T_START = time.time, time.time()
+time.time = lambda: 1793689993.0 + (_REAL_TIME() - _T_START)
 from analyzer import parse_share as share_legs  # noqa: E402
 from live import GONE_STOP_GRACE_S as GRACE  # noqa: E402
 from matchstate import FROZEN_S, is_sr_id, sb_state, sr_state  # noqa: E402

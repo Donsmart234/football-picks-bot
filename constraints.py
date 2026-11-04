@@ -14,6 +14,14 @@ carrying at least one included tag):
   exact_goals (exact, range, multigoals, goal bounds), odd_even, minutes, specials (shots, fouls, offsides, leads,
   "in a row", 1UP/2UP and other non-standard markets)
 
+  asian                Asian goal lines (whole / quarter Over/Under lines such as Over 2, Under 3, Over 2.25)
+
+Goals direction (`direction`: over | under | None): the "Overs only" / "Unders only" modes. "over" keeps only Over
+goal-total legs (full-match total Over, team total Over, Asian Over lines); "under" only the Under ones. In these modes
+every leg must reach the Safe bar (>= 80% calibrated estimate; Asian lines: a FULL win, a push is not counted as a win)
+and 1st / 2nd-half and time-window markets (1-60 min, Early Goals...) are left out unless the user asks for them.
+Plain scans keep their own rules (rollover: no unders unless allowed).
+
 What counts as an UNDER selection: any pick labelled Under (Under 2.5, Liverpool Under 1.5, 1st Half Under, Corners
 Under, Bookings Under, Asian Under, "Home & Under 2.5" combos), "Yes" on a market named "... Under ..." (Both Halves
 Under 1.5, Home Team or Under 2.5), "No" on a yes/no market named "... Over ...", and upper-bound picks that are an
@@ -34,7 +42,11 @@ TZ = ZoneInfo(config.LOCAL_TZ)
 
 MARKET_TYPES = ["under", "over", "totals", "team_totals", "1x2", "double_chance", "dnb", "handicap", "btts",
                 "corners", "cards", "player_props", "halves", "combo", "correct_score", "exact_goals", "odd_even",
-                "minutes", "specials"]
+                "minutes", "specials", "asian"]
+DIRECTIONS = ("over", "under")
+# market types that are never a plain goal-total line (an Overs / Unders mode drops them)
+_NOT_GOAL_LINE = {"corners", "cards", "player_props", "combo", "specials", "exact_goals", "correct_score", "odd_even",
+                  "btts", "1x2", "double_chance", "dnb", "handicap"}
 
 # natural words -> market type
 MARKET_ALIASES: dict[str, str] = {
@@ -64,6 +76,9 @@ MARKET_ALIASES: dict[str, str] = {
     "odd/even": "odd_even", "odd even": "odd_even", "odd or even": "odd_even",
     "minutes": "minutes", "minute markets": "minutes", "early goals": "minutes",
     "specials": "specials", "special": "specials", "special markets": "specials",
+    "asian": "asian", "asian lines": "asian", "asian line": "asian", "asian totals": "asian", "asian total": "asian",
+    "asian goals": "asian", "asian goal line": "asian", "asian goal lines": "asian", "asian over/under": "asian",
+    "asian o/u": "asian",
 }
 MARKET_ALIASES.update({t: t for t in MARKET_TYPES})
 MARKET_ALIASES.update({t.replace("_", " "): t for t in MARKET_TYPES})
@@ -254,10 +269,21 @@ def market_tags(market_id: str, market: str, pick: str, group: str = "", specifi
     if mid in ("19", "20", "69", "70", "91", "92"):
         tags.discard("totals")
         tags.add("team_totals")
-    primary = tags - {"under", "over", "halves"}
+    if tags & {"totals", "team_totals"} and _asian_spec(mid, specifier):
+        tags.add("asian")
+    primary = tags - {"under", "over", "halves", "asian"}
     if not primary or stats_mkt and not (is_corner or is_card or is_player):
         tags.add("specials")
     return tuple(sorted(tags))
+
+
+def _asian_spec(mid: str, spec: str) -> bool:
+    """Whole / quarter goal line (Asian): total=2, total=3, total=2.25 ... (never x.5)."""
+    m = re.search(r"(?:^|\|)total=(-?\d+(?:\.\d+)?)", spec or "")
+    if not m:
+        return False
+    f = round((abs(float(m.group(1))) % 1) * 4) / 4
+    return f in (0.0, 0.25, 0.75, 1.0)
 
 
 def leg_tags(l) -> tuple[str, ...]:
@@ -331,6 +357,7 @@ class Constraints:
     kickoff_before: str | None = None
     stats_confirmed_only: bool = False
     all_leagues: bool = False             # lift the default top-leagues allowlist (leagues.py)
+    direction: str | None = None          # goals mode: "over" (Overs only) | "under" (Unders only) | None (any)
     unknown: list[str] = field(default_factory=list)   # market words we couldn't map (reported back, not ignored)
 
     # ---- construction ---------------------------------------------------
@@ -368,7 +395,18 @@ class Constraints:
         c.kickoff_before = _clock(a.get("kickoff_before"))
         c.stats_confirmed_only = bool(a.get("stats_confirmed_only"))
         c.all_leagues = bool(a.get("all_leagues"))
+        c.set_direction(a.get("direction", a.get("goals_direction")))
         return c
+
+    def set_direction(self, v) -> "Constraints":
+        """over | under | any/None. A direction makes Over/Under the mode: the plain 'over' / 'under' market-type
+        include it replaces is dropped, and an Unders mode lifts a stale 'no unders' exclusion."""
+        d = norm_direction(v)
+        self.direction = d
+        if d:
+            self.include_markets = [m for m in self.include_markets if m not in DIRECTIONS]
+            self.exclude_markets = [m for m in self.exclude_markets if m != d]
+        return self
 
     def to_dict(self, compact: bool = True) -> dict:
         d = asdict(self)
@@ -401,6 +439,10 @@ class Constraints:
                 setattr(self, k, uv)
         self.stats_confirmed_only = self.stats_confirmed_only or user.stats_confirmed_only
         self.all_leagues = self.all_leagues or user.all_leagues
+        if user.direction:                 # "unders only" / "overs only" in the user's own words is the mode
+            self.set_direction(user.direction)
+        elif self.direction:
+            self.set_direction(self.direction)
         # an include that the user excluded makes no sense: the exclusion wins
         self.include_markets = [m for m in self.include_markets if m not in self.exclude_markets]
         self.include_leagues = [x for x in self.include_leagues if not _has_league(self.exclude_leagues, x)]
@@ -416,8 +458,12 @@ class Constraints:
             return f"excluded market type ({', '.join(sorted(ex))})"
         if self.include_markets and not tags & set(self.include_markets):
             return "market type not in " + ", ".join(self.include_markets)
+        if self.direction:
+            why = self.direction_problem(tags)
+            if why:
+                return why
         est, odds = float(get("est") or 0), float(get("odds") or 0)
-        bar = max(x for x in (min_p, self.min_leg_prob, 0.0) if x is not None)
+        bar = max(x for x in (min_p, self.min_leg_prob, SAFE_P if self.direction else 0.0, 0.0) if x is not None)
         if est + 1e-9 < bar:
             return f"est {est:.0%} below {bar:.0%}"
         if self.min_leg_odds and odds + 1e-9 < self.min_leg_odds:
@@ -453,6 +499,31 @@ class Constraints:
                 return f"kicks off after {self.kickoff_before}"
         return ""
 
+    def direction_problem(self, tags) -> str:
+        """'' when a leg is a goal-total line in the chosen direction (full match unless halves / minutes were
+        asked for), else the reason."""
+        tags = set(tags)
+        mode = "Overs only" if self.direction == "over" else "Unders only"
+        if not tags & {"totals", "team_totals"} or tags & _NOT_GOAL_LINE:
+            return f"not a goals Over/Under line ({mode})"
+        if self.direction not in tags:
+            return f"not an {self.direction.capitalize()} line ({mode})"
+        for t in ("halves", "minutes"):
+            if t in tags and t not in self.include_markets:
+                return f"{'half' if t == 'halves' else 'time-window'} market ({mode}: full match only)"
+        return ""
+
+    def mode_text(self) -> str:
+        if not self.direction:
+            return ""
+        return ("Overs only" if self.direction == "over" else "Unders only") + \
+            (" (Asian lines only)" if "asian" in self.include_markets else " (incl. Asian lines)") + \
+            " · Safe, every leg ≥80%" + ("" if {"halves", "minutes"} & set(self.include_markets) else " · full match")
+
+    def rules_line(self) -> str:
+        """The 'Rules:' line every slip starts with."""
+        return "Rules: " + (self.describe() or "none")
+
     def match_rules(self) -> "Constraints":
         """Only the match-level rules (leagues, countries, teams, kick-off window)."""
         return Constraints(include_leagues=self.include_leagues, exclude_leagues=self.exclude_leagues,
@@ -485,15 +556,18 @@ class Constraints:
 
     def describe(self) -> str:
         parts = []
-        if self.tier:
+        if self.direction:
+            parts.append(self.mode_text())
+        if self.tier and not self.direction:
             parts.append({"safe": "Safe (every leg ≥80%)", "mid": "Mid-safe", "risk": "Risk",
                           "high": "High risk"}.get(self.tier, self.tier))
         if self.target_odds:
             parts.append(f"~{self.target_odds:g} odds")
         if self.exclude_markets:
             parts.append("no " + ", ".join(_label(m) for m in self.exclude_markets))
-        if self.include_markets:
-            parts.append("only " + ", ".join(_label(m) for m in self.include_markets))
+        inc = [m for m in self.include_markets if not (self.direction and m == "asian")]
+        if inc:
+            parts.append("only " + ", ".join(_label(m) for m in inc))
         if self.min_leg_prob:
             parts.append(f"legs ≥{self.min_leg_prob:.0%}")
         if self.min_legs or self.max_legs:
@@ -528,8 +602,21 @@ class Constraints:
         return " · ".join(parts)
 
 
+SAFE_P = 0.80          # the Safe bar (scanner.TIERS["safe"]["min_p"]); the Overs / Unders modes always use it
+
+
+def norm_direction(v) -> str | None:
+    s = str(v or "").strip().lower()
+    if s in ("over", "overs", "o", "over only", "overs only"):
+        return "over"
+    if s in ("under", "unders", "u", "under only", "unders only"):
+        return "under"
+    return None
+
+
 def _label(m: str) -> str:
-    return {"under": "unders", "over": "overs", "1x2": "1X2", "btts": "GG/NG", "dnb": "draw no bet"}.get(
+    return {"under": "unders", "over": "overs", "1x2": "1X2", "btts": "GG/NG", "dnb": "draw no bet",
+            "asian": "Asian lines"}.get(
         m, m.replace("_", " "))
 
 
@@ -882,7 +969,35 @@ def parse_text(text: str) -> Constraints:
     if re.search(r"stats?[- ]confirmed only|only stats?[- ]confirmed|confirmed legs only", t):
         c.stats_confirmed_only = True
     c.include_markets = [x for x in c.include_markets if x not in c.exclude_markets]
+    d = parse_direction(t)
+    # "only overs and btts" mixes in other markets: keep that as a plain market-type rule, not the Overs-only mode
+    if d and not set(c.include_markets) & _NOT_GOAL_LINE:
+        c.set_direction(d)
+        if re.search(r"(?<![a-z])(?:asian\s+(?:unders?|overs?|lines?|goal lines?|totals?)?\s*only|(?:only|just|strictly)\s+"
+                     r"asian(?!\s+handicap))(?![a-z])", t) and "asian" not in c.include_markets:
+            c.include_markets.append("asian")
     return c
+
+
+_DIR_TAIL = r"(?:only|games?|matches|selections?|picks?|slips?|legs?|mode|bets?|lines?|markets?|tips?|codes?)"
+
+
+def parse_direction(text: str) -> str | None:
+    """'over' / 'under' when the user asks for an Overs-only / Unders-only slip ('unders only', 'safe unders slip
+    4 legs', 'asian unders', 'give me over games', '/scan overs'), None otherwise. Negated words ('no unders') and
+    single market picks ('change leg 3 to over 1.5', 'over/under') are not a mode; asking for both is 'any'."""
+    t = " " + (text or "").lower().replace("’", "'") + " "
+    found = set()
+    for d in DIRECTIONS:
+        pat = (rf"(?<![a-z/])(?:asian\s+)?{d}s(?![a-z/])"                       # overs / unders / asian unders
+               rf"|(?<![a-z])(?:only|just|strictly|all)\s+(?:asian\s+)?{d}(?![a-z/])(?!\s*\d)"
+               rf"|(?<![a-z/])(?:asian\s+)?{d}\s+{_DIR_TAIL}(?![a-z])"            # under games / over only
+               rf"|(?<![a-z])asian\s+{d}(?![a-z/])(?!\s*\d)")                    # asian under
+        for m in re.finditer(pat, t):
+            if not _negated(t, m.start()):
+                found.add(d)
+                break
+    return found.pop() if len(found) == 1 else None
 
 
 # ------------------------------------------------------------------ team names in free text
