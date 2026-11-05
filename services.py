@@ -10,6 +10,7 @@ import config
 from bookmakers import BookmakerAdapter, Event, SportyBetNG
 from matching import rank_events
 from predictor import Prediction, predict
+from draw5 import Draw5Finder
 from scanner import Scanner
 from srstats import MatchForm, SportradarStats
 from stats import ApiFootball, QuotaExceeded
@@ -35,6 +36,7 @@ class Services:
         self.stats = stats or ApiFootball(self.storage)
         self.sr = SportradarStats(self.storage)
         self.scanner = Scanner(self.bookmaker, self.sr, self.stats)
+        self.draw5 = Draw5Finder(self.bookmaker, self.sr)
         self._pred_cache: dict[str, tuple[float, Prediction]] = {}
         self._form_cache: dict[str, MatchForm | None] = {}
 

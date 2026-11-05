@@ -13,6 +13,7 @@ from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHand
                           ContextTypes, MessageHandler, TypeHandler, filters)
 
 import config
+import draw5
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection, code_link
 from ai import md_to_html
 from analyzer import bare_code, extract_code
@@ -43,6 +44,8 @@ HELP = (
     "/analyze CODE – analyze any SportyBet booking code (or just paste the 6-character code)\n"
     "/history – booked codes and results (pinged when a slip lands)\n"
     "/rollover 2 7 – rollover plan: daily target 2–5, 3–15 days (+ optional stake) · /rollover tickets – every day's ticket\n"
+    "/draw5 weekend · /draw5 midweek · /draw5 week – 5-minute draw finder (SportyBet '1X2 from 1 to 5 minute' = "
+    "Draw), at least 50 ranked picks; add league names to keep to them (or just type \"5 min draw weekend\")\n"
     "/reset – clear the AI chat memory"
 )
 
@@ -168,6 +171,9 @@ async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             return
     if rt is not None and _image_ref(rt) is not None:   # a text reply to a photo: read the photo with this text
         await _handle_image(update, ctx, rt, text)
+        return
+    if rt is None and draw5.wants_draw5(text):      # "5 min draw weekend": the 5-minute draw finder, no AI
+        await _d5_start(update.effective_message, ctx, text)
         return
     sctx = await _slip_context(update, ctx, text)
     ai = getattr(svc(ctx), "ai", None)
@@ -1513,12 +1519,132 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                                    reply_markup=open_code_kb(s.bookmaker, d["code"]))
     elif kind == "IMG":
         await _slip_image_cb(q, ctx, parts)
+    elif kind == "D5":
+        await _d5_callback(q, ctx, parts)
     elif kind in ("AZR", "AZC", "AZN"):
         await _analyzer_callback(q, ctx, kind, parts[1] if len(parts) > 1 else "")
     elif kind == "CLR":
         s.storage.slip_clear(uid)
         await q.answer("Slip cleared")
         await q.edit_message_text("Slip cleared.")
+    else:
+        await q.answer()
+
+
+# ---------------------------------------------------------------- 5-minute draw finder (draw5.py)
+D5_PER = 10
+
+
+def _d5_store(ctx) -> dict:
+    st = ctx.application.bot_data.setdefault("draw5", {})
+    import time as _t
+    for k in [k for k, v in st.items() if _t.time() - v["ts"] > 6 * 3600]:
+        st.pop(k, None)
+    return st
+
+
+def d5_period_kb(cur: str | None = None, tok: str = "") -> list:
+    return [Btn(("[" + draw5.PERIOD_LABEL[p] + "]") if p == cur else draw5.PERIOD_LABEL[p],
+                callback_data=f"D5|run|{p}|{tok}") for p in draw5.PERIODS]
+
+
+def d5_kb(tok: str, res: dict, page: int, pages: int) -> Kb:
+    rows = []
+    if pages > 1:
+        rows.append([Btn("Prev", callback_data=f"D5|{tok}|p|{page - 1}") if page > 0 else Btn("-", callback_data="NOOP"),
+                     Btn(f"Page {page + 1}/{pages}", callback_data="NOOP"),
+                     Btn("Next", callback_data=f"D5|{tok}|p|{page + 1}") if page + 1 < pages
+                     else Btn("-", callback_data="NOOP")])
+    rows.append(d5_period_kb(res.get("period"), tok))
+    if res.get("open_count"):
+        rows.append([Btn(f"Slip: top {n}", callback_data=f"D5|{tok}|s|{n}") for n in (5, 10, 20)
+                     if n <= max(5, res["open_count"])])
+    if res.get("picks"):
+        rows.append([Btn("Full list (file)", callback_data=f"D5|{tok}|f")])
+    return Kb(rows)
+
+
+async def draw5_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await _d5_start(update.effective_message, ctx, " ".join(ctx.args or []))
+
+
+async def _d5_start(msg, ctx, text: str) -> None:
+    period = draw5.parse_period(text)
+    if period is None:
+        wins = [draw5.period_window(p) for p in draw5.PERIODS]
+        await msg.reply_text(
+            "<b>5-minute draw finder</b> · SportyBet '1X2 from 1 to 5 minute' = Draw (level after minute 5).\n"
+            "Pick the window (times WAT):\n" + "\n".join(f"{esc(w['label'])}" for w in wins)
+            + "\n<i>At least 50 picks, top leagues first; widened to other leagues only to reach 50.</i>",
+            parse_mode=ParseMode.HTML, reply_markup=Kb([d5_period_kb(None, "")]))
+        if text.strip():
+            _d5_store(ctx)["_pending_text"] = {"ts": __import__("time").time(), "text": text}
+        return
+    await _d5_run(msg, ctx, period, text)
+
+
+async def _d5_run(msg, ctx, period: str, text: str) -> None:
+    import time as _t
+    import uuid
+    s = svc(ctx)
+    win = draw5.period_window(period)
+    note = await msg.reply_text(f"Finding 5-minute draws · {esc(win['label'])} · reading SportyBet's market and both "
+                                "teams' early-goal record... ~20-40 s", parse_mode=ParseMode.HTML)
+    try:
+        res = await s.draw5.find(period, text)
+    except Exception as exc:
+        log.warning("draw5 failed: %s", exc, exc_info=True)
+        await note.edit_text("The 5-minute draw search failed (SportyBet didn't answer). Try again in a minute.")
+        return
+    tok = uuid.uuid4().hex[:8]
+    _d5_store(ctx)[tok] = {"ts": _t.time(), "res": res, "text": text}
+    body, pages = draw5.page_html(res, 0, D5_PER)
+    await note.edit_text(body, parse_mode=ParseMode.HTML, reply_markup=d5_kb(tok, res, 0, pages),
+                         disable_web_page_preview=True)
+
+
+async def _d5_callback(q, ctx, parts: list[str]) -> None:
+    st = _d5_store(ctx)
+    if parts[1] == "run":
+        period = parts[2] if len(parts) > 2 and parts[2] in draw5.PERIODS else "weekend"
+        prev = st.get(parts[3]) if len(parts) > 3 and parts[3] else None
+        text = (prev or {}).get("text") or ""
+        if not prev and st.get("_pending_text"):
+            text = st.pop("_pending_text")["text"]
+        await q.answer(f"{draw5.PERIOD_LABEL[period]}... ~30 s")
+        await _d5_run(q.message, ctx, period, text)
+        return
+    entry = st.get(parts[1])
+    if not entry:
+        await q.answer("That list expired. Send /draw5 again.", show_alert=True)
+        return
+    res, act = entry["res"], parts[2] if len(parts) > 2 else ""
+    if act == "p":
+        page = int(parts[3]) if len(parts) > 3 and parts[3].lstrip("-").isdigit() else 0
+        body, pages = draw5.page_html(res, page, D5_PER)
+        page = max(0, min(page, pages - 1))
+        await q.answer()
+        await q.edit_message_text(body, parse_mode=ParseMode.HTML, reply_markup=d5_kb(parts[1], res, page, pages),
+                                  disable_web_page_preview=True)
+    elif act == "s":
+        n = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 10
+        sl = draw5.slip_from(res, n)
+        if not sl["legs"]:
+            await q.answer(sl.get("note") or "No open picks right now.", show_alert=True)
+            return
+        await q.answer()
+        ai = getattr(svc(ctx), "ai", None)
+        sid = ai.remember_slip(sl) if ai else None
+        rows = [[Btn("Book on SportyBet", callback_data=f"SB|{sid}")], [img_btn("s", sid)]] if sid else None
+        await q.message.reply_text(draw5.slip_html(sl), parse_mode=ParseMode.HTML,
+                                   reply_markup=Kb(rows) if rows else None)
+    elif act == "f":
+        import io
+        await q.answer("Sending the full list...")
+        data = draw5.file_text(res).encode("utf-8")
+        name = f"5min_draws_{res.get('period', 'list')}_{res.get('window_start', '')[:10]}.txt"
+        await q.message.reply_document(io.BytesIO(data), filename=name,
+                                       caption=f"Rules: {res['rules']}"[:1000])
     else:
         await q.answer()
 
@@ -1593,7 +1719,7 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start", "Open the app + help"), BotCommand("scan", "Scan markets: /scan safe 5"),
         BotCommand("ai", "Ask the AI analyst"), BotCommand("analyze", "Analyze a booking code: /analyze CODE"), BotCommand("today", "Today's matches by league"),
-        BotCommand("rollover", "Rollover plan: /rollover 2 7"), BotCommand("history", "Booked codes + results"),
+        BotCommand("rollover", "Rollover plan: /rollover 2 7"), BotCommand("draw5", "5-minute draw finder: /draw5 weekend"), BotCommand("history", "Booked codes + results"),
         BotCommand("slip", "Your slip and total odds"), BotCommand("help", "How it works"),
     ])
     url = app_url()
@@ -1624,6 +1750,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("rollover", rollover_cmd))
+    app.add_handler(CommandHandler("draw5", draw5_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text))

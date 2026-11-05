@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 
 import httpx
@@ -33,6 +34,14 @@ class Game:
     ht_ga: int | None
     opp: str
     uts: int
+    # goal minutes from the feed's match comment ("1:0 (7.) L.Yamal, 2:0 (52.) ..."), from this team's side;
+    # None when the feed has no minute detail for a game with goals (a 0-0 game is known: no goals)
+    min_for: tuple[int, ...] | None = None
+    min_ag: tuple[int, ...] | None = None
+
+    @property
+    def minutes_known(self) -> bool:
+        return self.min_for is not None and self.min_ag is not None
 
     @property
     def res(self) -> str:
@@ -87,6 +96,8 @@ class TeamForm:
 @dataclass
 class H2H:
     games: list[tuple[int, int, int]] = field(default_factory=list)   # (today's home goals, today's away goals, uts)
+    # first-goal minute of each meeting with minute detail (None = 0-0); meetings without detail are left out
+    first_goal: list[int | None] = field(default_factory=list)
 
     def summary(self, n: int = 6) -> dict:
         g = self.games[:n]
@@ -129,6 +140,30 @@ class MatchForm:
     def to_json(self) -> dict:
         return {"home": self.home.to_json() if self.home else None,
                 "away": self.away.to_json() if self.away else None, "h2h": self.h2h.summary()}
+
+
+_GOAL = re.compile(r"(\d+)\s*:\s*(\d+)\s*\((\d+)\.")
+
+
+def goal_minutes(comment: str, gh: int, ga: int) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """(home goal minutes, away goal minutes) from a Sportradar match comment such as
+    "1:0 (7.) L.Yamal, 1:1 (45.+2) X, 2:1 (64.) Y". The running score says which side scored. None when the comment
+    doesn't account for every regular-time goal; ((), ()) for a 0-0."""
+    if gh == 0 and ga == 0:
+        return (), ()
+    h, a, ph, pa = [], [], 0, 0
+    for m in _GOAL.finditer(comment or ""):
+        sh, sa, mi = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if sh == ph + 1 and sa == pa:
+            h.append(mi)
+        elif sa == pa + 1 and sh == ph:
+            a.append(mi)
+        else:
+            return None
+        ph, pa = sh, sa
+    if len(h) < gh or len(a) < ga:
+        return None
+    return tuple(h), tuple(a)
 
 
 def _uid(competitor_id: str) -> str:
@@ -188,9 +223,11 @@ class SportradarStats:
             gh, ga = int(ft.get("home", res["home"])), int(ft.get("away", res["away"]))
             hh, ha = p1.get("home"), p1.get("away")
             opp = (teams.get("away" if is_home else "home") or {}).get("name", "")
+            gm = goal_minutes(m.get("comment") or "", gh, ga)
+            mf, ma = (None, None) if gm is None else ((gm[0], gm[1]) if is_home else (gm[1], gm[0]))
             tf.games.append(Game("H" if is_home else "A", gh if is_home else ga, ga if is_home else gh,
                                  (hh if is_home else ha), (ha if is_home else hh), opp,
-                                 int((m.get("time") or {}).get("uts") or 0)))
+                                 int((m.get("time") or {}).get("uts") or 0), mf, ma))
         tf.games.sort(key=lambda g: -g.uts)
         return tf
 
@@ -206,6 +243,9 @@ class SportradarStats:
                 continue
             ft = ((m.get("periods") or {}).get("ft")) or res
             gh, ga = int(ft.get("home", res["home"])), int(ft.get("away", res["away"]))
+            gm = goal_minutes(m.get("comment") or "", gh, ga)
+            if gm is not None:
+                out.first_goal.append(min(gm[0] + gm[1]) if gm[0] or gm[1] else None)
             if str((teams.get("home") or {}).get("uid")) == hu:
                 out.games.append((gh, ga, int((m.get("time") or {}).get("uts") or 0)))
             else:

@@ -47,6 +47,8 @@
     hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false },
     az: null, azBusy: false, azErr: "", azCode: "", azTake: null, azTakeBusy: false, allLg: (() => { try { return localStorage.getItem("fra_alllg") === "1"; } catch (e) { return false; } })(),
     ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
+    homeMode: (() => { try { return localStorage.getItem("fra_home") === "draw5" ? "draw5" : "scan"; } catch (e) { return "scan"; } })(),
+    d5Period: "weekend", d5: {}, d5Busy: false, d5Err: "", d5Show: 30,
   };
   const EXCL = [["under", "No unders"], ["corners", "No corners"], ["cards", "No cards"], ["player_props", "No player props"], ["handicap", "No handicaps"], ["combo", "No combos"]];
 
@@ -263,9 +265,66 @@
   }
 
   // ---------------------------------------------------------------- HOME / SCANNER
+  function homeSwitch() {
+    return `<div class="seg" role="tablist" aria-label="Scanner mode" style="margin-bottom:12px">${[["scan", "Slip scanner"], ["draw5", "5-min Draw"]].map(([k, v]) => `<button data-act="homemode" data-m="${k}" role="tab" aria-selected="${state.homeMode === k}" class="${state.homeMode === k ? "on" : ""}">${v}</button>`).join("")}</div>`;
+  }
+  // ---------------------------------------------------------------- 5-MINUTE DRAW FINDER (/api/draw5)
+  const D5P = [["weekend", "Weekend"], ["midweek", "Midweek"], ["week", "Full week"]];
+  const D5HELP = { weekend: "Fri 18:00 – Sun 23:59 WAT", midweek: "Mon 00:00 – Fri 17:59 WAT", week: "Next 7 days" };
+  function d5Card(l, i) {
+    const inSlip = slip.has(l.event_id, l.market_id, l.outcome_id, l.specifier);
+    const color = l.est >= 0.9 ? "var(--accent)" : l.est >= 0.86 ? "var(--mid)" : "var(--amber)";
+    return `<div class="leg"><div class="lg-meta">${flag(l)}<span class="ellip">${esc(leagueShort(l.league))}</span><span class="dot">·</span><span class="num">${esc(kickDay(l.kickoff))} ${esc(kickTime(l.kickoff))}</span>${l.wider ? '<span class="vchip v-demoted">Wider league</span>' : ""}${l.open === false ? '<span class="vchip v-lost">Suspended now</span>' : ""}${verdictChip(l.stats ? "confirmed" : "market only")}</div>
+      <div class="top"><span class="d5rank num">${l.rank}</span>${teamsBlock(l, "grow")}<button class="tick btn-tick${inSlip ? " sel" : ""}" data-act="addleg" data-k="d5" data-i="${i}">${f2(l.odds)}</button></div>
+      <div class="mkt"><span class="ellip">1X2 from 1 to 5 minute</span> <span class="pick">Draw</span> <span class="sub">· market ${pct(l.p_market, 1)} · value ${(l.value >= 0 ? "+" : "") + (l.value * 100).toFixed(1)}%</span></div>
+      <div class="prob"><div class="track"><div class="fill" style="width:${Math.round(l.est * 100)}%;background:${color}"></div></div><b>${pct(l.est, 1)}</b></div>
+      ${l.why ? `<div class="why">${esc(l.why)}</div>` : ""}</div>`;
+  }
+  function renderDraw5() {
+    const r = state.d5[state.d5Period];
+    let h = homeSwitch() + `<div style="margin:4px 2px 12px"><div class="label">5-minute draw finder</div><h1>Draw after 5 minutes</h1>
+      <div class="sub">SportyBet “1X2 from 1 to 5 minute” = Draw · at least 50 picks · top leagues first</div></div>
+      <div class="card"><div class="seg" role="radiogroup" aria-label="Window">${D5P.map(([k, v]) => `<button data-act="d5period" data-p="${k}" role="radio" aria-checked="${state.d5Period === k}" class="${state.d5Period === k ? "on" : ""}">${v}</button>`).join("")}</div>
+      <div class="sub" style="margin:8px 2px 0">${esc(D5HELP[state.d5Period])} · widened to other leagues only to reach 50 (tagged)</div>
+      <button class="btn" data-act="d5run" ${state.d5Busy ? "disabled" : ""} style="margin-top:10px">${state.d5Busy ? "Analysing…" : r ? IC.refresh + "Refresh list" : "Find 5-min draws"}</button></div>`;
+    if (state.d5Busy) h += `<div class="card"><div class="scanning"><div class="radar"></div>Reading the 5-minute market…<div class="steps">SportyBet prices → expected goals → both teams' early-goal record → rank</div></div></div>`;
+    else if (state.d5Err) h += `<div class="error">${esc(state.d5Err)}</div>`;
+    else if (r) {
+      h += `<div class="card port"><div class="rules rulesline"><b>Rules:</b> ${esc(r.rules)}</div>
+        <div class="kpis"><div class="kpi"><b>${r.count}</b><span>Selections</span></div><div class="kpi"><b>${r.top_count}</b><span>Top leagues</span></div><div class="kpi"><b>${r.wider_count}</b><span>Wider leagues</span></div></div>
+        ${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}${r.suspended_count ? `<div class="note">${r.suspended_count} have the market suspended on SportyBet right now (price shown, no bets until it reopens).</div>` : ""}
+        <div class="btnrow">${["5", "10", "20"].filter((n) => r.slips && r.slips[n]).map((n) => `<button class="btn small secondary" data-act="d5slip" data-n="${n}">Slip: top ${n}</button>`).join("")}</div>
+        <div class="sub" style="text-align:center;margin-top:6px">Lists are not saved · a slip is booked only when you tap Book</div></div>
+        <div class="section"><span class="label">Ranked by est.</span><span class="sub">tap a price to add</span></div>
+        <div class="card flush">${(r.picks || []).slice(0, state.d5Show).map((l, i) => d5Card(l, i)).join("") || `<div class="empty">No match offers the 5-minute market in this window.</div>`}</div>
+        ${(r.picks || []).length > state.d5Show ? `<button class="btn secondary" data-act="d5more">Show all ${r.picks.length}</button>` : ""}`;
+    }
+    h += `<div class="disc">Est. = chance the score is level after minute 5: SportyBet's margin-free price blended with an early-goals model (expected goals, the share of goals scored in minutes 1–5, both teams' early-goal record). Estimates, not guarantees. 18+.</div>`;
+    $view.innerHTML = h;
+  }
+  async function runDraw5(refresh) {
+    const p = state.d5Period;
+    state.d5Busy = true; state.d5Err = ""; state.d5Show = 30; hap("medium"); if (state.tab === "home") renderHome();
+    try { state.d5[p] = await api("/api/draw5", { period: p, refresh: !!refresh }); hapN("success"); }
+    catch (e) { state.d5Err = e.message; hapN("error"); }
+    state.d5Busy = false;
+    if (state.tab === "home") renderHome();
+  }
+  function d5SlipSheet(n) {
+    const r = state.d5[state.d5Period]; if (!r || !r.slips || !r.slips[n]) return;
+    const s = r.slips[n], legs = (r.picks || []).filter((l) => l.open !== false).slice(0, Number(n));
+    openSheet(`<div class="label" style="text-align:center">5-min Draw slip · preview</div>
+      <div class="rules rulesline"><b>Rules:</b> ${esc(r.rules)} · slip = top ${legs.length} open picks</div>
+      <div class="big num" style="text-align:center">${f2(s.total_odds)}<small>total odds</small></div>
+      <div class="sub" style="text-align:center">${legs.length} legs · est. hit ${pct(s.est_prob, 1)} (legs treated as independent)</div>
+      <div class="card flush" style="max-height:40vh;overflow:auto">${legs.map((l) => `<div class="leg"><div class="lg-meta"><span class="num">${esc(kickDay(l.kickoff))} ${esc(kickTime(l.kickoff))}</span><span class="dot">·</span><span class="ellip">${esc(leagueShort(l.league))}</span></div><div class="mkt"><span class="ellip">${esc(l.match)}</span> <span class="pick">Draw 1-5 @${f2(l.odds)}</span> · ${pct(l.est)}</div></div>`).join("")}</div>
+      <div class="btnrow"><button class="btn" data-act="d5book" data-n="${esc(n)}">Book on SportyBet</button><button class="btn secondary" data-act="closesheet">Not now</button></div>
+      <div class="disc">Nothing is booked until you tap Book. Estimates, not guarantees. 18+.</div>`);
+  }
   function renderHome() {
+    if (state.homeMode === "draw5") return renderDraw5();
     const t = TIERS[state.tier];
-    let html = `<div style="margin:4px 2px 12px"><div class="label">Market scanner</div><h1>Build a slip</h1>
+    let html = homeSwitch() + `<div style="margin:4px 2px 12px"><div class="label">Market scanner</div><h1>Build a slip</h1>
       <div class="sub">Every SportyBet market · top leagues · form, home/away &amp; H2H checked</div></div>
       <div class="chips">${Object.entries(TIERS).map(([k, v]) => `<button class="chip t-${k}${state.tier === k ? " on" : ""}" data-act="tier" data-t="${k}"><i></i>${v.label}</button>`).join("")}</div>
       <div class="card t-${state.tier}" style="margin-top:10px">
@@ -317,6 +376,7 @@
     return h;
   }
   function legsFor(key) {
+    if (key === "d5") { const d = state.d5[state.d5Period]; return (d && d.picks) || []; }
     const r = state.scan; if (!r) return [];
     if (key === "scan") return r.legs || [];
     if (key === "value") return r.top_value || [];
@@ -1088,6 +1148,12 @@
     else if (a === "azrebook") { hap("medium"); azRebookSheet(); }
     else if (a === "azconfirm") azConfirm();
     else if (a === "aztake") azTake();
+    else if (a === "homemode") { state.homeMode = t.dataset.m; try { localStorage.setItem("fra_home", state.homeMode); } catch (e) {} hapSel(); renderHome(); window.scrollTo(0, 0); }
+    else if (a === "d5period") { state.d5Period = t.dataset.p; state.d5Err = ""; state.d5Show = 30; hapSel(); if (!state.d5[state.d5Period]) runDraw5(); else renderHome(); }
+    else if (a === "d5run") runDraw5(!!state.d5[state.d5Period]);
+    else if (a === "d5more") { state.d5Show = 1000; renderHome(); }
+    else if (a === "d5slip") { hap("medium"); d5SlipSheet(t.dataset.n); }
+    else if (a === "d5book") { const r = state.d5[state.d5Period], n = t.dataset.n; if (r && r.slips && r.slips[n]) { const legs = (r.picks || []).filter((l) => l.open !== false).slice(0, Number(n)); hap("medium"); bookLegs(legs, r.slips[n].total_odds, r.slips[n].est_prob, r.slips[n].slip_id); } }
     else if (a === "dir") { state.dir = t.dataset.v; try { localStorage.setItem("fra_dir", state.dir); } catch (e) {} hapSel(); renderHome(); }
     else if (a === "alllg") { state.allLg = !state.allLg; try { localStorage.setItem("fra_alllg", state.allLg ? "1" : "0"); } catch (e) {} hapSel(); renderHome(); }
     else if (a === "viewslip") { state.viewSlip = t.dataset.k; renderHome(); window.scrollTo(0, 0); }

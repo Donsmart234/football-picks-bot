@@ -408,3 +408,5 @@ svg.i .fill { fill: currentColor; stroke: none; }
 .flag.emo svg.i { width: 13px; height: 13px; color: var(--muted); vertical-align: -2px; }
 .state svg.i { width: 13px; height: 13px; stroke-width: 2.6; margin-right: 3px; }
 .out .o svg.i { width: 14px; height: 14px; color: var(--muted); }
+
+.d5rank { min-width: 22px; height: 22px; border-radius: 7px; background: var(--bg2); border: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; flex: none; }

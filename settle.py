@@ -301,6 +301,8 @@ def settle_leg(leg: dict, r: MatchResult) -> tuple[str, str]:
     ft, ht = r.ft, r.ht
     mid = leg.get("market_id", "")
     try:
+        if mid == MINUTE_1X2:
+            return _minute_1x2_final(leg, ft)
         if mid in FAMILIES:
             fam = FAMILIES[mid]
             if fam.period == "ft":
@@ -344,6 +346,16 @@ def settle_leg(leg: dict, r: MatchResult) -> tuple[str, str]:
     except (TypeError, ValueError) as exc:
         log.info("settle %s failed: %s", mid, exc)
     return "check", "market not auto-settled: check SportyBet"
+
+
+MINUTE_1X2 = "900069"      # SportyBet "1X2 from 1 to N minute" (specifier minute=N), e.g. the 5-minute draw
+
+
+def _minute_1x2_final(leg: dict, ft) -> tuple[str, str]:
+    """Final result alone settles it only when no goal was scored at all (0-0: level at every minute)."""
+    if ft is not None and tuple(ft) == (0, 0):
+        return _wl({"1": False, "2": True, "3": False}.get(leg.get("outcome_id", ""))), "0-0: level throughout"
+    return "check", "minute market: needs the goal times, check SportyBet"
 
 
 def slip_status(legs: list[dict]) -> str:
@@ -401,7 +413,13 @@ def early_settle(leg: dict, r: MatchResult) -> tuple[str, str] | None:
     tag = f"({r.minute}')" if r.minute else ("(HT)" if r.phase == "ht" else "")
     out: str | None = None
     try:
-        if mid in FAMILIES:
+        if mid == MINUTE_1X2:
+            # "1X2 from 1 to N minute": 0-0 with the clock already past minute N+1 means the window ended level
+            n = int(spec_value(leg.get("specifier") or "", "minute") or "0")
+            past = r.phase in ("ht", "2h") or (r.minute is not None and r.minute >= n + 2)
+            if n and past and (i, j) == (0, 0):
+                out = {"1": "lost", "2": "won", "3": "lost"}.get(leg.get("outcome_id", ""))
+        elif mid in FAMILIES:
             fam = FAMILIES[mid]
             o, spec = leg.get("outcome_id", ""), leg.get("specifier") or ""
             if fam.period == "ft":

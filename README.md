@@ -7,6 +7,32 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-05): 5-minute draw finder
+**What:** SportyBet's **"1X2 from 1 to 5 minute"** market (Betradar/SportyBet market id `900069`, specifier
+`minute=5`, outcome `2` = Draw: the score is level when minute 5 ends, i.e. 0-0 or the rare 1-1). `draw5.py`.
+The upcoming-events list returns it when asked (`marketId=1,18,900069`), so one paged list call covers every match (no
+per-event detail calls); events that don't list it don't offer it. SportyBet sometimes lists it **suspended** (status 2,
+BetGenius feed): those picks are kept, priced from the shown odds and tagged "suspended now"; slips use open picks only.
+**Estimate per match:** SportyBet's margin-free price (the feed's own outcome probabilities, else power de-margining)
+blended 50/50 (logit) with an early-goals model: expected match goals (fitted to the 1X2 + O/U 2.5 book, 70/30 with the
+Sportradar form model) x **3.55%** (share of goals scored in minutes 1-5, measured on 2,676 goals with minute detail
+from 1,116 recent matches; uniform would be 5.6%) x both teams' early-goal tendency (goals for + against in minutes
+1-15 of their last 10 games vs expected, shrunk to 1.0; goal minutes parsed from the Sportradar match comment,
+`srstats.goal_minutes`), P(level) = P(0-0) + P(1-1) + P(2-2). Each pick: est %, odds, SportyBet's own %, value
+(est x odds - 1), short reason (expected goals, slow/fast starters with counts, H2H goals before 15').
+**Windows (WAT):** Weekend = Fri 18:00 - Sun 23:59; Midweek = Mon 00:00 - Fri 17:59 (the current one while 24 h+ of
+it are left, else next week's); Full week = next 7 days. Inside a window it runs from now; absolute dates in output.
+**Minimum 50:** every top-league match offering the market (up to 150), ranked by est; fewer than 50 -> the best
+other-league picks fill up to 50, tagged "wider league"; named leagues ("/draw5 weekend epl laliga") are hard
+filters (no widening, count stated); fewer than 50 anywhere -> all of them and a plain note.
+**Where:** `/draw5` (window buttons), `/draw5 weekend|midweek|week [leagues]`, or chat "5 min draw weekend" (handled
+before the AI). Result: Rules: line, 10 per page with Prev/Next, Weekend / Midweek / Full week buttons, **Slip: top
+5/10/20** (preview with total odds + est; **Book on SportyBet** only on tap, `SB|sid`), **Full list (file)** (.txt).
+Mini App: Scanner tab -> **5-min Draw** switch, Weekend / Midweek / Full week, ranked cards, Slip top N sheet with Book.
+API `POST /api/draw5 {"period", "leagues"?, "refresh"?}` -> list + preview slip ids. Lists/previews are never saved to
+History (only booked codes). Settlement: 0-0 full time -> won; 0-0 past minute 6 / at HT -> won early; otherwise
+"check" (goal times needed). Tests: `tests/test_draw5.py`.
+
 ## What's new (2026-11-04): Overs only / Unders only, with Asian lines, all Safe
 **Goals mode** (`Constraints.direction` = over | under, constraints.py) shared by /scan, the AI, the Mini App and scan
 edits. **Overs only** keeps only Over goal lines (full-match total, team totals, Asian Over lines); **Unders only** only

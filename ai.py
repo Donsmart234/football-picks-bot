@@ -88,6 +88,8 @@ Rules:
   kickoff · match · pick @odds (est %). Then total odds, est. hit chance, booking code.
 - Never call anything a sure win, lock or guaranteed. "Safe" means lower-risk. Combined chance assumes the legs are
   independent. You can answer general football or SportyBet questions from knowledge, flagging uncertainty.
+- 5-MINUTE DRAWS ("5 min draw", "draw in the first 5 minutes") are answered by the bot's own finder (/draw5 weekend |
+  midweek | week, or the Scanner tab's 5-min Draw section), never by scan_markets; if asked indirectly, point there.
 - Load codes at https://www.sportybet.com/ng/m/code-hub/load-code (or Load Code in the SportyBet app)."""
 
 TOOLS = [{"functionDeclarations": [
@@ -401,6 +403,18 @@ class Analyst:
         the message is then treated as an edit of THAT slip and answered inside its section."""
         if context and context.get("legs"):
             return await self._ask_edit(chat_id, text, context)
+        import draw5
+        if draw5.wants_draw5(text) and getattr(self.s, "draw5", None) is not None:
+            # "5 min draw weekend": the 5-minute draw finder answers directly (a 50+ pick list, no model call)
+            period = draw5.parse_period(text) or "weekend"
+            res = await self.s.draw5.find(period, text)
+            reply = strip_emoji(draw5.chat_summary(res))
+            if not draw5.parse_period(text):
+                reply = "No window named, so this is the weekend (say midweek or full week for the others).\n" + reply
+            self._save(chat_id, "user", text)
+            self._save(chat_id, "model", reply[:1500])
+            return {"reply": reply, "slip": None, "code": None, "tools": ["draw5"], "model": "draw5", "analysis": None,
+                    "draw5": res}
         if not self.enabled:
             return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
         contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]

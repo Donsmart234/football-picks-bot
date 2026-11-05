@@ -44,6 +44,7 @@ class Outcome:
     desc: str
     odds: float | None
     active: bool
+    prob: float | None = None      # the feed's own outcome probability (margin-free), when listed
 
 
 @dataclass
@@ -190,10 +191,10 @@ class SportyBetNG(BookmakerAdapter):
             raise httpx.HTTPStatusError(f"SportyBet WAF challenge ({waf or 202})", request=r.request, response=r)
         r.raise_for_status()
 
-    async def _get_page(self, hours: int, page: int) -> dict:
+    async def _get_page(self, hours: int, page: int, market_ids: str | None = None) -> dict:
         params = {
             "sportId": "sr:sport:1",
-            "marketId": f"{MARKET_1X2},{MARKET_OU},{MARKET_DC},{MARKET_BTTS}",
+            "marketId": market_ids or f"{MARKET_1X2},{MARKET_OU},{MARKET_DC},{MARKET_BTTS}",
             "pageSize": self.PAGE_SIZE,
             "pageNum": page,
             "option": 1,
@@ -226,9 +227,13 @@ class SportyBetNG(BookmakerAdapter):
                     odds = float(o.get("odds"))
                 except (TypeError, ValueError):
                     odds = None
+                try:
+                    prob = float(o["probability"]) if o.get("probability") not in (None, "") else None
+                except (TypeError, ValueError):
+                    prob = None
                 outs[str(o.get("id"))] = Outcome(
                     id=str(o.get("id")), desc=o.get("desc", ""), odds=odds,
-                    active=bool(o.get("isActive", 1)) and m.get("status", 0) == 0)
+                    active=bool(o.get("isActive", 1)) and m.get("status", 0) == 0, prob=prob)
             markets[key] = outs
         return Event(
             event_id=raw["eventId"],
@@ -260,18 +265,21 @@ class SportyBetNG(BookmakerAdapter):
                     log.debug("skip event %s: %s", eid, exc)
         return n
 
-    async def list_events(self, hours: int = 24) -> list[Event]:
-        cached = self._cache.get(hours)
+    async def list_events(self, hours: int = 24, market_ids: str | None = None) -> list[Event]:
+        """Upcoming events with the main markets (default) or the given comma-separated market ids, e.g.
+        "1,18,900069" (the list endpoint returns every line of each requested market). Cached per (hours, ids)."""
+        key = hours if not market_ids else (hours, market_ids)
+        cached = self._cache.get(key)
         if cached and time.time() - cached[0] < self._cache_seconds:
             return cached[1]
-        lock = self._locks.setdefault(hours, asyncio.Lock())
+        lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
-            cached = self._cache.get(hours)
+            cached = self._cache.get(key)
             if cached and time.time() - cached[0] < self._cache_seconds:
                 return cached[1]
             seen: set[str] = set()
             events: list[Event] = []
-            first = await self._get_page(hours, 1)
+            first = await self._get_page(hours, 1, market_ids)
             self._extract(first, seen, events)
             total = int(first.get("totalNum") or 0)
             pages = min(self.MAX_PAGES, math.ceil(total / self.PAGE_SIZE) + 1) if total else 1
@@ -280,7 +288,7 @@ class SportyBetNG(BookmakerAdapter):
             async def fetch(p: int) -> dict:
                 async with sem:
                     try:
-                        return await self._get_page(hours, p)
+                        return await self._get_page(hours, p, market_ids)
                     except Exception as exc:
                         log.warning("SportyBet page %s skipped: %s", p, exc)
                         return {}
@@ -290,7 +298,7 @@ class SportyBetNG(BookmakerAdapter):
                 self._extract(data, seen, events)
             events.sort(key=lambda e: (e.start, e.league_full, e.home))
             log.info("SportyBet: %d events (totalNum=%d, %d pages, %dh)", len(events), total, pages, hours)
-            self._cache[hours] = (time.time(), events)
+            self._cache[key] = (time.time(), events)
             return events
 
     @staticmethod

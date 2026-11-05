@@ -193,6 +193,7 @@ class MiniApp:
         app.router.add_post("/api/predict", self.predict)
         app.router.add_post("/api/book", self.book)
         app.router.add_post("/api/scan", self.scan)
+        app.router.add_post("/api/draw5", self.draw5)
         app.router.add_post("/api/ai", self.ai)
         app.router.add_post("/api/ai/reset", self.ai_reset)
         app.router.add_get("/api/match_markets", self.match_markets)
@@ -631,6 +632,34 @@ class MiniApp:
             else:
                 ai.remember_slip(res)
         return self._gz(web.json_response(res))
+
+    async def draw5(self, request: web.Request) -> web.Response:
+        """5-minute draw finder: {"period": "weekend"|"midweek"|"week", "leagues": "free text", "refresh": bool}.
+        Returns the ranked list (>= 50 picks, or all there are) plus preview slips for the top 5 / 10 / 20 open picks
+        (slip ids for /api/book). Nothing is booked or saved here."""
+        import draw5 as d5
+        data = await self._json(request)
+        period = str(data.get("period") or "weekend").lower()
+        period = {"full": "week", "fullweek": "week", "full week": "week", "mid": "midweek"}.get(period, period)
+        if period not in d5.PERIODS:
+            return web.json_response({"error": "period must be weekend, midweek or week"}, status=400)
+        text = str(data.get("leagues") or "")[:200]
+        try:
+            res = await self.s.draw5.find(period, text, fresh=bool(data.get("refresh")))
+        except Exception as exc:
+            log.warning("draw5 failed: %s", exc, exc_info=True)
+            return web.json_response({"error": "The 5-minute draw search failed (SportyBet didn't answer). "
+                                               "Try again shortly."}, status=502)
+        out = dict(res)
+        ai = getattr(self.s, "ai", None)
+        slips = {}
+        for n in (5, 10, 20):
+            sl = d5.slip_from(res, n)
+            if sl["legs"] and ai:
+                slips[str(n)] = {"slip_id": ai.remember_slip(sl), "total_odds": sl["total_odds"],
+                                 "est_prob": sl["est_prob"], "legs": len(sl["legs"])}
+        out["slips"] = slips
+        return self._gz(web.json_response(out))
 
     # ---- bet analyzer -------------------------------------------------------------
     async def analyze(self, request: web.Request) -> web.Response:
