@@ -40,7 +40,7 @@ EVENTS_STALE_MAX = 1800             # never serve an events list older than this
 WARM_EVERY = 600                    # background warm-up of today's list (07:00-24:00 WAT) so the first open is instant
 ASSET_TYPES = {".js": "application/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml",
                ".jpg": "image/jpeg"}
-MAX_SELECTIONS = 30
+MAX_SELECTIONS = 50          # SportyBet's betslip maximum
 DISCLAIMER = "Estimate, not guaranteed. 18+. Bet only what you can afford to lose."
 
 
@@ -634,31 +634,40 @@ class MiniApp:
         return self._gz(web.json_response(res))
 
     async def draw5(self, request: web.Request) -> web.Response:
-        """5-minute draw finder: {"period": "weekend"|"midweek"|"week", "leagues": "free text", "refresh": bool}.
-        Returns the ranked list (>= 50 picks, or all there are) plus preview slips for the top 5 / 10 / 20 open picks
-        (slip ids for /api/book). Nothing is booked or saved here."""
+        """5-minute draws: {"period": "weekend"|"midweek"|"week", "leagues": "free text", "refresh": bool}.
+        Default: books ONE SportyBet code of the top 50 open picks (no German leagues) and saves it to History;
+        refresh = 50 matches not in an earlier code of this owner for the window. Returns draw5book's result
+        (status booked | closed | none | exhausted | error, code, url, legs, total_odds, rules, message).
+        {"list": true} returns the ranked list only (nothing booked). Admin only: {"test": true} books a TEST record
+        (deletable via /api/admin/delete_test, not counted for Refresh)."""
         import draw5 as d5
+        import draw5book
         data = await self._json(request)
         period = str(data.get("period") or "weekend").lower()
         period = {"full": "week", "fullweek": "week", "full week": "week", "mid": "midweek"}.get(period, period)
         if period not in d5.PERIODS:
             return web.json_response({"error": "period must be weekend, midweek or week"}, status=400)
         text = str(data.get("leagues") or "")[:200]
+        user = request["tg_user"]
+        if data.get("list"):
+            try:
+                res = await self.s.draw5.find(period, text, fresh=bool(data.get("fresh")))
+            except Exception as exc:
+                log.warning("draw5 failed: %s", exc, exc_info=True)
+                return web.json_response({"error": "The 5-minute draw search failed (SportyBet didn't answer). "
+                                                   "Try again shortly."}, status=502)
+            return self._gz(web.json_response(res))
+        test = bool(data.get("test")) and bool(user.get("admin"))
         try:
-            res = await self.s.draw5.find(period, text, fresh=bool(data.get("refresh")))
+            out = await draw5book.book_draw5(self.s, int(user.get("id") or 0), period, text,
+                                             refresh=bool(data.get("refresh")), test=test,
+                                             fresh=bool(data.get("fresh")))
         except Exception as exc:
-            log.warning("draw5 failed: %s", exc, exc_info=True)
-            return web.json_response({"error": "The 5-minute draw search failed (SportyBet didn't answer). "
+            log.warning("draw5 booking failed: %s", exc, exc_info=True)
+            return web.json_response({"error": "The 5-minute draw code couldn't be made (SportyBet didn't answer). "
                                                "Try again shortly."}, status=502)
-        out = dict(res)
-        ai = getattr(self.s, "ai", None)
-        slips = {}
-        for n in (5, 10, 20):
-            sl = d5.slip_from(res, n)
-            if sl["legs"] and ai:
-                slips[str(n)] = {"slip_id": ai.remember_slip(sl), "total_odds": sl["total_odds"],
-                                 "est_prob": sl["est_prob"], "legs": len(sl["legs"])}
-        out["slips"] = slips
+        if out.get("status") == "booked":
+            log.info("draw5 code booked (%d selections, %s%s)", out["n"], period, ", test" if test else "")
         return self._gz(web.json_response(out))
 
     # ---- bet analyzer -------------------------------------------------------------
@@ -1026,6 +1035,13 @@ class MiniApp:
                 out["history_slips"] = len(await tr.history.list("slip", None, limit=100))
             except Exception as exc:
                 out["history_error"] = exc.__class__.__name__ + " " + tr.history.last_error
+            try:      # 5-minute draw line: open/closed transitions recorded by draw5book.watch
+                import draw5book
+                if request.query.get("draw5"):
+                    out["draw5_check"] = await draw5book.check_market(self.s)
+                out["draw5_market"] = await draw5book._meta(tr.history)
+            except Exception as exc:
+                out["draw5_market_error"] = exc.__class__.__name__
         out["api_football_left"] = self.s.stats.remaining_today() if self.s.stats.enabled else None
         out["model"] = model.info()
         out["events_cache_age_s"] = {k: int(time.time() - v[0]) for k, v in self._events_cache.items()}

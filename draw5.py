@@ -56,6 +56,14 @@ MIN_LEAD = timedelta(minutes=5)
 PERIODS = ("weekend", "midweek", "week")
 PERIOD_LABEL = {"weekend": "Weekend", "midweek": "Midweek", "week": "Full week"}
 _EXCLUDE = ("simulated", "srl", "esoccer", "virtual", "ebattle", "e-football")
+CODE_SIZE = 50           # one booked code = 50 selections (SportyBet's betslip maximum, sportybet.com/ng/help FAQ 10)
+# German football is left out of the 5-minute draws entirely (user rule 2026-11-06). Matched by Sportradar category id
+# (Germany = sr:category:30), any category whose name starts with "Germany" ("Germany Amateur", women's), and the
+# German tournament ids (Bundesliga 35, 2. Bundesliga 44, 3. Liga 491, DFB Pokal 217, Frauen-Bundesliga 232), so an
+# Austrian "Bundesliga" stays in.
+GERMAN_CATEGORY_IDS = {"sr:category:30", "30"}
+GERMAN_TOURNAMENT_IDS = {"sr:tournament:35", "sr:tournament:44", "sr:tournament:491", "sr:tournament:217",
+                         "sr:tournament:232"}
 
 _WANTS = re.compile(r"\b(5|five)\s*-?\s*(min|mins|minute|minutes)\b.{0,20}\bdraws?\b|\bdraws?\b.{0,25}\b(first\s+)?"
                     r"(5|five)\s*-?\s*(min|mins|minute|minutes)\b|\bdraw5\b", re.I)
@@ -240,9 +248,18 @@ def _uid(cid: str) -> str:
     return s if s.isdigit() else ""
 
 
+def is_german(e) -> bool:
+    """German league / cup (any Germany category), by category id first, then tournament id and category name."""
+    cid = str(getattr(e, "category_id", "") or "")
+    tid = str(getattr(e, "tournament_id", "") or "")
+    cat = str(getattr(e, "category", "") or "").strip().lower()
+    return cid in GERMAN_CATEGORY_IDS or tid in GERMAN_TOURNAMENT_IDS or cat.startswith("germany") \
+        or cat in ("deutschland", "allemagne")
+
+
 def _excluded(e) -> bool:
     s = f"{e.category} {e.league} {e.home} {e.away}".lower()
-    return any(x in s for x in _EXCLUDE)
+    return any(x in s for x in _EXCLUDE) or is_german(e)
 
 
 def make_pick(e) -> Pick | None:
@@ -361,7 +378,7 @@ def rules_line(win: dict, scope: str, counts: dict, n: int, minimum: int = MIN_S
     else:
         sc = "top leagues"
     return (f"5-min Draw (SportyBet '{MARKET_NAME}' = Draw: level after minute 5) · {win['label']} · {sc} · "
-            f"{n} selections · ranked by est.")
+            f"no German leagues · {n} selections · ranked by est.")
 
 
 def short_note(scope: str, counts: dict, n: int, minimum: int = MIN_SELECTIONS) -> str:
@@ -459,10 +476,13 @@ class Draw5Finder:
         # stats for every candidate that can make the list (top leagues, plus the best wider ones if needed)
         pre, counts = select(picks, minimum, widen=(scope == "top"))
         extra = []
-        if scope == "top" and counts["wider"]:
+        open_top = sum(1 for p in picks if p.top and p.open)
+        if scope == "top" and (counts["wider"] or open_top < CODE_SIZE):
             chosen = {p.event_id for p in pre}
-            extra = [p for p in sorted([p for p in picks if not p.top], key=lambda p: -p.est)
-                     if p.event_id not in chosen][:15]
+            # the best wider-league picks too: open ones first (a booked code widens to reach 50 open picks)
+            want = 15 + max(0, CODE_SIZE - open_top)
+            extra = [p for p in sorted([p for p in picks if not p.top], key=lambda p: (not p.open, -p.est))
+                     if p.event_id not in chosen][:want]
         with_stats = await self._attach_stats(pre + extra)
         final, counts = select(picks, minimum, widen=(scope == "top"))
         for p in final:
@@ -470,6 +490,14 @@ class Draw5Finder:
                 p.why = why_text(p, None, None, None)
         n = len(final)
         rows = [p.to_json(i + 1) for i, p in enumerate(final)]
+        # booking pool: every OPEN pick (SportyBet refuses suspended outcomes), top leagues first by est, then the
+        # wider leagues by est (used only to reach 50 / for Refresh once the top-league picks are used up)
+        pool = sorted([p for p in picks if p.open and p.top], key=lambda p: (-p.est, -p.value, p.start)) + \
+            sorted([p for p in picks if p.open and not p.top], key=lambda p: (-p.est, -p.value, p.start))
+        for p in pool:
+            if not p.why:
+                p.why = why_text(p, None, None, None)
+        pool_rows = [p.to_json(i + 1) for i, p in enumerate(pool)]
         return {"period": win["period"], "label": win["label"], "window_start": win["start"].isoformat(),
                 "window_end": win["end"].isoformat(), "scope": scope, "filter_text": c.describe() if named else "",
                 "rules": rules_line(win, scope, counts, n, minimum), "note": short_note(scope, counts, n, minimum),
@@ -477,7 +505,8 @@ class Draw5Finder:
                 "wider_count": sum(1 for p in final if not p.top_league), "minimum": minimum,
                 "open_count": sum(1 for p in final if p.open), "suspended_count": sum(1 for p in final if not p.open),
                 "offered_in_window": offered, "matches_in_window": len(events), "with_stats": with_stats,
-                "picks": rows, "market": {"id": MARKET_ID, "specifier": SPEC, "outcome": DRAW, "name": MARKET_NAME},
+                "picks": rows, "open_pool": pool_rows, "open_in_window": len(pool_rows),
+                "german_excluded": True, "market": {"id": MARKET_ID, "specifier": SPEC, "outcome": DRAW, "name": MARKET_NAME},
                 "generated_at": datetime.now(timezone.utc).isoformat(), "took_s": round(time.time() - t0, 1),
                 "method": (f"est = 50/50 blend of SportyBet's de-margined price and an early-goals model (expected goals "
                            f"x {SHARE5:.2%} share of goals in minutes 1-5 x both teams' early-goal tendency). "

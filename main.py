@@ -124,6 +124,8 @@ async def run() -> None:
         log.info("Polling mode")
 
     services.tracker.start(app.bot)   # result tracker + rollover morning job (needs the bot to ping the owner)
+    import draw5book                  # learns when SportyBet opens the 5-minute draw line (no messages sent)
+    d5_watch = asyncio.create_task(draw5book.watch(services))
     log.info("History store: %s", services.tracker.history.backend)
 
     stop = asyncio.Event()
@@ -142,6 +144,7 @@ async def run() -> None:
     if runner:
         await runner.cleanup()
     await services.ai.aclose()
+    d5_watch.cancel()
     await services.tracker.aclose()
     await services.slipimg.aclose()
     await services.aclose()

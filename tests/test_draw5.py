@@ -250,28 +250,39 @@ def test_texts_and_buttons():
     last, _ = draw5.page_html(res, 9, 10)
     check("page 6/6" in last, "page index clamped")
     import handlers
-    kb = handlers.d5_kb("abcd1234", res, 0, pages)
+    import draw5book
+    out = {"status": "booked", "period": "weekend", "code": "ABC123", "url": "https://www.sportybet.com/?shareCode=ABC123&c=ng",
+           "history_id": "sl_x", "legs": res["open_pool"][:50], "n": 50, "total_odds": 117.39,
+           "rules": draw5book.rules_text(res, 50, res["open_pool"][:50], False)}
+    kb = handlers.d5_code_kb("abcd1234", out)
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    datas = [b.callback_data for row in kb.inline_keyboard for b in row]
-    check({"Next", "Weekend", "[Weekend]"} & set(labels) and "[Weekend]" in labels and "Midweek" in labels
-          and "Full week" in labels, f"buttons: {labels}")
-    check("Slip: top 10" in labels and "Full list (file)" in labels, "slip preview + full-list buttons")
+    datas = [b.callback_data for row in kb.inline_keyboard for b in row if b.callback_data]
+    check("Refresh (new 50)" in labels and "Slip image" in labels and "Full list (file)" in labels,
+          f"code buttons: {labels}")
     check(all(len(d.encode()) <= 64 for d in datas), "callback data within Telegram's 64 bytes")
     sl = draw5.slip_from(res, 5)
     txt = body + draw5.file_text(res) + draw5.slip_html(sl) + draw5.chat_summary(res) + " ".join(labels) + \
-        handlers.HELP
+        handlers.HELP + draw5book.code_html(out) + draw5book.code_file_text(out)
     check(not EMOJI.search(txt), "no emoji in any draw5 text or button")
-    check(draw5.slip_html(sl).startswith("<b>Rules:</b>") and "Preview only" in draw5.slip_html(sl),
-          "slip preview says nothing is booked")
     check("/draw5" in handlers.HELP, "help lists /draw5")
 
-    # Mini App API: preview slips registered for booking, nothing booked, nothing saved
+    # Mini App API: books ONE code of 50 (fake bookmaker), saved to History, list mode books nothing
     import webapp
-    reg = {}
-    fake_ai = SimpleNamespace(remember_slip=lambda s: reg.setdefault(f"sid{len(reg)}", s) and f"sid{len(reg) - 1}")
-    tr = SimpleNamespace(record=None)
-    bm = FakeBM(evs)
-    svc = SimpleNamespace(draw5=draw5.Draw5Finder(bm, FakeStats()), ai=fake_ai, tracker=tr)
+    recs = []
+
+    async def record(legs, code, source, **kw):
+        recs.append((legs, code, source, kw))
+        return {"id": f"sl_{len(recs)}"}
+    tr = SimpleNamespace(record=record, history=None)
+
+    class BookBM(FakeBM):
+        async def book(self, sels):
+            self.booked += 1
+            self.last = sels
+            return f"CODE{self.booked}"
+    later = datetime.now(timezone.utc) + timedelta(days=1)
+    bm = BookBM([ev(i, later + timedelta(minutes=i)) for i in range(55)])
+    svc = SimpleNamespace(draw5=draw5.Draw5Finder(bm, FakeStats()), ai=None, tracker=tr, bookmaker=bm)
 
     async def _json(req):
         return await req.json()
@@ -286,20 +297,49 @@ def test_texts_and_buttons():
             return self.body
 
         def __getitem__(self, k):
-            return {"id": 1, "admin": True}
+            return {"id": 990000602, "admin": False}
 
-    later = datetime.now(timezone.utc) + timedelta(days=1)
-    svc.draw5 = draw5.Draw5Finder(FakeBM([ev(i, later + timedelta(minutes=i)) for i in range(55)]), FakeStats())
+    resp = asyncio.run(webapp.MiniApp.draw5(me, Req({"period": "week", "list": True})))
+    out = json.loads(resp.text)
+    check(resp.status == 200 and out["count"] == 55 and bm.booked == 0, "/api/draw5 list mode -> 55 picks, nothing booked")
     resp = asyncio.run(webapp.MiniApp.draw5(me, Req({"period": "week"})))
     out = json.loads(resp.text)
-    check(resp.status == 200 and out["count"] == 55 and set(out["slips"]) == {"5", "10", "20"},
-          "/api/draw5 week -> 55 picks + top 5/10/20 preview slips")
-    check(bm.booked == 0 and tr.record is None, "API books nothing and saves nothing to History")
+    check(resp.status == 200 and out["status"] == "booked" and out["code"] == "CODE1" and out["n"] == 50
+          and len(bm.last) == 50, "/api/draw5 week -> one code of 50")
+    check(recs and recs[-1][2] == "draw5" and recs[-1][3]["label"] == "5-min draw Full week" and
+          out["history_id"] == "sl_1", "saved to History as '5-min draw Full week'")
+    resp = asyncio.run(webapp.MiniApp.draw5(me, Req({"period": "week", "refresh": True})))
+    out2 = json.loads(resp.text)
+    check(out2["status"] == "booked" and out2["n"] == 5 and
+          not ({l["event_id"] for l in out2["legs"]} & {l["event_id"] for l in out["legs"]}),
+          "Refresh -> only the 5 matches not in the first code, count said")
+    check("Only 5" in out2["short_note"], "short code says its count plainly")
+    resp = asyncio.run(webapp.MiniApp.draw5(me, Req({"period": "week", "refresh": True})))
+    check(json.loads(resp.text)["status"] == "exhausted", "Refresh with nothing unused left -> exhausted, no booking")
+    check(bm.booked == 2, "two bookings only")
     bad = asyncio.run(webapp.MiniApp.draw5(me, Req({"period": "month"})))
     check(bad.status == 400, "unknown period -> 400")
     js = open(os.path.join(os.path.dirname(__file__), "..", "webapp_static", "app.js"), encoding="utf-8").read()
-    check("/api/draw5" in js and "5-min Draw" in js and "Full week" in js and "Midweek" in js and "Rules:" in js,
-          "Mini App: 5-min Draw section with the period switch and a Rules line")
+    check("/api/draw5" in js and "5-min Draw" in js and "Full week" in js and "Midweek" in js and "Rules:" in js
+          and "Refresh (new 50)" in js, "Mini App: 5-min Draw section books a code, Refresh (new 50)")
+
+
+def test_no_germany():
+    print("German leagues left out (by category id, not name)")
+    thu = datetime(2026, 11, 5, 21, 29, tzinfo=timezone.utc)
+    sat = datetime(2026, 11, 7, 15, 0, tzinfo=timezone.utc)
+    de = [ev(300 + i, sat, league=("sr:tournament:35", "sr:category:30", "Bundesliga", "Germany")) for i in range(5)]
+    de += [ev(310, sat, league=("sr:tournament:999", "sr:category:30", "Some Cup", "Deutschland?"))]   # id only
+    de += [ev(311, sat, league=("sr:tournament:491", "sr:category:77777", "3. Liga", "X"))]           # tournament id
+    de += [ev(312, sat, league=("sr:tournament:888", "sr:category:999", "Oberliga", "Germany Amateur"))]
+    at = [ev(320, sat, league=("sr:tournament:45", "sr:category:17", "Bundesliga", "Austria"))]
+    res = asyncio.run(draw5.Draw5Finder(FakeBM(de + at + [ev(i, sat) for i in range(10)]), FakeStats()).find(
+        "weekend", "", now=thu))
+    ids = {p["event_id"] for p in res["picks"]} | {p["event_id"] for p in res["open_pool"]}
+    check(not any(f"sr:match:{1000 + i}" in ids for i in (300, 301, 302, 303, 304, 310, 311, 312)),
+          "no German match (category 30, Germany* names, German tournament ids)")
+    check("sr:match:1320" in ids, "Austrian Bundesliga kept")
+    check("no German leagues" in res["rules"], "rules line says no German leagues")
 
 
 if __name__ == "__main__":
@@ -309,6 +349,7 @@ if __name__ == "__main__":
     test_min50()
     test_minutes_and_settle()
     test_texts_and_buttons()
+    test_no_germany()
     print(f"\nFAILURES: {len(FAILS)}")
     if FAILS:
         sys.exit(1)

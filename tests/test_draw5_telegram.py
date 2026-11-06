@@ -6,6 +6,9 @@ Cause: draw5.page_html cut a long page at 4000 raw characters, through an open <
 ("Can't parse entities: can't find end tag corresponding to start tag "i""). The fixture is a 20-pick slice of the
 real weekend result from that morning (every 5-minute market suspended, long reasons).
 
+2026-11-06 later: /draw5 now replies with one booked code (draw5book.py); test_code_flow covers it (code-only reply,
+exactly 50 legs, no German league, Refresh excludes earlier events and survives a restart, all-suspended message).
+
 Offline: a fake Telegram message that rejects what Telegram rejects (unbalanced / unknown HTML tags, more than 4096
 characters after entity parsing, callback data over 64 bytes). Runs the real callback path (on_callback -> D5|run|...)
 for Weekend / Midweek / Full week, the plain "/draw5 weekend" command, pagination, an empty result, and the fallback
@@ -23,6 +26,7 @@ from html.parser import HTMLParser
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "0:test")
 os.environ["SUPABASE_URL"] = ""
 os.environ["DATA_DIR"] = tempfile.mkdtemp()
@@ -128,22 +132,14 @@ class FakeQuery:
         return await self.message.edit_text(text, **kw)
 
 
-class FakeFinder:
-    def __init__(self, results):
-        self.results, self.calls = results, []
-
-    async def find(self, period, text="", **kw):
-        self.calls.append((period, text))
-        return copy.deepcopy(self.results[period])
-
-
-def make_ctx(finder, args=None):
-    app = SimpleNamespace(bot_data={"services": SimpleNamespace(draw5=finder, ai=None)})
+def make_ctx(svc, args=None):
+    app = SimpleNamespace(bot_data={"services": svc})
     return SimpleNamespace(application=app, args=args or [])
 
 
 def run_callback(ctx, data, msg):
     q = FakeQuery(data, msg)
+    q.from_user = SimpleNamespace(id=TEST_CHAT)
     upd = SimpleNamespace(callback_query=q, effective_user=SimpleNamespace(id=TEST_CHAT),
                           effective_chat=SimpleNamespace(id=TEST_CHAT), effective_message=msg)
     asyncio.run(handlers.on_callback(upd, ctx))
@@ -202,67 +198,184 @@ def test_page_html_valid():
     check(True, "slip preview with long names stays valid")
 
 
-def test_callback_path():
-    print("Telegram callback path (fake chat, offline)")
-    res = results()
-    for period, label in (("weekend", "Weekend"), ("midweek", "Midweek"), ("week", "Full week")):
-        log = []
-        finder = FakeFinder(res)
-        ctx = make_ctx(finder)
-        msg = FakeMsg(log)
-        run_callback(ctx, f"D5|run|{period}|", msg)
-        edits = [x for x in log if x[0] == "edit"]
-        texts = " ".join(x[1] for x in log)
-        check(finder.calls == [(period, "")], f"{label}: finder called once")
-        check(edits and edits[-1][2] == "HTML" and "5-MIN DRAW FINDER" in edits[-1][1],
-              f"{label}: list shown as HTML page 1")
-        check("Something went wrong" not in texts and not EMOJI.search(texts), f"{label}: no generic error, no emoji")
-        kb = edits[-1][3]
-        labels = [b.text for row in kb.inline_keyboard for b in row]
-        check(f"[{label}]" in labels and "Full list (file)" in labels, f"{label}: buttons {labels}")
-        check(not any(lb.startswith("Slip: top") for lb in labels), f"{label}: no slip buttons while all suspended")
-        tok = next(k for k in ctx.application.bot_data["draw5"] if not k.startswith("_"))
-        if res[period]["count"] > 10 and len(res[period]["picks"]) > 10:
-            q = run_callback(ctx, f"D5|{tok}|p|1", msg)
-            check("page 2/" in msg.text and q.answers == [None], f"{label}: Next page works")
-        run_callback(ctx, f"D5|{tok}|f", msg)
-        check(any(x[0] == "doc" for x in log), f"{label}: Full list file sent")
+# ---------------------------------------------------------------- booked-code flow (2026-11-06 rule)
+from test_draw5 import FakeStats, ev  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+import draw5book  # noqa: E402
+from history import HistoryStore  # noqa: E402
+from storage import Storage  # noqa: E402
 
-    print("/draw5 weekend command")
+OWNER_CHAT = 8590854295
+GERMAN = ("sr:tournament:35", "sr:category:30", "Bundesliga", "Germany")
+
+
+class BookBM:
+    """Fake SportyBet: lists events, books codes (refuses suspended outcomes like SportyBet does)."""
+    def __init__(self, events):
+        self.events, self.booked, self.last = events, [], None
+
+    async def list_events(self, hours=24, market_ids=None):
+        return self.events
+
+    async def book(self, sels):
+        from bookmakers import BookingError
+        by = {e.event_id: e for e in self.events}
+        for s_ in sels:
+            o = by[s_.event_id].markets[(s_.market_id, s_.specifier)][s_.outcome_id]
+            if not o.active:
+                raise BookingError("SportyBet refused the booking: selection suspended (HTTP 200)")
+        if len(sels) > 50:
+            raise BookingError("SportyBet refused the booking: too many selections")
+        self.booked.append([s_.event_id for s_ in sels])
+        return f"D5T{len(self.booked):03d}"
+
+
+class FakeTracker:
+    def __init__(self, history):
+        self.history, self.records = history, []
+
+    async def record(self, legs, code, source, **kw):
+        self.records.append({"legs": legs, "code": code, "source": source, **kw})
+        return {"id": f"sl_test_{len(self.records)}"}
+
+
+def make_svc(events, store_path=None):
+    st = Storage(store_path or os.path.join(tempfile.mkdtemp(), "t.sqlite3"))
+    hist = HistoryStore(storage=st, url="", key="")
+    bm = BookBM(events)
+    svc = SimpleNamespace(draw5=draw5.Draw5Finder(bm, FakeStats()), ai=None, bookmaker=bm,
+                          tracker=FakeTracker(hist))
+    return svc, bm
+
+
+def week_events(n_top=60, n_wider=20, n_german=10, active=True):
+    start = datetime.now(timezone.utc) + timedelta(days=1)
+    evs = [ev(i, start + timedelta(minutes=i), active=active) for i in range(n_top)]
+    evs += [ev(500 + i, start + timedelta(minutes=i), top=False, active=active) for i in range(n_wider)]
+    # German matches with the BEST prices, so they would rank first if not excluded
+    evs += [ev(900 + i, start + timedelta(minutes=i), league=GERMAN, d5=(12.0, 1.04, 15.0), active=active)
+            for i in range(n_german)]
+    return evs
+
+
+def chats_ok(log):
+    return all(getattr(m, "chat_id", TEST_CHAT) != OWNER_CHAT for m in log)
+
+
+def test_code_flow():
+    print("Telegram: Full week -> one booked code (fake chat, offline)")
+    svc, bm = make_svc(week_events())
+    ctx = make_ctx(svc)
     log = []
-    finder = FakeFinder(res)
-    ctx = make_ctx(finder, ["weekend"])
     msg = FakeMsg(log)
-    upd = SimpleNamespace(effective_message=msg, effective_user=SimpleNamespace(id=TEST_CHAT))
-    asyncio.run(handlers.draw5_cmd(upd, ctx))
-    check(finder.calls == [("weekend", "weekend")] and log[-1][0] == "edit" and "page 1/" in log[-1][1],
-          "/draw5 weekend -> page 1")
-    log.clear()
-    asyncio.run(handlers.draw5_cmd(SimpleNamespace(effective_message=msg), make_ctx(finder, [])))
-    check(log and "Pick the window" in log[0][1], "/draw5 alone -> window picker")
-
-    print("Telegram refuses the HTML anyway -> plain text, never the generic error")
-    log = []
-    ctx = make_ctx(FakeFinder(res))
-    msg = FakeMsg(log, reject_html=True)
-    run_callback(ctx, "D5|run|weekend|", msg)
+    run_callback(ctx, "D5|run|week|", msg)
     edits = [x for x in log if x[0] == "edit"]
-    check(edits and edits[-1][2] is None and "5-MIN DRAW FINDER" in edits[-1][1] and "<b>" not in edits[-1][1],
-          "plain-text fallback shown with the same list")
+    body = edits[-1][1] if edits else ""
+    check(len(bm.booked) == 1 and len(bm.booked[0]) == 50, f"one code of exactly 50 legs ({[len(b) for b in bm.booked]})")
+    check(not any(e.startswith("sr:match:19") for e in bm.booked[0]), "no German league in the code")
+    check(edits and edits[-1][2] == "HTML" and "<code>D5T001</code>" in body and body.startswith("<b>Rules:</b>"),
+          "reply opens with Rules: and shows the code")
+    check("50 selections" in body and "no German leagues" in body and "total odds" in body
+          and "https://www.sportybet.com/?shareCode=D5T001&amp;c=ng" in body, "rules, total odds, open link")
+    check("5-MIN DRAW FINDER" not in body and body.count("\n") <= 8 and "Prev" not in body,
+          "code only: no per-pick pages")
+    check(tg_len_ok(body), "fits Telegram")
+    kb = edits[-1][3]
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    check("Refresh (new 50)" in labels and "Slip image" in labels and "Full list (file)" in labels and
+          "Open D5T001 in SportyBet" in labels, f"buttons {labels}")
+    rec = svc.tracker.records[-1]
+    check(rec["code"] == "D5T001" and rec["label"] == "5-min draw Full week" and rec["source"] == "draw5"
+          and len(rec["legs"]) == 50, "saved to History as a booked slip '5-min draw Full week'")
+    texts = " ".join(str(x[1]) for x in log)
+    check("Something went wrong" not in texts and not EMOJI.search(texts), "no generic error, no emoji")
 
-    print("finder error -> clear message")
+    tok = next(k for k in ctx.application.bot_data["draw5"] if not k.startswith("_"))
+    run_callback(ctx, f"D5|{tok}|f", msg)
+    check(any(x[0] == "doc" and "D5T001" in x[1] for x in log), "Full list file sent")
+
+    print("Refresh -> 50 matches not in the earlier code")
+    first = set(bm.booked[0])
+    run_callback(ctx, f"D5|r|week|{tok}", msg)
+    second = bm.booked[-1] if len(bm.booked) == 2 else []
+    check(len(bm.booked) == 2 and not (set(second) & first), "refresh code shares no match with the first")
+    check(len(second) == 30 and "Only 30" in log[-1][1], f"only 30 unused open picks left -> 30, said plainly ({len(second)})")
+    check(not any(e.startswith("sr:match:19") for e in second), "refresh: still no German league")
+    run_callback(ctx, f"D5|r|week|{tok}", msg)
+    check(len(bm.booked) == 2 and "No new matches left" in log[-1][1], "third refresh: unused picks ran out, said so")
+
+    print("used ids survive a restart (history store), reset on a new window")
+    path = os.path.join(tempfile.mkdtemp(), "p.sqlite3")
+    svc1, bm1 = make_svc(week_events(), path)
+    asyncio.run(draw5book.book_draw5(svc1, TEST_CHAT, "week"))
+    svc2, bm2 = make_svc(week_events(), path)          # new process, same store
+    out = asyncio.run(draw5book.book_draw5(svc2, TEST_CHAT, "week", refresh=True))
+    check(out["status"] == "booked" and not (set(bm2.booked[0]) & set(bm1.booked[0])), "refresh after restart still new")
+    us = draw5book.UsedStore(svc2.tracker.history)
+    win = draw5.period_window("week")
+    key = draw5book.window_key("week", win)
+    check(len(asyncio.run(us.load(TEST_CHAT, "week", key))) == 80, "80 used ids persisted")
+    check(asyncio.run(us.load(TEST_CHAT, "week", "week:2099-01-05")) == {}, "new window -> fresh start")
+
+    print("all suspended -> plain message + Try again, nothing booked")
+    svc3, bm3 = make_svc(week_events(active=False))
+    ctx3 = make_ctx(svc3)
+    log3 = []
+    run_callback(ctx3, "D5|run|week|", FakeMsg(log3))
+    last = log3[-1]
+    labels = [b.text for row in last[3].inline_keyboard for b in row]
+    check(bm3.booked == [] and "closed right now" in last[1] and "Try again" in labels and "error" not in last[1].lower(),
+          f"closed-market reply: {last[1][:120]}")
+    check("Something went wrong" not in last[1], "no generic error")
+
+    print("market watcher records open/closed transitions (no messages)")
+    r = asyncio.run(draw5book.check_market(svc3))
+    check(r["state"] == "closed" and r["open"] == 0 and r["offered"] == 80, f"closed state read ({r})")
+    svc3.bookmaker.events = week_events()
+    r = asyncio.run(draw5book.check_market(svc3))
+    meta = asyncio.run(draw5book._meta(svc3.tracker.history))
+    check(r["state"] == "open" and [t["state"] for t in meta["transitions"]] == ["closed", "open"]
+          and meta.get("last_open"), "closed -> open transition and last_open recorded")
+    svc3.bookmaker.events = week_events(active=False)
+    svc3.draw5 = draw5.Draw5Finder(svc3.bookmaker, FakeStats())
+    out = asyncio.run(draw5book.book_draw5(svc3, TEST_CHAT, "week"))
+    check(out["status"] == "closed" and "Last seen open by me" in out["message"], "closed reply names when last seen open")
+
+    print("/draw5 weekend command and chat '5 min draw'")
+    svc4, bm4 = make_svc(week_events())
+    log4 = []
+    m4 = FakeMsg(log4)
+    asyncio.run(handlers.draw5_cmd(SimpleNamespace(effective_message=m4, effective_user=SimpleNamespace(id=TEST_CHAT)),
+                                   make_ctx(svc4, ["week"])))
+    check(len(bm4.booked) == 1 and "<code>D5T001</code>" in log4[-1][1], "/draw5 week -> code")
+    log4.clear()
+    asyncio.run(handlers.draw5_cmd(SimpleNamespace(effective_message=m4), make_ctx(svc4, [])))
+    check(log4 and "Pick the window" in log4[0][1], "/draw5 alone -> window picker")
+
+    print("search failure -> clear message")
 
     class Boom:
         async def find(self, *a, **k):
             raise RuntimeError("relay timeout")
-    log = []
-    run_callback(make_ctx(Boom()), "D5|run|weekend|", FakeMsg(log))
-    check(log and "failed" in log[-1][1] and "Something went wrong" not in log[-1][1], "search failure explained")
+    svc5, _ = make_svc([])
+    svc5.draw5 = Boom()
+    log5 = []
+    run_callback(make_ctx(svc5), "D5|run|weekend|", FakeMsg(log5))
+    check(log5 and "Try again" in log5[-1][1] and "Something went wrong" not in log5[-1][1], "search failure explained")
+    check(all(chats_ok(l) for l in (log, log3, log4, log5)), "nothing sent to the owner chat")
+
+
+def tg_len_ok(body):
+    try:
+        tg_validate(body, "HTML")
+        return True
+    except BadRequest:
+        return False
 
 
 if __name__ == "__main__":
     test_page_html_valid()
-    test_callback_path()
+    test_code_flow()
     print(f"\nFAILURES: {len(FAILS)}")
     if FAILS:
         sys.exit(1)

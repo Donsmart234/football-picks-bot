@@ -405,16 +405,19 @@ class Analyst:
             return await self._ask_edit(chat_id, text, context)
         import draw5
         if draw5.wants_draw5(text) and getattr(self.s, "draw5", None) is not None:
-            # "5 min draw weekend": the 5-minute draw finder answers directly (a 50+ pick list, no model call)
+            # "5 min draw weekend": one booked SportyBet code of 50 (draw5book.py), no model call
+            import re as _re
+            import draw5book
             period = draw5.parse_period(text) or "weekend"
-            res = await self.s.draw5.find(period, text)
-            reply = strip_emoji(draw5.chat_summary(res))
+            refresh = bool(_re.search(r"\b(refresh|new|another|next\s+code|different)\b", text, _re.I))
+            out = await draw5book.book_draw5(self.s, chat_id, period, text, refresh=refresh)
+            reply = strip_emoji(draw5book.code_plain(out))
             if not draw5.parse_period(text):
                 reply = "No window named, so this is the weekend (say midweek or full week for the others).\n" + reply
             self._save(chat_id, "user", text)
             self._save(chat_id, "model", reply[:1500])
-            return {"reply": reply, "slip": None, "code": None, "tools": ["draw5"], "model": "draw5", "analysis": None,
-                    "draw5": res}
+            return {"reply": reply, "slip": None, "code": out.get("code"), "tools": ["draw5"], "model": "draw5",
+                    "analysis": None, "draw5": {k: v for k, v in out.items() if k != "legs"}}
         if not self.enabled:
             return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
         contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]
