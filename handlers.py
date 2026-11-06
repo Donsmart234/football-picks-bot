@@ -1598,9 +1598,40 @@ async def _d5_run(msg, ctx, period: str, text: str) -> None:
         return
     tok = uuid.uuid4().hex[:8]
     _d5_store(ctx)[tok] = {"ts": _t.time(), "res": res, "text": text}
-    body, pages = draw5.page_html(res, 0, D5_PER)
-    await note.edit_text(body, parse_mode=ParseMode.HTML, reply_markup=d5_kb(tok, res, 0, pages),
-                         disable_web_page_preview=True)
+    await _d5_show(note.edit_text, res, tok, 0)
+
+
+async def _d5_show(edit, res: dict, tok: str, page: int) -> None:
+    """Show one page. Never ends in the generic error: HTML first, then the same page as plain text, then a short
+    summary pointing at the file (the keyboard stays, so Full list / other windows still work)."""
+    try:
+        body, pages = draw5.page_html(res, page, D5_PER)
+        page = max(0, min(page, pages - 1))
+        kb = d5_kb(tok, res, page, pages)
+    except Exception as exc:
+        log.warning("draw5 page build failed: %s", exc, exc_info=True)
+        body, pages, kb = "", 1, d5_kb(tok, res, 0, 1)
+    if body:
+        try:
+            await edit(body, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+            return
+        except Exception as exc:
+            if "not modified" in str(exc).lower():
+                return
+            log.warning("draw5 HTML page rejected: %s", exc)
+        try:
+            await edit(draw5.html_to_plain(body)[:4000], reply_markup=kb, disable_web_page_preview=True)
+            return
+        except Exception as exc:
+            log.warning("draw5 plain page rejected: %s", exc)
+    summary = (f"5-minute draws: {res.get('count', 0)} selections found "
+               f"({res.get('open_count', 0)} open, {res.get('suspended_count', 0)} suspended on SportyBet right now). "
+               "The list couldn't be shown here: tap Full list (file).")
+    try:
+        await edit(summary, reply_markup=kb)
+    except Exception as exc:
+        log.warning("draw5 summary rejected: %s", exc)
+        await edit(summary)
 
 
 async def _d5_callback(q, ctx, parts: list[str]) -> None:
@@ -1621,11 +1652,8 @@ async def _d5_callback(q, ctx, parts: list[str]) -> None:
     res, act = entry["res"], parts[2] if len(parts) > 2 else ""
     if act == "p":
         page = int(parts[3]) if len(parts) > 3 and parts[3].lstrip("-").isdigit() else 0
-        body, pages = draw5.page_html(res, page, D5_PER)
-        page = max(0, min(page, pages - 1))
         await q.answer()
-        await q.edit_message_text(body, parse_mode=ParseMode.HTML, reply_markup=d5_kb(parts[1], res, page, pages),
-                                  disable_web_page_preview=True)
+        await _d5_show(q.edit_message_text, res, parts[1], page)
     elif act == "s":
         n = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 10
         sl = draw5.slip_from(res, n)

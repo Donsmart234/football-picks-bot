@@ -508,35 +508,73 @@ def _e(s) -> str:
     return html.escape(str(s or ""), quote=False)
 
 
-def pick_line_html(p: dict) -> str:
+TG_LIMIT = 4000          # Telegram allows 4096 characters after entity parsing; keep headroom
+
+
+def tg_len(text: str) -> int:
+    """Length Telegram counts for an HTML message: tags removed, entities decoded, UTF-16 code units."""
+    visible = html.unescape(re.sub(r"<[^>]+>", "", text or ""))
+    return len(visible.encode("utf-16-le")) // 2
+
+
+def _clip(s, n: int | None) -> str:
+    s = str(s or "")
+    if n is None or len(s) <= n:
+        return s
+    return s[:max(0, n - 3)].rstrip() + "..."
+
+
+def pick_line_html(p: dict, why_max: int | None = None) -> str:
     tag = (" · <i>wider league</i>" if p.get("wider") else "") + \
         ("" if p.get("open", True) else " · <i>suspended now</i>")
-    return (f"<b>{p['rank']}.</b> {_e(p['kickoff_local'])} · <b>{_e(p['match'])}</b>\n"
+    line = (f"<b>{p['rank']}.</b> {_e(p['kickoff_local'])} · <b>{_e(p['match'])}</b>\n"
             f"    {_e(p['league'])}{tag}\n"
-            f"    Draw (1-5 min) @{p['odds']:.2f} · est <b>{p['est']:.1%}</b> · value {p['value']:+.1%}\n"
-            f"    <i>{_e(p['why'])}</i>")
+            f"    Draw (1-5 min) @{p['odds']:.2f} · est <b>{p['est']:.1%}</b> · value {p['value']:+.1%}")
+    if why_max != 0 and p.get("why"):
+        line += f"\n    <i>{_e(_clip(p['why'], why_max))}</i>"
+    return line
 
 
-def page_html(res: dict, page: int, per: int = 10) -> tuple[str, int]:
+def page_html(res: dict, page: int, per: int = 10, limit: int = TG_LIMIT) -> tuple[str, int]:
+    """One Telegram page. Always valid HTML within Telegram's length: when the full reasons would not fit, they are
+    shortened (never cut through a tag); the full text is in the file."""
     picks = res.get("picks") or []
     pages = max(1, math.ceil(len(picks) / per))
     page = max(0, min(page, pages - 1))
-    head = (f"<b>Rules:</b> {_e(res['rules'])}\n<b>5-MIN DRAW FINDER</b> · page {page + 1}/{pages}\n"
-            f"<i>{res['count']} selections ({res.get('top_count', 0)} top-league"
+    head = (f"<b>Rules:</b> {_e(res.get('rules'))}\n<b>5-MIN DRAW FINDER</b> · page {page + 1}/{pages}\n"
+            f"<i>{res.get('count', len(picks))} selections ({res.get('top_count', 0)} top-league"
             + (f", {res['wider_count']} wider-league" if res.get("wider_count") else "")
             + f") · {res.get('offered_in_window', 0)} matches offer the market in this window · "
               f"{res.get('with_stats', 0)} stats-checked</i>")
     if res.get("note"):
         head += f"\nNote: {_e(res['note'])}"
     if res.get("suspended_count"):
-        head += (f"\nNote: {res['suspended_count']} of these have the market suspended on SportyBet right now (price "
-                 "shown, no bets taken until it reopens).")
-    body = "\n\n".join(pick_line_html(p) for p in picks[page * per:(page + 1) * per]) or "No matches offer it."
+        if res.get("open_count"):
+            head += (f"\nNote: {res['suspended_count']} of these have the market suspended on SportyBet right now "
+                     "(price shown, no bets taken until it reopens).")
+        else:
+            head += ("\nNote: SportyBet has this market suspended on all of them right now (prices shown, no bets "
+                     "taken until it reopens, so no slip yet). Check again later.")
+    chunk = picks[page * per:(page + 1) * per]
     foot = "\n\n<i>Est. = chance the score is level after minute 5. Estimates, not guarantees. 18+.</i>"
-    text = head + "\n\n" + body + foot
-    if len(text) > 4096:
-        text = text[:4000] + "\n..."
+    empty = "No matches in this window offer the market right now."
+    text = ""
+    for why_max in (None, 160, 90, 0):
+        body = "\n\n".join(pick_line_html(p, why_max) for p in chunk) or empty
+        text = head + "\n\n" + body + foot
+        if tg_len(text) <= limit:
+            return text, pages
+    while chunk and tg_len(text) > limit:       # last resort: fewer lines on this page, still balanced HTML
+        chunk = chunk[:-1]
+        body = "\n\n".join(pick_line_html(p, 0) for p in chunk) + "\n\n<i>More on this page: use Full list (file).</i>"
+        text = head + "\n\n" + body + foot
+    if tg_len(text) > limit:
+        text = f"<b>5-MIN DRAW FINDER</b> · {res.get('count', len(picks))} selections. Use Full list (file)."
     return text, pages
+
+
+def html_to_plain(text: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", text or ""))
 
 
 def file_text(res: dict) -> str:
@@ -562,7 +600,11 @@ def slip_html(sl: dict) -> str:
     rows.append(f"\nTotal odds <b>{sl['total_odds']:.2f}</b> · est. hit chance {sl['est_prob']:.1%} "
                 "(legs treated as independent)")
     rows.append("<i>Preview only: nothing is booked or saved until you tap Book. Estimates, not guarantees. 18+.</i>")
-    return "\n".join(rows)[:4096]
+    out = "\n".join(rows)
+    while tg_len(out) > TG_LIMIT and len(rows) > 4:     # drop whole leg lines, never cut through a tag
+        rows.pop(-3)
+        out = "\n".join(rows)
+    return out
 
 
 def chat_summary(res: dict, top: int = 15) -> str:
