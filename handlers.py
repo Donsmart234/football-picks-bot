@@ -15,6 +15,7 @@ from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHand
 import anyteam
 import config
 import draw5
+import ladder
 import draw5book
 from bookmakers import MARKET_1X2, MARKET_BTTS, MARKET_DC, MARKET_OU, SELECTIONS, BookingError, Selection, code_link
 from ai import md_to_html
@@ -46,6 +47,8 @@ HELP = (
     "/analyze CODE – analyze any SportyBet booking code (or just paste the 6-character code)\n"
     "/history – booked codes and results (pinged when a slip lands)\n"
     "/rollover 2 7 – rollover plan: daily target 2–5, 3–15 days (+ optional stake) · /rollover tickets – every day's ticket\n"
+    "/rollover ladder 2000 – 2-odds savings ladder (16 days, saves part of each win, restarts 2 days back on a cut) · "
+    "/rollover ladder plan 2000 – the full table · /rollover skip – skip today (cancels today's code before kick-off)\n"
     "/draw5 weekend · /draw5 midweek · /draw5 week – one SportyBet code of 50 five-minute draws (SportyBet '1X2 from 1 "
     "to 5 minute' = Draw, no German leagues); Refresh books 50 new matches (or just type \"5 min draw weekend\")\n"
     "/anyteam [legs] [min-max odds] [league/team words] – one football.com code of Any Team Over 1.5 (Yes); default "
@@ -183,6 +186,10 @@ async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if rt is None and anyteam.wants_anyteam(text):  # "any team over 1.5 10 legs": the football.com builder, no AI
         await _at_run(update.effective_message, ctx, text, _uid_of(update))
         return
+    li = ladder.parse_intent(text) if rt is None else None
+    if li:                                          # "start the 2 odds ladder with 2k": the ladder, no AI
+        await _ladder_chat(update.effective_message, ctx, li)
+        return
     sctx = await _slip_context(update, ctx, text)
     ai = getattr(svc(ctx), "ai", None)
     if sctx is not None and ai is not None:
@@ -193,6 +200,21 @@ async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _predict_query(update, ctx, text)
     else:
         await update.effective_message.reply_text("Try /scan safe 5, /predict Team A vs Team B, or /today.")
+
+
+async def _ladder_chat(msg, ctx, li: dict) -> None:
+    if li["action"] == "plan":
+        await _ladder_plan(msg, li.get("stake"))
+    elif li["action"] == "start":
+        await _ladder_start(msg, ctx, li.get("stake"))
+    else:
+        tr = svc(ctx).tracker
+        rec = await tr.active_rollover() or next(iter(await tr.rollovers(1)), None)
+        if rec and rec["data"].get("mode") == ladder.MODE:
+            await msg.reply_text(_ro_text(rec)[:4096], parse_mode=ParseMode.HTML, reply_markup=_ro_kb(rec),
+                                 disable_web_page_preview=True)
+        else:
+            await _ladder_plan(msg, li.get("stake"))
 
 
 async def ai_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -985,14 +1007,52 @@ async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                                               disable_web_page_preview=True)
 
 
+def _ladder_text(rec: dict) -> str:
+    """Status of a ladder plan: Rules line, position, stake, savings, restarts, ledger, recent days."""
+    d = rec["data"]
+    st = {"active": "RUNNING", "completed": "COMPLETE", "busted": "ENDED", "stopped": "STOPPED"}.get(rec["status"],
+                                                                                                   rec["status"].upper())
+    tot = ladder.totals(d["start"])
+    lines = [esc(ladder.rules_line()),
+             f"<b>2-odds savings ladder</b> · {st} · start <b>{d['start']:,.0f}</b>",
+             f"Day <b>{min(d['current_day'], ladder.DAYS)}/{ladder.DAYS}</b>"
+             + (f" · today's stake <b>{float(d.get('value') or 0):,.0f}</b>" if rec["status"] == "active" else "")
+             + f" · savings <b>{float(d.get('savings') or 0):,.0f}</b> · restarts {int(d.get('restarts') or 0)}",
+             f"Template: {tot['final_return']:,.0f} winning + {tot['savings']:,.0f} savings over {ladder.DAYS} days"]
+    if d.get("won_total"):
+        lines.append(f"Final return <b>{d['won_total']:,.0f}</b> + savings {float(d.get('savings') or 0):,.0f}")
+    if d.get("needs_check"):
+        lines.append(f"Note: check needed: {esc(d['needs_check'])}")
+    led = ladder.ledger_lines(d, 10)
+    if led:
+        lines += [RULE, "<b>Ledger</b>"] + [esc(x) for x in led]
+    lines.append(RULE)
+    for x in d.get("log", [])[-8:]:
+        stl = STATUS_LABEL.get(x["status"], str(x["status"]).upper())
+        lines.append(f"Day {x['day']} · <b>{stl}</b> · {esc(x['date'])}"
+                     + (f" · {_code_cell(x['code'], x.get('status') == 'pending')}" if x.get("code") else "")
+                     + (f" · {x['total_odds']:.2f}" if x.get("total_odds") else "")
+                     + (f" · stake {x['stake']:,.0f}" if x.get("stake") else "")
+                     + (f" · <i>{esc(x['note'][:110])}</i>" if x.get("note") and x["status"] in ("no_slip", "skipped") else ""))
+    if not d.get("log"):
+        lines.append("No day generated yet: the first code comes at ~09:00 WAT.")
+    lines.append("<i>Estimates, not guarantees. 18+.</i>")
+    return "\n".join(lines)
+
+
 def _ro_text(rec: dict | None) -> str:
+    if rec and rec["data"].get("mode") == ladder.MODE:
+        return _ladder_text(rec)
     if not rec:
         return ("<b>Rollover</b>\nNo plan running. Pick a daily target (2, 3, 4 or 5 odds) and 3–15 days, e.g.\n"
                 "<code>/rollover 2 7</code> or with a starting stake <code>/rollover 3 5 1000</code>.\n"
                 "Each morning (~09:00) I build that day's slip from top leagues only, stats-confirmed legs ≥80% est., "
                 "no under selections (add <code>unders</code> to allow them, e.g. <code>/rollover 3 7 unders</code>), "
                 "as close to the target as possible. A win moves the plan to the next day; a loss ends it. "
-                "If nothing qualifies, I'll say so and suggest skipping the day.\n<i>Estimates, not guarantees. 18+.</i>")
+                "If nothing qualifies, I'll say so and suggest skipping the day.\n"
+                "Or the <b>2-odds savings ladder</b>: <code>/rollover ladder 1000</code> (16 days at ~2.00, part of each "
+                "win saved, a cut restarts 2 days back from savings) · <code>/rollover ladder plan 1000</code> for the table.\n"
+                "<i>Estimates, not guarantees. 18+.</i>")
     d = rec["data"]
     lines = [f"<b>Rollover</b> · {esc(rec['status']).upper()} · target <b>{d['target']:g}</b>/day · "
              f"day <b>{min(d['current_day'], d['days'])}/{d['days']}</b>"
@@ -1016,11 +1076,15 @@ def _ro_text(rec: dict | None) -> str:
 def _ro_kb(rec: dict | None) -> Kb:
     if not rec or rec["status"] != "active":
         rows = [[Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (2, 3)],
-                [Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (4, 5)]]
+                [Btn(f"Start {t}× · 5 days", callback_data=f"RO|start|{t}|5") for t in (4, 5)],
+                [Btn("Start 2-odds ladder (1,000)", callback_data="RO|lstart|1000"),
+                 Btn("Ladder table", callback_data="RO|lplan|1000")]]
         if rec:
             rows.insert(0, [Btn("Tickets of this plan", callback_data=f"RO|tix|{rec['id']}")])
         return Kb(rows)
     rows = [[Btn("Tickets", callback_data=f"RO|tix|{rec['id']}"), Btn("Build today's slip now", callback_data="RO|now")]]
+    if rec["data"].get("mode") == ladder.MODE:
+        rows.append([Btn("Ladder table", callback_data=f"RO|lplan|{rec['data']['start']:g}")])
     last = next((x for x in reversed(rec["data"].get("log") or []) if x.get("slip_id")), None)
     if last and last.get("status") == "pending":
         rows.append([Btn("Refresh picks", callback_data=f"RF|{last['slip_id']}"),
@@ -1037,8 +1101,14 @@ TICKET_LABEL = STATUS_LABEL
 def _tickets_msgs(plan: dict, tickets: list[dict]) -> list[str]:
     """Day-by-day tickets of one rollover plan (Telegram HTML, split under the 4096 limit)."""
     d = plan["data"]
+    lad = d.get("mode") == ladder.MODE
     head = [f"<b>Rollover tickets</b> · {d['target']:g}× a day · {d['days']} days · {esc(plan['status'])}"]
-    if d.get("stake"):
+    if lad:
+        head = [esc(ladder.rules_line()),
+                f"<b>Ladder tickets</b> · start {d['start']:,.0f} · day {min(d['current_day'], ladder.DAYS)}/"
+                f"{ladder.DAYS} · savings <b>{float(d.get('savings') or 0):,.0f}</b> · restarts "
+                f"{int(d.get('restarts') or 0)} · {esc(plan['status'])}"]
+    elif d.get("stake"):
         head.append(f"Bankroll {d['stake']:,.0f} → now <b>{(d.get('value') or 0):,.0f}</b>"
                     + ("" if plan["status"] != "busted" else " (plan busted: 0)"))
     parts = ["\n".join(head), RULE]
@@ -1055,7 +1125,16 @@ def _tickets_msgs(plan: dict, tickets: list[dict]) -> list[str]:
             ln += "\n    <i>Replaced by a refresh: not a loss" + (", that code isn't tracked" if t.get("code") else "") + "</i>"
         elif st in ("no_slip", "skipped"):
             ln += f"\n    <i>{esc((t.get('note') or '')[:120])}</i>"
-        if t.get("stake") is not None and st not in ("replaced", "no_slip", "skipped"):
+        elif st == "cancelled":
+            ln += "\n    <i>Cancelled: day skipped before kick-off, not a loss, not tracked</i>"
+        if lad and t.get("stake") is not None and st not in ("replaced", "no_slip", "skipped", "cancelled"):
+            r = t.get("ledger") or {}
+            ln += (f"\n    Stake {t['stake']:,.0f} → {t['expected_return']:,.0f}"
+                   + (f" · saved {r['saved']:,.0f} · savings {r['savings']:,.0f}" if r and r.get("outcome") != "lost" else "")
+                   + (f" · restart day {r['restart_from']} (-{r['taken_from_savings']:,.0f} from savings), savings "
+                      f"{r['savings']:,.0f}" if r.get("restart_from") else "")
+                   + (" · ladder ended" if r.get("ended") == "busted" else ""))
+        elif t.get("stake") is not None and st not in ("replaced", "no_slip", "skipped", "cancelled"):
             ln += (f"\n    Stake {t['stake']:,.0f} → {t['expected_return']:,.0f}"
                    + (f" · bankroll {t['bankroll']:,.0f}" if st in ("won", "lost", "void") else ""))
         for l in t.get("legs") or []:
@@ -1202,15 +1281,67 @@ async def rollover_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if args[0] in ("stop", "skip", "now", "won", "lost"):
             await _ro_action(msg, ctx, args[0])
             return
+        if args[0] in ("ladder", "2ladder", "savings"):
+            rest = " ".join(args[1:])
+            stake = ladder.parse_amount(rest)
+            if args[1:2] and args[1] in ("plan", "table", "template"):
+                await _ladder_plan(msg, stake)
+                return
+            if args[1:2] and args[1] in ("status", "ledger", "view"):
+                rec = await tr.active_rollover() or next(iter(await tr.rollovers(1)), None)
+                await msg.reply_text(_ro_text(rec), parse_mode=ParseMode.HTML, reply_markup=_ro_kb(rec))
+                return
+            if rest.strip() and stake is None:
+                raise ValueError("bad stake")
+            await _ladder_start(msg, ctx, stake)
+            return
         allow_unders = any(a in ("unders", "allow-unders", "+unders", "with-unders") for a in args)
         args = [a for a in args if a not in ("unders", "allow-unders", "+unders", "with-unders", "nounders",
                                              "no-unders", "-unders")]
         target, days = float(args[0].rstrip("x×")), int(args[1]) if len(args) > 1 else 5
         stake = float(args[2].replace(",", "")) if len(args) > 2 else None
     except (ValueError, IndexError):
-        await msg.reply_text("Usage: /rollover <target 2|3|4|5> <days 3–15> [stake] [unders] · /rollover tickets|stop|skip|now")
+        await msg.reply_text("Usage: /rollover <target 2|3|4|5> <days 3–15> [stake] [unders] · /rollover tickets|stop|skip|now"
+                             " · /rollover ladder [stake] · /rollover ladder plan [stake]")
         return
     await _ro_start(msg, ctx, target, days, stake, allow_unders)
+
+
+async def _ladder_plan(msg, stake: float | None) -> None:
+    try:
+        start = ladder.check_start(stake)
+    except ValueError as exc:
+        await msg.reply_text(esc(ladder.rules_line()) + "\n" + esc(str(exc)), parse_mode=ParseMode.HTML)
+        return
+    await msg.reply_text(ladder.plan_table_text(start), parse_mode=ParseMode.HTML,
+                         reply_markup=Kb([[Btn(f"Start this ladder ({start:,.0f})", callback_data=f"RO|lstart|{start:g}")]]))
+
+
+async def _ladder_start(msg, ctx, stake: float | None) -> None:
+    tr = svc(ctx).tracker
+    try:
+        start = ladder.check_start(stake)
+    except ValueError as exc:
+        await msg.reply_text(esc(ladder.rules_line()) + "\n" + esc(str(exc)), parse_mode=ParseMode.HTML)
+        return
+    note = await msg.reply_text(f"{ladder.rules_line()}\nStarting the 2-odds savings ladder at {start:,.0f} and scanning "
+                                "today's top-league and national-team matches for a safe 2.00 code… ~30–60 s")
+    try:
+        rec, day = await tr.create_ladder(start)
+    except ValueError as exc:
+        await note.edit_text(esc(ladder.rules_line()) + "\n" + esc(str(exc)), parse_mode=ParseMode.HTML)
+        return
+    except Exception as exc:
+        log.warning("ladder start failed: %s", exc, exc_info=True)
+        await note.edit_text(ladder.rules_line() + "\nThe ladder couldn't start (scanner or history store didn't "
+                             "answer). Nothing was booked. Send it again shortly.")
+        return
+    tail = "" if day else "\nToday's window has passed: the first code comes tomorrow at ~09:00 WAT."
+    if day and day.get("status") == "no_slip":
+        tail = "\nNo safe 2.00 code today, so the ladder holds on day 1; I'll try again tomorrow ~09:00 WAT."
+    rec = await tr.history.get(rec["id"]) or rec
+    await note.edit_text((_ro_text(rec) + tail)[:4096], parse_mode=ParseMode.HTML, reply_markup=_ro_kb(rec),
+                         disable_web_page_preview=True)
 
 
 async def _ro_start(msg, ctx, target: float, days: int, stake: float | None, allow_unders: bool = False) -> None:
@@ -1237,8 +1368,40 @@ async def _ro_action(msg, ctx, act: str) -> None:
         rec = await tr.stop_rollover()
         await msg.reply_text("Rollover stopped." if rec else "No rollover is running.")
     elif act == "skip":
-        rec = await tr.skip_day()
-        await msg.reply_text("Today skipped. Next slip tomorrow at ~09:00." if rec else "No rollover is running.")
+        rec = await tr.active_rollover()
+        if not rec:
+            await msg.reply_text("No rollover is running.")
+            return
+        d = rec["data"]
+        n = d["current_day"]
+        codes = [x["code"] for x in d["log"] if x.get("day") == n and x.get("code") and x.get("status") == "pending"]
+        head = (esc(ladder.rules_line()) + "\n") if d.get("mode") == ladder.MODE else ""
+        await msg.reply_text(head + f"<b>Skip day {n} today?</b>\n"
+                             + (f"Today's code {', '.join(f'<code>{esc(c)}</code>' for c in codes)} is cancelled "
+                                "(not a loss, no more tracking or pings). " if codes else "")
+                             + f"The plan stays on day {n} with the same stake; the next slip comes tomorrow ~09:00.\n"
+                             "<i>Only possible before the first match on today's code kicks off.</i>",
+                             parse_mode=ParseMode.HTML,
+                             reply_markup=Kb([[Btn("Yes, skip today", callback_data="RO|skipyes"),
+                                               Btn("Keep today", callback_data="RO|skipno")]]))
+    elif act == "skipno":
+        await msg.reply_text("Kept: today's slip stays in play.")
+    elif act == "skipyes":
+        try:
+            rec = await tr.skip_day()
+        except ValueError as exc:
+            await msg.reply_text(esc(str(exc)), parse_mode=ParseMode.HTML)
+            return
+        if not rec:
+            await msg.reply_text("No rollover is running.")
+            return
+        x = rec["data"]["log"][-1]
+        head = (esc(ladder.rules_line()) + "\n") if rec["data"].get("mode") == ladder.MODE else ""
+        await msg.reply_text(head + f"<b>Day {x['day']} skipped.</b>"
+                             + (f" Cancelled {', '.join(f'<code>{esc(c)}</code>' for c in x.get('cancelled') or [])} "
+                                "(not a loss, no longer tracked)." if x.get("cancelled") else "")
+                             + f"\nTomorrow's slip (~09:00) is still day {x['day']}, same stake.",
+                             parse_mode=ParseMode.HTML)
     elif act in ("won", "lost"):
         rec = await tr.mark_day(act)
         await msg.reply_text(_ro_text(rec) if rec else "Nothing to mark.", parse_mode=ParseMode.HTML)
@@ -1513,6 +1676,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await _send_tickets(q.message, ctx, parts[2] if len(parts) > 2 else None)
         elif parts[1] == "start":
             await _ro_start(q.message, ctx, float(parts[2]), int(parts[3]), None)
+        elif parts[1] == "lstart":
+            await _ladder_start(q.message, ctx, float(parts[2]) if len(parts) > 2 else None)
+        elif parts[1] == "lplan":
+            await _ladder_plan(q.message, float(parts[2]) if len(parts) > 2 else None)
         else:
             await _ro_action(q.message, ctx, parts[1])
     elif kind == "HB":
@@ -1802,7 +1969,7 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start", "Open the app + help"), BotCommand("scan", "Scan markets: /scan safe 5"),
         BotCommand("ai", "Ask the AI analyst"), BotCommand("analyze", "Analyze a booking code: /analyze CODE"), BotCommand("today", "Today's matches by league"),
-        BotCommand("rollover", "Rollover plan: /rollover 2 7"), BotCommand("draw5", "5-min draw code (50): /draw5 weekend"),
+        BotCommand("rollover", "Rollover: /rollover 2 7 · /rollover ladder 1000"), BotCommand("draw5", "5-min draw code (50): /draw5 weekend"),
         BotCommand("anyteam", "football.com Any Team Over 1.5 code: /anyteam"), BotCommand("history", "Booked codes + results"),
         BotCommand("slip", "Your slip and total odds"), BotCommand("help", "How it works"),
     ])

@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from telegram.constants import ParseMode
 
 import config
+import ladder
 from bookmakers import BookingError, Selection
 from fmt import RULE, esc, leg_lines, record_text
 from history import HistoryStore, new_id, now_iso, slip_record
@@ -260,6 +261,13 @@ class Tracker:
         if rec["status"] != "pending" and not d.get("notified"):
             d["notified"] = True
             await self.history.save(rec)            # mark first: never ping twice, even after a crash
+            plan = await self.history.get(d["rollover_id"]) if d.get("rollover_id") else None
+            if plan and self.is_ladder(plan):
+                # one ping per slip: the ladder outcome (savings, restart) rides in the result ping
+                extra = await self._ladder_result(rec, plan)
+                d["ping_ok"] = await self._notify(rec, extra=extra, rules=ladder.rules_line())
+                await self.history.save(rec)
+                return changed
             d["ping_ok"] = await self._notify(rec)
             await self.history.save(rec)
             if d.get("rollover_id"):
@@ -275,9 +283,18 @@ class Tracker:
                 await self._rollover_correction(rec)
         return changed
 
-    async def _notify(self, rec: dict) -> bool:
+    async def _notify(self, rec: dict, extra: str = "", rules: str = "") -> bool:
         d, st = rec["data"], rec["status"]
         name = f"{d.get('label') or 'Slip'}" + (f" · Rollover day {d['rollover_day']}" if d.get("rollover_id") else "")
+        send = self.send
+        if rules or extra:
+            async def send(text, **kw):     # ladder: Rules line first, ladder outcome last, still one message
+                body = (esc(rules) + "\n" if rules else "") + text
+                if extra:
+                    cut = body.rfind("\n<i>Estimates")
+                    add = f"\n{RULE}\n<b>{esc(extra)}</b>"
+                    body = body[:cut] + add + body[cut:] if cut > 0 else body + add
+                return await self.send(body, **kw)
         if st == "won":
             early = [l for l in d["legs"] if l.get("early")]
             running = [l for l in early if not (l.get("early") or {}).get("verified")]
@@ -289,24 +306,24 @@ class Tracker:
             else:
                 title = (f"<b>WON · Entered!</b> <b>Your {esc(name)} slip landed!</b>\n"
                          f"Every leg came in at total odds <b>{d.get('effective_odds') or d['total_odds']:.2f}</b>.")
-            return await self.send(record_text(rec, title) + f"\n{RULE}\n<i>Estimates, not guarantees — enjoy this one. 18+.</i>",
+            return await send(record_text(rec, title) + f"\n{RULE}\n<i>Estimates, not guarantees — enjoy this one. 18+.</i>",
                                    test=d.get("test"), markup=img_markup(rec["id"]))
         elif st == "lost":
             lost = [l for l in d["legs"] if l.get("status") == "lost"]
             l = lost[0] if lost else {}
             more = f" (+{len(lost) - 1} more)" if len(lost) > 1 else ""
-            return await self.send(f"<b>LOST · {esc(name)} slip lost</b>"
+            return await send(f"<b>LOST · {esc(name)} slip lost</b>"
                             + (f" · <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f"\n{esc(l.get('home', ''))} v {esc(l.get('away', ''))} · {esc(l.get('pick', ''))} "
                             f"({esc(l.get('score', ''))}){more}", test=d.get("test"), markup=img_markup(rec["id"]))
         elif st == "check":
             n = sum(1 for l in d["legs"] if l.get("status") == "check")
-            return await self.send(f"<b>CHECK · {esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
+            return await send(f"<b>CHECK · {esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f": no leg lost, but {n} leg(s) use a market I can't settle automatically. "
                             f"Check it on {'football.com' if d.get('bookmaker') == 'footballcom' else 'SportyBet'}.",
                             test=d.get("test"))
         elif st == "void":
-            return await self.send(f"<b>VOID</b> · {esc(name)} slip: every match was cancelled or voided.", test=d.get("test"))
+            return await send(f"<b>VOID</b> · {esc(name)} slip: every match was cancelled or voided.", test=d.get("test"))
         return False
 
     # ---- rollover ----------------------------------------------------------------
@@ -337,6 +354,38 @@ class Tracker:
             day = await self.generate_day(rec, force=True, push=push)
         return rec, day
 
+    async def create_ladder(self, start: float | None = None, autobook: bool = True, generate: bool = True,
+                            test: bool = False, push: bool = True) -> tuple[dict, dict | None]:
+        """2-odds savings ladder (ladder.py) as a rollover plan: same daily push, tickets, settlement and refresh."""
+        start = ladder.check_start(start)
+        cur = await self.active_rollover()
+        if cur:
+            raise ValueError("A rollover plan is already running. Stop it first (/rollover stop).")
+        data = {"target": ladder.TARGET, "days": ladder.DAYS, "stake": start, "log": [], "last_gen_date": "",
+                "autobook": autobook, "test": test, "push": push, "started": now_iso(), "allow_unders": False}
+        data.update(ladder.new_state(start))
+        rec = {"id": new_id("ro"), "kind": "rollover", "status": "active", "data": data}
+        await self.history.save(rec)
+        day = None
+        if generate and datetime.now(TZ).hour < LAST_GEN_HOUR:
+            day = await self.generate_day(rec, force=True, push=push)
+        return rec, day
+
+    @staticmethod
+    def is_ladder(plan_or_data: dict | None) -> bool:
+        d = (plan_or_data or {}).get("data", plan_or_data) or {}
+        return d.get("mode") == ladder.MODE
+
+    async def _build_slip(self, d: dict, exclude: set | None = None, fresh: bool = False) -> dict:
+        if d.get("mode") == ladder.MODE:
+            return await self.s.scanner.ladder_slip(exclude=exclude, fresh=fresh)
+        return await self.s.scanner.rollover_slip(float(d["target"]), allow_unders=bool(d.get("allow_unders")),
+                                                  exclude=exclude, fresh=fresh)
+
+    @staticmethod
+    def _label(d: dict) -> str:
+        return "Ladder 2.00" if d.get("mode") == ladder.MODE else f"Rollover {d['target']:g}x"
+
     async def stop_rollover(self, reason: str = "stopped") -> dict | None:
         rec = await self.active_rollover()
         if not rec:
@@ -357,8 +406,9 @@ class Tracker:
         pend = [x for x in d["log"] if x.get("status") in ("pending", "check")]
         if pend:
             return {"status": "waiting", "note": "Yesterday's slip is still running; I'll build the next day after it settles."}
-        res = await self.s.scanner.rollover_slip(float(d["target"]), allow_unders=bool(d.get("allow_unders")))
+        res = await self._build_slip(d)
         n, m = d["current_day"], d["days"]
+        lad = d.get("mode") == ladder.MODE
         entry = {"day": n, "date": today, "status": "no_slip", "note": res.get("note", ""), "slip_id": "", "code": "",
                  "total_odds": res["total_odds"], "est_prob": res["est_prob"], "legs": len(res["legs"])}
         if d.get("value") and res["legs"]:
@@ -367,7 +417,11 @@ class Tracker:
         if not res["legs"]:
             d["log"].append(entry)
             await self.history.save(rec)
-            if push:
+            if push and lad:
+                await self.send(f"{esc(ladder.rules_line())}\n<b>Ladder day {n}/{m}</b> · stake {d['value']:,.0f} · "
+                                f"savings {float(d.get('savings') or 0):,.0f}\n{RULE}\n{esc(res['note'])}\n"
+                                f"I'll try again tomorrow morning. The ladder stays on day {n}.", test=d.get("test"))
+            elif push:
                 await self.send(f"<b>Rollover day {n}/{m}</b> · target {d['target']:g}\n{RULE}\n"
                                 f"No slip today: {esc(res['note'])}\nI'll try again tomorrow morning. The plan stays on day {n}.",
                                 test=d.get("test"))
@@ -379,13 +433,19 @@ class Tracker:
                                                               l["outcome_id"]) for l in res["legs"]])
             except BookingError as exc:
                 entry["note"] = f"Booking failed: {exc}"
-        srec = await self.record(res["legs"], code, "rollover", "rollover", f"Rollover {d['target']:g}x",
+        srec = await self.record(res["legs"], code, "rollover", "rollover", self._label(d),
                                  res["total_odds"], res["est_prob"], test=d.get("test"), rollover_id=rec["id"],
                                  rollover_day=n, target=float(d["target"]))
         entry.update(status="pending", slip_id=srec["id"] if srec else "", code=code)
         d["log"].append(entry)
         await self.history.save(rec)
-        if push:
+        if push and lad:
+            ref = {"section": "rollover_day", "slip_id": srec["id"], "plan_id": rec["id"], "day": n,
+                   "target": float(d["target"]), "allow_unders": False, "mode": ladder.MODE,
+                   "code": code, "legs": res["legs"]} if srec else None
+            await self.send(ladder_day_text(d, res, code, entry.get("note", "")), test=d.get("test"),
+                            markup=day_markup(srec["id"], bool(code), code) if srec else None, ref=ref)
+        elif push:
             stake = ""
             if d.get("value"):
                 stake = f"\nStake in play: <b>{d['value']:,.0f}</b> → <b>{d['value'] * res['total_odds']:,.0f}</b> if it lands"
@@ -425,21 +485,58 @@ class Tracker:
             await self.history.save(ro)
         return rec
 
-    async def skip_day(self) -> dict | None:
+    async def skip_day(self, now: datetime | None = None) -> dict | None:
+        """Skip today: the current day's running code (and any code it replaced) is cancelled before its first
+        kick-off: not a loss, no more tracking or pings. The plan keeps its position (same day, same stake); the
+        next slip comes tomorrow morning. Raises ValueError once a match on the code has kicked off."""
         rec = await self.active_rollover()
         if not rec:
             return None
-        d = rec["data"]
-        d["log"].append({"day": d["current_day"], "date": self._today(), "status": "skipped",
-                         "note": "Skipped by you", "slip_id": "", "code": ""})
-        d["last_gen_date"] = self._today()
-        await self.history.save(rec)
-        return rec
+        async with self._lock:
+            rec = await self.history.get(rec["id"]) or rec
+            d = rec["data"]
+            now = now or datetime.now(timezone.utc)
+            n = d["current_day"]
+            open_ = [x for x in d["log"] if x.get("day") == n and x.get("slip_id")
+                     and x.get("status") in ("pending", "check", "replaced")]
+            slips = []
+            for x in open_:
+                s_ = await self.history.get(x["slip_id"])
+                if s_ and s_["status"] in ("pending", "check", "replaced"):
+                    slips.append((x, s_))
+            for x, s_ in slips:
+                if s_["status"] == "check" or (s_["status"] == "pending"
+                                               and not self._not_started(s_["data"].get("legs") or [], now)):
+                    code = s_["data"].get("code")
+                    raise ValueError(f"Too late to skip day {n}: a match on "
+                                     + (f"code {code}" if code else "today's slip")
+                                     + " has already kicked off, so it stays in play and is tracked.")
+            codes = []
+            for x, s_ in slips:
+                s_["data"].update(cancelled_at=now_iso(), cancel_reason=f"day {n} skipped", was_status=s_["status"],
+                                  notified=True, early_open=False)
+                s_["status"] = "cancelled"
+                if not await self.history.save(s_):
+                    raise ValueError("The history store didn't answer: nothing was skipped. Try again.")
+                if s_["data"].get("code") and s_["data"].get("was_status") != "replaced":
+                    codes.append(s_["data"]["code"])
+                x["status"] = "cancelled"
+            d["log"].append({"day": n, "date": self._today(), "status": "skipped", "note": "Skipped by you"
+                             + (f" · cancelled {', '.join(codes)}" if codes else ""), "slip_id": "", "code": "",
+                             "cancelled": codes})
+            d["last_gen_date"] = self._today()
+            await self.history.save(rec)
+            return rec
 
     async def _rollover_result(self, slip: dict) -> None:
         sd = slip["data"]
         rec = await self.history.get(sd["rollover_id"])
         if not rec or rec["status"] != "active":
+            return
+        if self.is_ladder(rec):
+            text = await self._ladder_result(slip, rec)
+            if text:
+                await self.send(f"{esc(ladder.rules_line())}\n<b>{esc(text)}</b>", test=rec["data"].get("test"))
             return
         d = rec["data"]
         entry = next((x for x in d["log"] if x.get("slip_id") == slip["id"]), None)
@@ -473,6 +570,36 @@ class Tracker:
             await self.send(f"<b>LOST</b> · Rollover busted on day {n}/{m}. Start a fresh plan any time with /rollover.",
                             test=d.get("test"))
         await self.history.save(rec)
+
+    async def _ladder_result(self, slip: dict, rec: dict | None = None) -> str:
+        """Apply a settled ladder day to the plan's money (ladder.apply_result) and return the plain-text outcome."""
+        sd = slip["data"]
+        rec = rec or await self.history.get(sd["rollover_id"])
+        if not rec or rec["status"] != "active":
+            return ""
+        d = rec["data"]
+        entry = next((x for x in d["log"] if x.get("slip_id") == slip["id"]), None)
+        if any(r.get("slip_id") == slip["id"] for r in d.get("ledger") or []):
+            return ""                                   # already applied (never twice)
+        if entry:
+            entry["status"] = slip["status"]
+            entry["settled_at"] = now_iso()
+        if slip["status"] not in ("won", "lost", "void"):
+            await self.history.save(rec)
+            return ""
+        odds = sd.get("effective_odds") or sd.get("total_odds")
+        row = ladder.apply_result(d, slip["status"], odds, date=(entry or {}).get("date") or self._today(),
+                                  slip_id=slip["id"], code=sd.get("code") or "")
+        if entry is not None:
+            entry["savings"] = row["savings"]
+            if row["restart_from"]:
+                entry["restart_from"] = row["restart_from"]
+        if row["ended"]:
+            rec["status"] = "completed" if row["ended"] == "completed" else "busted"
+            d["ended"] = now_iso()
+            d["end_reason"] = "ladder complete" if row["ended"] == "completed" else "savings can't cover day 1"
+        await self.history.save(rec)
+        return ladder.outcome_text(row, d)
 
     async def _rollover_jobs(self, now: datetime) -> None:
         rec = await self.active_rollover()
@@ -535,7 +662,17 @@ class Tracker:
             early = [l["early"]["min"] for l in legs if (l.get("early") or {}).get("min")]
             t["won_early"] = max(early) if early and st in ("won", "live") and all(
                 l.get("status") in ("won", "void") for l in legs) else None
-            if bank is not None and st not in ("no_slip", "skipped", "replaced"):
+            if d.get("mode") == ladder.MODE:
+                row = next((r for r in d.get("ledger") or [] if r.get("slip_id") == t["slip_id"] and t["slip_id"]),
+                           None)
+                if x.get("stake") and st not in ("no_slip", "skipped", "replaced", "cancelled"):
+                    t["stake"] = x["stake"]
+                    t["expected_return"] = round(x["stake"] * (t["total_odds"] or 1.0), 2)
+                if row:
+                    t.update(ledger=row, savings=row["savings"], saved=row["saved"],
+                             restart_from=row.get("restart_from"))
+                t["bankroll"] = None
+            elif bank is not None and st not in ("no_slip", "skipped", "replaced", "cancelled"):
                 odds = t["effective_odds"] or t["total_odds"] or 1.0
                 t["stake"] = round(bank, 2)
                 t["expected_return"] = round(bank * (t["total_odds"] or 1.0), 2)
@@ -567,6 +704,8 @@ class Tracker:
         plan = await self.history.get(slip["data"]["rollover_id"])
         if not plan or plan["status"] != "active":
             raise ValueError("That plan isn't running any more.")
+        if slip["status"] == "cancelled":
+            raise ValueError("That day was skipped, so its code is cancelled. The next slip comes tomorrow morning.")
         if slip["status"] != "pending":
             raise ValueError("Only a pending day can be refreshed." if slip["status"] != "replaced"
                              else "That slip was already replaced: refresh the newest one.")
@@ -584,9 +723,12 @@ class Tracker:
         slip, plan, _ = await self._refresh_target(slip_id)
         d = plan["data"]
         prev = {sel_key(l) for l in slip["data"]["legs"]}
-        res = await self.s.scanner.rollover_slip(float(d["target"]), allow_unders=bool(d.get("allow_unders")),
-                                                 exclude=prev if exclude_prev else None, fresh=True)
+        res = await self._build_slip(d, exclude=prev if exclude_prev else None, fresh=True)
         if not res["legs"]:
+            if d.get("mode") == ladder.MODE:
+                return {"status": "none", "note": ("No different valid slip exists right now under the ladder rules "
+                                                   "(top leagues, every leg est >=80%, 1.90-2.15 odds, no unders, "
+                                                   "full match only). Your current slip stays."), "slip": res}
             return {"status": "none", "note": ("No different valid slip exists right now under the same rules "
                                                f"(top leagues, every leg ≥80% est., ~{d['target']:g} odds"
                                                + ("" if d.get("allow_unders") else ", no unders")
@@ -635,7 +777,7 @@ class Tracker:
     async def _replace_day(self, slip: dict, plan: dict, res: dict, code: str) -> dict:
         d = plan["data"]
         n = slip["data"].get("rollover_day") or d["current_day"]
-        new = await self.record(res["legs"], code, "rollover", "rollover", f"Rollover {d['target']:g}x",
+        new = await self.record(res["legs"], code, "rollover", "rollover", self._label(d),
                                 res["total_odds"], res["est_prob"], test=d.get("test"), rollover_id=plan["id"],
                                 rollover_day=n, target=float(d["target"]))
         if not new:
@@ -658,6 +800,52 @@ class Tracker:
         await self.history.save(plan)
         return new
 
+    async def _ladder_correction(self, slip: dict, rec: dict) -> None:
+        """A ladder day called early changed at full time (VAR / feed correction, rare). When that day is still the
+        plan's latest money event, undo it and apply the corrected result; a later day's code that hasn't kicked off
+        is cancelled (its stake changes). Otherwise the plan is flagged for a manual check and nothing is guessed."""
+        d = rec["data"]
+        led = d.get("ledger") or []
+        row = next((r for r in led if r.get("slip_id") == slip["id"]), None)
+        if not row or rec["status"] not in ("active", "completed", "busted"):
+            await self.history.save(rec)
+            return
+        if led[-1] is not row:
+            d["needs_check"] = f"day {row['day']} corrected to {slip['status']} after later days settled"
+            await self.history.save(rec)
+            await self.send(f"{esc(ladder.rules_line())}\n<b>Ladder check needed</b>: day {row['day']} was corrected "
+                            f"to {esc(slip['status'])} at full time, after later days settled. The ledger was not "
+                            "changed automatically.", test=d.get("test"))
+            return
+        later = [x for x in d["log"] if x.get("slip_id") and x.get("slip_id") != slip["id"]
+                 and x.get("status") in ("pending", "replaced") and (x.get("date") or "") >= (row.get("date") or "")]
+        for x in later:
+            s_ = await self.history.get(x["slip_id"])
+            if s_ and s_["status"] == "pending":
+                if not self._not_started(s_["data"].get("legs") or [], datetime.now(timezone.utc)):
+                    d["needs_check"] = f"day {row['day']} corrected while the next code was already in play"
+                    await self.history.save(rec)
+                    await self.send(f"{esc(ladder.rules_line())}\n<b>Ladder check needed</b>: day {row['day']} was "
+                                    f"corrected to {esc(slip['status'])} at full time while the next code is already "
+                                    "in play. The ledger was not changed automatically.", test=d.get("test"))
+                    return
+                s_["status"] = "cancelled"
+                s_["data"].update(cancelled_at=now_iso(), cancel_reason="previous day corrected", notified=True)
+                await self.history.save(s_)
+                x["status"] = "cancelled"
+        led.pop()
+        d.update(current_day=row["day"], value=row["stake"], savings=row["savings_before"])
+        if row.get("restart_from"):
+            d["restarts"] = max(0, int(d.get("restarts") or 0) - 1)
+        if rec["status"] != "active":
+            rec["status"] = "active"
+            d.pop("ended", None)
+            d.pop("end_reason", None)
+        if d.get("won_total") and row.get("ended") == "completed":
+            d["won_total"] = 0.0
+        text = await self._ladder_result(slip, rec)
+        await self.send(f"{esc(ladder.rules_line())}\n<b>Ladder corrected</b>: {esc(text)}", test=d.get("test"))
+
     async def _rollover_correction(self, slip: dict) -> None:
         """A day called early changed at full time (rare: VAR / feed correction). Keep the plan honest."""
         rec = await self.history.get(slip["data"]["rollover_id"])
@@ -668,11 +856,38 @@ class Tracker:
         if entry:
             entry["status"] = slip["status"]
             entry["note"] = "Corrected at full time"
+        if d.get("mode") == ladder.MODE:
+            await self._ladder_correction(slip, rec)
+            return
         if slip["status"] == "lost" and rec["status"] in ("active", "completed"):
             rec["status"] = "busted"
             d["ended"] = now_iso()
             d["end_reason"] = "corrected at full time"
         await self.history.save(rec)
+
+
+def ladder_day_text(d: dict, res: dict, code: str, note: str = "") -> str:
+    """Telegram HTML for a ladder day's code: Rules line, day, stake -> return, savings, legs with est + reason."""
+    n = d["current_day"]
+    stake = float(d.get("value") or 0)
+    nxt = ladder.stake_for(n + 1, d["start"]) if n < ladder.DAYS else None
+    lines = [esc(ladder.rules_line()),
+             f"<b>Ladder day {n}/{ladder.DAYS}</b> · start {d['start']:,.0f}" + (f"\nCode <code>{esc(code)}</code>"
+                                                                                  if code else ""), RULE]
+    for i, l in enumerate(res["legs"], 1):
+        lines.append(leg_lines(l, i, why=True))
+    ret = stake * res["total_odds"]
+    lines += [RULE, f"<b>Total odds <code>{res['total_odds']:.2f}</code></b> · est. hit chance <b>{res['est_prob']:.0%}</b>"
+              f" · {len(res['legs'])} legs",
+              f"Stake <b>{stake:,.0f}</b> -> <b>{ret:,.0f}</b> if it lands"
+              + (f" · next stake {nxt:,.0f}, save {max(0.0, ret - nxt):,.0f}" if nxt else " · the last day"),
+              f"Savings now {float(d.get('savings') or 0):,.0f} · restarts {int(d.get('restarts') or 0)}"]
+    if res.get("note"):
+        lines.append("Note: " + esc(res["note"]))
+    if note and note != res.get("note"):
+        lines.append("Note: " + esc(note))
+    lines.append("<i>Estimates from prices + team stats, not guarantees. 18+.</i>")
+    return "\n".join(lines)
 
 
 def day_markup(slip_id: str, booked: bool, code: str | None = None):
@@ -687,7 +902,7 @@ def day_markup(slip_id: str, booked: bool, code: str | None = None):
         rows.append([Btn("Book this day on SportyBet", callback_data=f"HB|{slip_id}")])
     rows.append([Btn("Refresh picks", callback_data=f"RF|{slip_id}"),
                  Btn("Different picks", callback_data=f"RF|{slip_id}|x")])
-    rows.append([Btn("Slip image", callback_data=f"IMG|h|{slip_id}"[:64])])
+    rows.append([Btn("Slip image", callback_data=f"IMG|h|{slip_id}"[:64]), Btn("Skip today", callback_data="RO|skip")])
     return Kb(rows)
 
 

@@ -7,6 +7,26 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-13): 2-odds savings ladder (rollover mode)
+The user's "2odds Rollover template" as a rollover mode (`ladder.py`): 16 days at ~2.00 odds a day, stake 1,000 ->
+1,000,000 winning + 568,500 savings, each day's next stake = return - save. Scales with the start stake (x start/1000).
+**Code each day:** `Scanner.ladder_slip` = total odds 1.90-2.15, fewest strongest Safe legs (est >= 80% each,
+stats-confirmed, max 4), top-leagues allowlist (national-team competitions included), no unders, no half / time-window
+markets, home or neutral picks first (an away-side pick only when no home/neutral slip exists, and said so). Nothing
+qualifies -> "No safe 2.00 slip today" and the ladder holds (no day advanced or lost).
+**Money (real odds):** a win saves return - next template stake; a loss on day i >= 3 restarts at day i-2 with that
+stake taken from savings (day 1-2 -> day 1); savings short -> further back; not even day 1 -> the ladder ends (savings
+kept). Void below the next stake -> the same day replays. Ledger per plan (day, stake, odds, return, saved, savings,
+restarts) in plan.data.ledger.
+**Where:** `/rollover ladder [stake]` (e.g. `/rollover ladder 2000`, `2k`), `/rollover ladder plan [stake]` (the
+16-day table), `/rollover` (status + ledger), `/rollover tickets`, `/rollover skip` (confirm; cancels today's code
+before its first kick-off, keeps the position), chat "start the 2 odds ladder with 2k" / "ladder plan 1.5k" (handled
+before the AI; the AI tab only starts a plan from the owner's chat), Mini App Rollover tab (2-odds savings ladder
+card, table, ledger). Same daily 09:00 WAT push, Refresh / Different picks, AI reply edits (ladder rules), early
+settlement; one ping per slip carrying the ladder outcome (restart day, stake from savings, new savings). Every ladder
+reply starts with a Rules: line. Admin: `GET /api/ladder/plan?stake=`, `POST /api/admin/ladder_preview` (nothing
+booked). Tests: `tests/test_ladder.py`.
+
 ## What's new (2026-11-13): football.com "Any Team Over 1.5" codes
 football.com NG runs the same Sportradar/SportyBet platform and JSON at `https://www.football.com/api/ng`, and it carries
 market **60045 "Any Team Over X.5"** (specifier `total=1.5`, outcome `74` = Yes, `76` = No) that SportyBet doesn't. The

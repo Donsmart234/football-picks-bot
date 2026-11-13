@@ -92,6 +92,9 @@ Rules:
   midweek | week, or the Scanner tab's 5-min Draw section), never by scan_markets; if asked indirectly, point there.
 - ANY TEAM OVER 1.5 ("any team over 1.5", football.com's market) is answered by the bot's own builder (/anyteam [legs]
   [min-max odds] [league/team words], one booked football.com code), never by scan_markets; point there if asked.
+- The 2-ODDS SAVINGS LADDER (the user's 16-day "2odds rollover template": ~2.00 a day, part of each win saved, a cut
+  restarts 2 days back from savings) is run by the bot itself: /rollover ladder [stake], /rollover ladder plan [stake]
+  or the Rollover tab. Never build or promise ladder codes yourself; point there.
 - Load codes at https://www.sportybet.com/ng/m/code-hub/load-code (or Load Code in the SportyBet app)."""
 
 TOOLS = [{"functionDeclarations": [
@@ -400,6 +403,48 @@ class Analyst:
             lines.append(sl["note"])
         return "\n".join(lines)
 
+    async def _ladder(self, chat_id: int, li: dict) -> str:
+        """Plain-text ladder answer (starts with the Rules line). A plan is started only from the owner's chat."""
+        import ladder
+        tr = self.s.tracker
+        try:
+            start = ladder.check_start(li.get("stake"))
+        except ValueError as exc:
+            return ladder.rules_line() + "\n" + str(exc)
+        if li["action"] == "plan":
+            return ladder.plan_table_text(start, html=False)
+        if li["action"] == "start":
+            owner = tr.owner()
+            if not owner or int(chat_id) != int(owner):
+                return (ladder.rules_line() + "\nLadder plans are started from the owner's chat only, so nothing "
+                        "was started here.\n\n" + ladder.plan_table_text(start, html=False))
+            try:
+                rec, day = await tr.create_ladder(start)
+            except ValueError as exc:
+                return ladder.rules_line() + "\n" + str(exc)
+            d = (await tr.history.get(rec["id"]) or rec)["data"]
+            out = [ladder.rules_line(), f"2-odds savings ladder started at {start:,.0f}: day 1 stake "
+                   f"{ladder.stake_for(1, start):,.0f}, {ladder.DAYS} days, template total "
+                   f"{ladder.totals(start)['final_return']:,.0f} winning + {ladder.totals(start)['savings']:,.0f} savings."]
+            if day and day.get("status") == "pending":
+                out.append(f"Today's code {day.get('code') or '(not booked)'} · {day.get('total_odds', 0):.2f} odds "
+                           f"· {day.get('legs')} legs: sent to Telegram with every leg's estimate and reason.")
+            elif day and day.get("status") == "no_slip":
+                out.append("No safe 2.00 code today: " + (day.get("note") or "") + " The ladder holds on day 1.")
+            else:
+                out.append("The first code comes at ~09:00 WAT.")
+            out.append("Status any time: /rollover. Estimates, not guarantees. 18+.")
+            return "\n".join(out)
+        rec = await tr.active_rollover() or next(iter(await tr.rollovers(1)), None)
+        if not rec or rec["data"].get("mode") != ladder.MODE:
+            return ladder.plan_table_text(start, html=False)
+        d = rec["data"]
+        lines = [ladder.rules_line(), f"Ladder ({rec['status']}) · start {d['start']:,.0f} · day "
+                 f"{min(d['current_day'], ladder.DAYS)}/{ladder.DAYS} · stake {float(d.get('value') or 0):,.0f} · "
+                 f"savings {float(d.get('savings') or 0):,.0f} · restarts {int(d.get('restarts') or 0)}"]
+        lines += ladder.ledger_lines(d, 8)
+        return "\n".join(lines)
+
     async def ask(self, chat_id: int, text: str, context: dict | None = None) -> dict:
         """Returns {reply, slip, code, tools, edit}. context = the slip the user is replying to (editflow.py):
         the message is then treated as an edit of THAT slip and answered inside its section."""
@@ -432,6 +477,15 @@ class Analyst:
             return {"reply": reply, "slip": None, "code": out.get("code"), "tools": ["anyteam"], "model": "anyteam",
                     "analysis": None, "anyteam": {k: v for k, v in out.items() if k not in ("legs", "pool")},
                     "code_url": out.get("url"), "bookmaker": "football.com"}
+        import ladder
+        li = ladder.parse_intent(text)
+        if li and getattr(self.s, "tracker", None) is not None:
+            # "start the 2 odds ladder with 2k" / "ladder plan 1.5k": the 2-odds savings ladder, no model call
+            reply = await self._ladder(chat_id, li)
+            self._save(chat_id, "user", text)
+            self._save(chat_id, "model", reply[:1500])
+            return {"reply": reply, "slip": None, "code": None, "tools": ["ladder"], "model": "ladder",
+                    "analysis": None, "ladder": li}
         if not self.enabled:
             return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
         contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]

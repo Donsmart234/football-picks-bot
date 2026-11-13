@@ -174,7 +174,7 @@ class SlipEditor:
     @staticmethod
     def from_text(text: str) -> dict | None:
         t = text or ""
-        if re.search(r"New picks for today|Rollover day \d|Picks refreshed|Edited rollover|Rollover tickets|Rollover", t):
+        if re.search(r"New picks for today|Rollover day \d|Ladder day \d|Ladder tickets|Picks refreshed|Edited rollover|Rollover tickets|Rollover", t):
             return {"section": "rollover_day", "slip_id": "", "from_text": True}
         return None
 
@@ -300,6 +300,8 @@ class SlipEditor:
                 ctx["day"] = slip["data"].get("rollover_day")
                 ctx["target"] = float(plan["data"]["target"])
                 ctx["allow_unders"] = bool(plan["data"].get("allow_unders"))
+                if plan["data"].get("mode"):
+                    ctx["mode"] = plan["data"]["mode"]
                 ctx["code"] = slip["data"].get("code") or ""
                 ctx["slip_status"] = slip["status"]
                 if sec == "rollover_day" or not ctx.get("legs"):
@@ -339,7 +341,14 @@ class SlipEditor:
     @staticmethod
     def context_text(ctx: dict) -> str:
         sec = ctx.get("section")
-        if sec in ("rollover_preview", "rollover_day"):
+        if sec in ("rollover_preview", "rollover_day") and ctx.get("mode") == "ladder":
+            head = (f"Section: 2-ODDS SAVINGS LADDER plan {ctx.get('plan_id', '')} day {ctx.get('day', '?')}. Rules for "
+                    "every leg: top leagues only, stats-confirmed, est >=80%, no Under selections, full match only (no "
+                    "half / minute markets), kick-off not started, one pick per match; total odds must stay within "
+                    "1.90-2.15.")
+            if sec == "rollover_preview":
+                head += " This is a PREVIEW: nothing is booked until the user taps Confirm."
+        elif sec in ("rollover_preview", "rollover_day"):
             head = (f"Section: ROLLOVER plan {ctx.get('plan_id', '')} day {ctx.get('day', '?')}, target "
                     f"{ctx.get('target', 0):g} odds. Rules for every leg: top leagues only, stats-confirmed, est >=80%, "
                     + ("unders allowed" if ctx.get("allow_unders") else "no Under selections")
@@ -423,7 +432,21 @@ class SlipEditor:
         rules = {"lo": target * 0.97, "hi": target * 1.20, "target": target, "min_p": 0.80, "min_odds": 1.12,
                  "max_odds": target * 1.20, "no_unders": not allow_unders, "require_confirmed": True,
                  "top_only": True, "strict": True, "label": "rollover"}
-        if op.get("action") == "rebuild":
+        lad = d.get("mode") == "ladder"
+        if lad:                       # 2-odds savings ladder (ladder.py): its own odds window and leg rules
+            import ladder
+            rules.update(lo=ladder.ODDS_LO, hi=ladder.ODDS_HI, target=ladder.TARGET, max_odds=ladder.ODDS_HI,
+                         no_unders=True, label="ladder")
+        if op.get("action") == "rebuild" and lad:
+            prev = {slipedit.sel_key(l) for l in base} | {slipedit.sel_key(l) for l in slip["data"]["legs"]}
+            res = await self.s.scanner.ladder_slip(exclude=prev, fresh=True)
+            if not res["legs"]:
+                return self._fail(ctx, "No different valid slip exists right now under the ladder rules (top leagues, "
+                                       "every leg est >=80%, 1.90-2.15 odds, no unders, full match only). Your "
+                                       "current slip stays.")
+            r = {"ok": True, "legs": res["legs"], "change": "New picks for the whole day", "note": "",
+                 "total_odds": res["total_odds"], "est_prob": res["est_prob"]}
+        elif op.get("action") == "rebuild":
             prev = {slipedit.sel_key(l) for l in base} | {slipedit.sel_key(l) for l in slip["data"]["legs"]}
             res = await self.s.scanner.rollover_slip(target, allow_unders=allow_unders, exclude=prev, fresh=True,
                                                      constraints=self._scope(ctx))
@@ -435,6 +458,9 @@ class SlipEditor:
                  "total_odds": res["total_odds"], "est_prob": res["est_prob"]}
         else:
             cands = self._scoped(ctx, await self.s.scanner.edit_candidates("rollover", allow_unders=allow_unders))
+            if lad:
+                from scanner import ladder_leg_ok
+                cands = [c for c in cands if ladder_leg_ok(c)]
             r = slipedit.apply_edit(base, op, cands, rules)
             if not r["ok"]:
                 return {**self._fail({**ctx, "legs": base}, r["note"]), "plan_id": plan["id"], "slip_id": slip["id"]}
@@ -442,7 +468,7 @@ class SlipEditor:
         if same:
             return {**self._fail({**ctx, "legs": base}, "That gives back the day's current slip, so nothing changes."),
                     "plan_id": plan["id"], "slip_id": slip["id"]}
-        res = {"tier": "rollover", "label": "Rollover", "target": target, "total_odds": r["total_odds"],
+        res = {"tier": "rollover", "label": "Ladder 2.00" if lad else "Rollover", "target": target, "total_odds": r["total_odds"],
                "est_prob": r["est_prob"], "reached": True, "legs": r["legs"], "note": "", "edited": True,
                "rules": {"min_p": 0.80, "leagues": "allowlist", "no_unders": not allow_unders}}
         token = tr.edit_preview(slip["id"], res)

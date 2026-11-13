@@ -46,7 +46,7 @@
     mRange: "today", mData: {}, mStack: [], mQuery: "", pred: null, markets: null,
     live: null, liveAt: 0, liveErr: "", lm: null, lmErr: "", scroll: {},
     chat: [], aiBusy: false, aiCtx: null,
-    hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false },
+    hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false }, ladForm: { stake: "1000" }, ladTable: null,
     az: null, azBusy: false, azErr: "", azCode: "", azTake: null, azTakeBusy: false, allLg: (() => { try { return localStorage.getItem("fra_alllg") === "1"; } catch (e) { return false; } })(),
     ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
     homeMode: (() => { try { const v = localStorage.getItem("fra_home"); return v === "draw5" || v === "anyteam" ? v : "scan"; } catch (e) { return "scan"; } })(),
@@ -1084,6 +1084,36 @@
     state.roPicking = false; state.ro = null; state.hist = null; store.set("ro", null); store.set("hist", null);
     if (state.tab === "rollover") renderRollover();
   }
+  const n0 = (v) => Math.round(Number(v || 0)).toLocaleString("en-GB");
+  function ladderActiveHtml(act) {
+    const d = act.data, n = Math.min(d.current_day, d.days);
+    const led = (d.ledger || []).slice(-6).reverse();
+    return `<div class="card port t-safe"><div class="sub">${esc(state.ro.ladder_rules || "")}</div>
+      <div class="head" style="margin-top:6px"><span class="label">Ladder day ${n} of ${d.days}</span><span class="pill">2.00 a day · start ${n0(d.start)}</span></div>
+      <div class="big num">${n0(d.value)}<small>today's stake</small></div>
+      ${roSteps(d)}
+      <div class="kpis"><div class="kpi"><b>${n0(d.savings)}</b><span>Savings</span></div><div class="kpi"><b>${d.restarts || 0}</b><span>Restarts</span></div><div class="kpi"><b>${n0(d.start * 1000)}</b><span>Day 16 return</span></div></div>
+      ${led.length ? `<div class="label" style="margin-top:12px">Ledger</div>` + led.map((r) => `<div class="sub">Day ${r.day} · ${esc(r.date || "")} · stake ${n0(r.stake)}${r.outcome === "lost" ? (r.ended === "busted" ? " · LOST · ladder ended" : ` · LOST · restart day ${r.restart_from} (-${n0(r.taken_from_savings)} from savings)`) : ` @ ${f2(r.odds)} → ${n0(r["return"])} · ${r.outcome.toUpperCase()} · saved ${n0(r.saved)}`} · savings ${n0(r.savings)}</div>`).join("") : ""}
+      <div class="btnrow"><button class="btn small" data-act="ronow" ${state.roBusy ? "disabled" : ""}>Build today's code</button><button class="btn small secondary" data-act="roskip">Skip today</button></div>
+      <div class="btnrow"><button class="btn small secondary" data-act="ladtable" data-s="${esc(d.start)}">Ladder table</button><button class="btn small ghost" data-act="rostop">Stop plan</button></div>
+      ${state.ladTable ? ladderTableHtml(state.ladTable) : ""}</div>`;
+  }
+  function ladderTableHtml(t) {
+    return `<div class="hlegs" style="margin-top:10px"><div class="sub">${esc(t.rules)}</div>${t.rows.map((r) => `<div class="sub">Day ${r.day}: ${n0(r.stake)} → ${n0(r["return"])} ${r.save == null ? "(end)" : "(save " + n0(r.save) + ")"}</div>`).join("")}<div class="sub"><b>Total winning ${n0(t.totals.final_return)} · total savings ${n0(t.totals.savings)} · ${t.totals.days} days</b></div></div>`;
+  }
+  function ladderStartHtml() {
+    const f = state.ladForm;
+    return `<div class="section"><span class="label">2-odds savings ladder</span></div><div class="card t-safe">
+      <div class="sub">${esc(state.ro.ladder_rules || "")}</div>
+      <div class="target"><div class="field"><span>Starting stake</span><input id="ladstake" inputmode="decimal" value="${esc(f.stake)}" placeholder="1000" autocomplete="off"></div></div>
+      <div class="rules">16 days at ~2.00 odds a day (1.90–2.15), Safe legs only (each est ≥80%), as few legs as possible, top leagues, no unders, full match only, home or neutral picks first. Part of every win is saved; the ladder scales with your stake (1,000 → 1,000,000 winning + 568,500 savings). A cut on day 3 or later restarts 2 days back with that stake taken from savings (day 1 or 2: back to day 1); if savings can't cover it, further back; if not even day 1, the ladder ends. No safe 2.00 code on a day = the ladder holds.</div>
+      <div class="btnrow"><button class="btn small secondary" data-act="ladtable">Show table</button><button class="btn small" data-act="ladstart" ${state.roBusy ? "disabled" : ""}>Start ladder</button></div>
+      ${state.ladTable ? ladderTableHtml(state.ladTable) : ""}</div>`;
+  }
+  async function loadLadderTable(stake) {
+    try { state.ladTable = await api("/api/ladder/plan?stake=" + encodeURIComponent(stake || 1000)); } catch (e) { toast(e.message); }
+    if (state.tab === "rollover") renderRollover();
+  }
   async function renderRollover() {
     if (state.roPlan && !state.roPlan.loading) { renderPlan(); return; }
     let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Daily compounding plan</div><h1>Rollover</h1><div class="sub">Top leagues · stats-confirmed legs ≥80% each</div></div><button class="iconbtn" data-act="rorefresh" aria-label="Refresh">↻</button></div>`;
@@ -1095,7 +1125,7 @@
     if (state.roBusy) h += `<div class="card"><div class="scanning"><div class="radar"></div>Scanning today's top-league matches…<div class="steps">every market → stats check → fewest strong legs to the target</div></div></div>`;
     if (act) {
       const d = act.data, n = Math.min(d.current_day, d.days);
-      h += `<div class="card port t-safe"><div class="head"><span class="label">Day ${n} of ${d.days}</span><span class="pill">${d.target}× a day${d.allow_unders ? "" : " · no unders"}</span></div>
+      if (d.mode === "ladder") h += ladderActiveHtml(act); else h += `<div class="card port t-safe"><div class="head"><span class="label">Day ${n} of ${d.days}</span><span class="pill">${d.target}× a day${d.allow_unders ? "" : " · no unders"}</span></div>
         <div class="big num">${d.value ? Number(d.value).toLocaleString("en-GB", { maximumFractionDigits: 0 }) : f2(Math.pow(d.target, Math.max(0, d.current_day - 1)))}<small>${d.value ? "stake value" : "odds compounded"}</small></div>
         ${roSteps(d)}
         <div class="kpis"><div class="kpi"><b>${d.stake ? Number(d.stake).toLocaleString("en-GB") : "–"}</b><span>Start stake</span></div><div class="kpi"><b>${d.stake ? Math.round(d.stake * Math.pow(d.target, d.days)).toLocaleString("en-GB") : f2(Math.pow(d.target, d.days))}</b><span>If all ${d.days} land</span></div><div class="kpi"><b>${(d.log || []).filter((x) => x.status === "won").length}</b><span>Days won</span></div></div>
@@ -1123,6 +1153,7 @@
         <div class="chips fchips" style="margin-top:12px"><button class="chip${f.allowUnders ? " on" : ""}" data-act="rounders" aria-pressed="${f.allowUnders}">${f.allowUnders ? IC.check + "Unders allowed" : "No unders (tap to allow)"}</button></div>
         <div class="rules">Each morning (~09:00 WAT) I build that day's slip from the top leagues (EPL, LaLiga, Serie A, Bundesliga, Ligue 1, UEFA cups, Eredivisie, Primeira Liga, Championship, Scottish Prem, Süper Lig, Pro League, MLS, Brasileirão, Argentina…) using only stats-confirmed legs at ≥80% est.${f.allowUnders ? "" : ", no under selections"}, as close to ${f.target}× as possible. A win moves you to the next day, a loss ends the plan. If nothing qualifies I'll suggest skipping the day. All ${f.days} days at ${f.target}× = ${f2(Math.pow(f.target, f.days))}× overall.</div>
         <button class="btn" data-act="rostart" ${state.roBusy ? "disabled" : ""}>Start rollover</button></div>`;
+      h += ladderStartHtml();
     }
     const past = (state.ro.past || []).filter((r) => !act || r.id !== act.id);
     if (past.length) h += `<div class="section"><span class="label">Past plans</span><span class="sub">tap for tickets</span></div><div class="card flush">${past.map((r) => `<div class="row" data-act="roplan" data-id="${esc(r.id)}" role="button"><div class="grow"><b>${r.data.target}× · ${r.data.days} days</b><div class="sub">${esc(fmtWhen(r.created_at))} · reached day ${Math.min(r.data.current_day, r.data.days)}</div></div><span class="spill ${{ completed: "st-won", busted: "st-lost" }[r.status] || "st-void"}">${esc({ completed: "Completed", busted: "Busted", stopped: "Stopped" }[r.status] || r.status)}</span></div>`).join("")}</div>`;
@@ -1131,7 +1162,7 @@
   }
   async function roAction(body, busy) {
     if (busy) { state.roBusy = true; renderRollover(); }
-    try { const r = await api("/api/rollover", body); hapN("success"); if (r.day && r.day.status === "no_slip") toast("No slip met the bar today: skip suggested"); else if (r.day && r.day.status === "waiting") toast(r.day.note); }
+    try { const r = await api("/api/rollover", body); hapN("success"); if (r.day && r.day.status === "no_slip") toast(body.action === "ladder_start" ? "No safe 2.00 code today: the ladder holds on day 1" : "No slip met the bar today: skip suggested"); else if (r.day && r.day.status === "waiting") toast(r.day.note); }
     catch (e) { hapN("error"); toast(e.message); }
     state.roBusy = false; state.ro = null; state.hist = null; store.set("ro", null); store.set("hist", null);
     if (state.tab === "rollover") renderRollover();
@@ -1234,6 +1265,8 @@
     else if (a === "rodays") { const inp = document.getElementById("rostake"); if (inp) state.roForm.stake = inp.value; state.roForm.days = Math.max(3, Math.min(15, state.roForm.days + Number(t.dataset.v))); hapSel(); renderRollover(); }
     else if (a === "rostart") { const inp = document.getElementById("rostake"); const st = inp ? parseFloat(inp.value.replace(/[,₦\s]/g, "")) : NaN; roAction({ action: "start", target: state.roForm.target, days: state.roForm.days, stake: isNaN(st) ? null : st, allow_unders: !!state.roForm.allowUnders }, true); }
     else if (a === "ronow") roAction({ action: "now" }, true);
+    else if (a === "ladtable") { const inp = document.getElementById("ladstake"); const v = t.dataset.s || (inp ? inp.value.replace(/[,₦\s]/g, "") : "1000"); if (inp) state.ladForm.stake = inp.value; if (state.ladTable) { state.ladTable = null; renderRollover(); } else loadLadderTable(v); }
+    else if (a === "ladstart") { const inp = document.getElementById("ladstake"); const raw = inp ? inp.value.replace(/[,₦\s]/g, "") : "1000"; const m = /^(\d+(?:\.\d+)?)(k|m)?$/i.exec(raw || "1000"); if (!m) { toast("Enter a stake like 1000 or 2k"); return; } const st = Number(m[1]) * (m[2] ? (m[2].toLowerCase() === "k" ? 1000 : 1e6) : 1); state.ladForm.stake = inp ? inp.value : "1000"; const doIt = () => roAction({ action: "ladder_start", stake: st }, true); const q = `Start the 2-odds savings ladder at ${n0(st)}? Today's code is booked on SportyBet if a safe 2.00 slip exists.`; if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast("6.2")) tg.showConfirm(q, (ok) => ok && doIt()); else if (confirm(q)) doIt(); }
     else if (a === "roskip") roAction({ action: "skip" });
     else if (a === "rostop") { const doIt = () => roAction({ action: "stop" }); if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast("6.2")) tg.showConfirm("Stop this rollover plan?", (ok) => ok && doIt()); else if (confirm("Stop this rollover plan?")) doIt(); }
     else if (a === "scanrefresh") refreshScan(t.dataset.x === "1");
