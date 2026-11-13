@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import config
-from bookmakers import BookmakerAdapter, Event, SportyBetNG
+from bookmakers import BookmakerAdapter, Event, FootballComNG, SportyBetNG
 from matching import rank_events
 from predictor import Prediction, predict
 from draw5 import Draw5Finder
@@ -37,11 +37,16 @@ class Services:
         self.sr = SportradarStats(self.storage)
         self.scanner = Scanner(self.bookmaker, self.sr, self.stats)
         self.draw5 = Draw5Finder(self.bookmaker, self.sr)
+        # football.com NG (same platform): Any Team Over 1.5 codes (anyteam.py)
+        from anyteam import AnyTeamFinder
+        self.footballcom = FootballComNG()
+        self.anyteam = AnyTeamFinder(self.footballcom, lister=self.bookmaker)
         self._pred_cache: dict[str, tuple[float, Prediction]] = {}
         self._form_cache: dict[str, MatchForm | None] = {}
 
     async def aclose(self) -> None:
         await self.bookmaker.aclose()
+        await self.footballcom.aclose()
         await self.stats.aclose()
         await self.sr.aclose()
 

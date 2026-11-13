@@ -34,6 +34,9 @@ SPORTYBET_CACHE_SECONDS = _int("SPORTYBET_CACHE_SECONDS", 300)
 # Relay for SportyBet calls (Render's IP gets an AWS WAF challenge). Set to an empty string for direct mode.
 SPORTYBET_RELAY_URL = os.environ.get("SPORTYBET_RELAY_URL",
                                      "https://ectglmhgqfiipexvczmh.supabase.co/functions/v1/sb").strip()
+# football.com NG (same platform): direct by default. The SportyBet relay above only forwards to www.sportybet.com
+# ("bad path" for anything else, checked 2026-11-13), so a football.com relay would be a separate function.
+FOOTBALLCOM_RELAY_URL = os.environ.get("FOOTBALLCOM_RELAY_URL", "").strip()
 
 # Bet analyzer access: "owner" (default: the bot stays private), "allowlist" (owner + ANALYZER_USERS) or "public".
 # Only /analyze, bare codes, the analyzer buttons and the Mini App's /api/analyze* routes open up; everything else

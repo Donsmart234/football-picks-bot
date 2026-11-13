@@ -12,6 +12,7 @@ from telegram.constants import ParseMode
 from telegram.ext import (Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, TypeHandler, filters)
 
+import anyteam
 import config
 import draw5
 import draw5book
@@ -47,6 +48,9 @@ HELP = (
     "/rollover 2 7 – rollover plan: daily target 2–5, 3–15 days (+ optional stake) · /rollover tickets – every day's ticket\n"
     "/draw5 weekend · /draw5 midweek · /draw5 week – one SportyBet code of 50 five-minute draws (SportyBet '1X2 from 1 "
     "to 5 minute' = Draw, no German leagues); Refresh books 50 new matches (or just type \"5 min draw weekend\")\n"
+    "/anyteam [legs] [min-max odds] [league/team words] – one football.com code of Any Team Over 1.5 (Yes); default "
+    "10 legs, odds 1.15-1.35, national teams when they play (else top leagues), next 72 h. E.g. /anyteam, "
+    "/anyteam 8 1.2-1.3, /anyteam nigeria egypt, /anyteam afcon qualifiers today (or type \"any team over 1.5\")\n"
     "/reset – clear the AI chat memory"
 )
 
@@ -175,6 +179,9 @@ async def free_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if rt is None and draw5.wants_draw5(text):      # "5 min draw weekend": the 5-minute draw finder, no AI
         await _d5_start(update.effective_message, ctx, text, _uid_of(update))
+        return
+    if rt is None and anyteam.wants_anyteam(text):  # "any team over 1.5 10 legs": the football.com builder, no AI
+        await _at_run(update.effective_message, ctx, text, _uid_of(update))
         return
     sctx = await _slip_context(update, ctx, text)
     ai = getattr(svc(ctx), "ai", None)
@@ -922,11 +929,12 @@ def _mkt_name(mid: str) -> str:
 
 
 # ---------------------------------------------------------------- history / rollover
-def _code_cell(code: str | None, live: bool) -> str:
-    """A code in a list: monospace (tap to copy); running slips also get the open-in-SportyBet-app link."""
+def _code_cell(code: str | None, live: bool, bookmaker: str = "") -> str:
+    """A code in a list: monospace (tap to copy); running slips also get the open-in-app link (SportyBet, or
+    football.com for records booked there)."""
     if not code:
         return "<code>—</code>"
-    return code_html(code, "Open") if live else f"<code>{esc(code)}</code>"
+    return code_html(code, "Open", bookmaker) if live else f"<code>{esc(code)}</code>"
 
 
 def _hist_line(r: dict) -> str:
@@ -943,7 +951,7 @@ def _hist_line(r: dict) -> str:
     early = [l["early"]["min"] for l in legs if (l.get("early") or {}).get("min")]
     if early and r["status"] == "won":
         tag += f" · won early ({max(early)}')"
-    return (f"<b>{STATUS_LABEL.get(r['status'], r['status'].upper())}</b> · <b>{esc(tag)}</b> · {_code_cell(d.get('code'), r['status'] == 'pending')} · "
+    return (f"<b>{STATUS_LABEL.get(r['status'], r['status'].upper())}</b> · <b>{esc(tag)}</b> · {_code_cell(d.get('code'), r['status'] == 'pending', d.get('bookmaker') or '')} · "
             f"<b>{d.get('total_odds') or 0:.2f}</b> · {won}/{len(legs)} legs won · <i>{esc(when)}</i>")
 
 
@@ -1522,6 +1530,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _slip_image_cb(q, ctx, parts)
     elif kind == "D5":
         await _d5_callback(q, ctx, parts)
+    elif kind == "AT":
+        await _at_callback(q, ctx, parts)
     elif kind in ("AZR", "AZC", "AZN"):
         await _analyzer_callback(q, ctx, kind, parts[1] if len(parts) > 1 else "")
     elif kind == "CLR":
@@ -1651,6 +1661,77 @@ async def _d5_callback(q, ctx, parts: list[str]) -> None:
         await q.answer()
 
 
+# ---------------------------------------------------------------- Any Team Over 1.5 -> one football.com code (anyteam.py)
+def _at_store(ctx) -> dict:
+    st = ctx.application.bot_data.setdefault("anyteam", {})
+    import time as _t
+    for k in [k for k, v in st.items() if _t.time() - v["ts"] > 6 * 3600]:
+        st.pop(k, None)
+    return st
+
+
+def at_code_kb(tok: str, out: dict) -> Kb:
+    """Booked: Open in football.com (share link), Refresh (new picks), Slip image. Otherwise: Try again."""
+    if out.get("status") == "booked":
+        img = img_btn("h", out["history_id"]) if out.get("history_id") else img_btn("c", out["code"])
+        return Kb([[Btn("Open in football.com", url=out["url"])],
+                   [Btn("Refresh (new picks)", callback_data=f"AT|r|{tok}"), img]])
+    if out.get("status") == "exhausted":
+        return Kb([[Btn("Try again later", callback_data=f"AT|r|{tok}")]])
+    return Kb([[Btn("Try again", callback_data=f"AT|run|{tok}")]])
+
+
+async def anyteam_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await _at_run(update.effective_message, ctx, " ".join(ctx.args or []), _uid_of(update))
+
+
+async def _at_run(msg, ctx, text: str, owner: int = 0, refresh: bool = False) -> None:
+    import time as _t
+    import uuid
+    s = svc(ctx)
+    note = await msg.reply_text(("Booking new Any Team Over 1.5 picks" if refresh else
+                                 "Building your Any Team Over 1.5 code") + " on football.com... ~30 s")
+    try:
+        out = await anyteam.build(s, owner, text, refresh=refresh)
+    except Exception as exc:
+        log.warning("anyteam flow failed: %s", exc, exc_info=True)
+        out = {"status": "error", "message": "The Any Team Over 1.5 code couldn't be made just now (football.com "
+                                             "didn't answer). Tap Try again."}
+    tok = uuid.uuid4().hex[:8]
+    _at_store(ctx)[tok] = {"ts": _t.time(), "out": out, "text": text}
+    await _at_show(note.edit_text, out, tok)
+
+
+async def _at_show(edit, out: dict, tok: str) -> None:
+    kb = at_code_kb(tok, out)
+    try:
+        await edit(anyteam.code_html(out)[:4000], parse_mode=ParseMode.HTML, reply_markup=kb,
+                   disable_web_page_preview=True)
+        return
+    except Exception as exc:
+        if "not modified" in str(exc).lower():
+            return
+        log.warning("anyteam reply rejected: %s", exc)
+    try:
+        await edit(anyteam.code_plain(out)[:4000], reply_markup=kb, disable_web_page_preview=True)
+    except Exception as exc:
+        log.warning("anyteam plain reply rejected: %s", exc)
+        await edit(f"football.com code: {out.get('code')}" if out.get("code") else "No code this time. Send /anyteam again.")
+
+
+async def _at_callback(q, ctx, parts: list[str]) -> None:
+    st = _at_store(ctx)
+    owner = int(getattr(getattr(q, "from_user", None), "id", 0) or 0)
+    act = parts[1] if len(parts) > 1 else ""
+    prev = st.get(parts[2]) if len(parts) > 2 else None
+    if act not in ("run", "r"):
+        await q.answer()
+        return
+    text = (prev or {}).get("text") or ""
+    await q.answer(("New picks" if act == "r" else "Any Team Over 1.5") + "... ~30 s")
+    await _at_run(q.message, ctx, text, owner, refresh=act == "r")
+
+
 def _az_src(res: dict) -> str:
     return f"<code>{esc(res['code'])}</code>" if res.get("code") else "your screenshot"
 
@@ -1721,7 +1802,8 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start", "Open the app + help"), BotCommand("scan", "Scan markets: /scan safe 5"),
         BotCommand("ai", "Ask the AI analyst"), BotCommand("analyze", "Analyze a booking code: /analyze CODE"), BotCommand("today", "Today's matches by league"),
-        BotCommand("rollover", "Rollover plan: /rollover 2 7"), BotCommand("draw5", "5-min draw code (50): /draw5 weekend"), BotCommand("history", "Booked codes + results"),
+        BotCommand("rollover", "Rollover plan: /rollover 2 7"), BotCommand("draw5", "5-min draw code (50): /draw5 weekend"),
+        BotCommand("anyteam", "football.com Any Team Over 1.5 code: /anyteam"), BotCommand("history", "Booked codes + results"),
         BotCommand("slip", "Your slip and total odds"), BotCommand("help", "How it works"),
     ])
     url = app_url()
@@ -1753,6 +1835,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("rollover", rollover_cmd))
     app.add_handler(CommandHandler("draw5", draw5_cmd))
+    app.add_handler(CommandHandler("anyteam", anyteam_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text))

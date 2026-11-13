@@ -7,6 +7,35 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-13): football.com "Any Team Over 1.5" codes
+football.com NG runs the same Sportradar/SportyBet platform and JSON at `https://www.football.com/api/ng`, and it carries
+market **60045 "Any Team Over X.5"** (specifier `total=1.5`, outcome `74` = Yes, `76` = No) that SportyBet doesn't. The
+market is only in the event detail (`factsCenter/event`), not the upcoming list. `bookmakers.FootballComNG` is a
+subclass of `SportyBetNG` (BASE, BRAND, KEY `footballcom`, share link `https://www.football.com/ng/?shareCode=CODE`,
+Referer/Origin); `bookmakers.BOOKMAKERS` lists the sites, so another bookmaker is one more adapter. Direct calls by
+default; `FOOTBALLCOM_RELAY_URL` can point at a relay that forwards `?p=/api/ng/...` to football.com (the SportyBet relay
+only forwards to sportybet.com and answers "bad path" otherwise).
+
+`anyteam.py` builds and books one football.com code: defaults 10 legs, leg odds 1.15-1.35, Yes only, one leg per match,
+not started, next 72 h. Scope: national teams (Sportradar category International, senior; youth only when "u21"/"youth"
+is said, women only when asked) whenever at least 4 national-team matches are in the window, else the top-leagues
+allowlist; "all leagues", "top leagues", "national teams" override. Named leagues, national competitions (AFCON
+qualifiers, World Cup qualifiers, Nations League, friendlies...) and team names are hard filters (only those, never
+padded); "no Nigeria" excludes. Fewer qualifying than asked: books what exists and says the count. Candidates come from
+the SportyBet list (same `sr:match` ids, already cached via the relay; football.com's own list is the fallback), are
+pre-checked with a Poisson fit of 1X2 + O/U 2.5, then each event detail is read from football.com (12 at a time).
+Ranking: de-margined Yes from the Yes/No pair (power method); the Poisson P(either team scores 2+) is kept as a check.
+
+Where: `/anyteam [legs] [min-max odds] [league/team words] [today|tomorrow|weekend|48h]`, chat "any team over 1.5 ..."
+(routed before the AI), the Mini App Scanner's "Any Team 1.5" tab, `POST /api/anyteam {"text", "legs", "min_odds",
+"max_odds", "refresh"}` (`{"list": true}` = picks only, nothing booked; admin `{"test": true}` = test record). Reply:
+`Rules: Any Team Over 1.5 (Yes), N legs, odds a-b, national teams|top leagues`, the football.com code, total odds, first
+kickoff (WAT), combined estimated chance, the legs; buttons Open in football.com / Refresh (new picks) / Slip image.
+Refresh books matches that were in no earlier Any Team code of this owner for the window (fra_records kind `atused`).
+Booked codes go to History with `bookmaker: "footballcom"` (links in History open football.com). Settlement: 60045 Yes
+wins when either team scores more than the line in regular time (early "won" once a side passes it).
+`GET /api/admin/diag?footballcom=1` shows whether the server reaches football.com. Tests: `tests/test_anyteam.py`.
+
 ## What's new (2026-11-05): 5-minute draw finder
 **What:** SportyBet's **"1X2 from 1 to 5 minute"** market (Betradar/SportyBet market id `900069`, specifier
 `minute=5`, outcome `2` = Draw: the score is level when minute 5 ends, i.e. 0-0 or the rare 1-1). `draw5.py`.
@@ -573,6 +602,7 @@ python tests/test_analyzer.py      # offline: code detection, share parsing (fix
 python tests/test_early_settle.py  # offline: 40 early-settlement cases, Entered ping once, corrections, rollover tickets, refresh picks
 python tests/test_links.py         # offline: booking-code links = SportyBet share URL (app link), buttons, HTML escaping, Mini App
 python tests/test_live_status.py   # offline: live/ended/AET/AP/abandoned/postponed/interrupted states, feed drop-outs, caps, match view, settlement
+python tests/test_anyteam.py       # offline: football.com adapter, Any Team Over 1.5 filters / scope / booking / reply / settlement
 python tests/test_tracker.py       # 26 settlement cases + tracker run on real finished matches (SQLite, fake bot, 1 ping per slip)
 ```
 

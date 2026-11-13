@@ -194,6 +194,7 @@ class MiniApp:
         app.router.add_post("/api/book", self.book)
         app.router.add_post("/api/scan", self.scan)
         app.router.add_post("/api/draw5", self.draw5)
+        app.router.add_post("/api/anyteam", self.anyteam)
         app.router.add_post("/api/ai", self.ai)
         app.router.add_post("/api/ai/reset", self.ai_reset)
         app.router.add_get("/api/match_markets", self.match_markets)
@@ -670,6 +671,35 @@ class MiniApp:
             log.info("draw5 code booked (%d selections, %s%s)", out["n"], period, ", test" if test else "")
         return self._gz(web.json_response(out))
 
+    async def anyteam(self, request: web.Request) -> web.Response:
+        """football.com Any Team Over 1.5 (anyteam.py): {"text": "league / team words", "legs": 10, "min_odds": 1.15,
+        "max_odds": 1.35, "refresh": bool}. Default: books ONE football.com code and saves it to History (bookmaker
+        football.com). {"list": true} = the picks that would be booked plus the whole ranked pool, nothing booked.
+        Admin only: {"test": true} books a TEST record (deletable via /api/admin/delete_test, not counted for Refresh)."""
+        import anyteam as at
+        data = await self._json(request)
+        user = request["tg_user"]
+
+        def num(k, cast=float):
+            try:
+                return cast(data[k]) if data.get(k) not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+        test = bool(data.get("test")) and bool(user.get("admin"))
+        try:
+            out = await at.build(self.s, int(user.get("id") or 0), str(data.get("text") or "")[:300],
+                                 refresh=bool(data.get("refresh")), book=not data.get("list"), test=test,
+                                 fresh=bool(data.get("fresh")), n=num("legs", int), lo=num("min_odds"),
+                                 hi=num("max_odds"))
+        except Exception as exc:
+            log.warning("anyteam failed: %s", exc, exc_info=True)
+            return web.json_response({"error": "The Any Team Over 1.5 search failed (football.com didn't answer). "
+                                               "Try again shortly."}, status=502)
+        if out.get("status") == "booked":
+            log.info("anyteam code booked (%d legs%s)", out["n"], ", test" if test else "")
+        out["reply"] = at.code_plain(out)
+        return self._gz(web.json_response(out))
+
     # ---- bet analyzer -------------------------------------------------------------
     async def analyze(self, request: web.Request) -> web.Response:
         data = await self._json(request)
@@ -1014,6 +1044,21 @@ class MiniApp:
             out["sportradar_ok"] = bool(form and form.ok)
             out["sportradar_failures"] = self.s.sr.failures
             out["detail_s"] = round(time.time() - t, 2)
+        if request.query.get("footballcom"):    # can this server reach football.com (Any Team Over 1.5)?
+            fc = getattr(self.s, "footballcom", None)
+            if fc is not None:
+                t = time.time()
+                try:
+                    url, q = fc._url("/factsCenter/pcUpcomingEvents", {"sportId": "sr:sport:1", "marketId": "1",
+                                                                        "pageSize": 1, "pageNum": 1, "option": 1,
+                                                                        "timeline": 24})
+                    r = await fc._client.get(url, params=q)
+                    out["footballcom"] = {"http": r.status_code, "relay": bool(fc.relay),
+                                          "server": r.headers.get("server", ""), "x_cache": r.headers.get("x-cache", ""),
+                                          "json": r.headers.get("content-type", "").startswith("application/json"),
+                                          "s": round(time.time() - t, 2)}
+                except Exception as exc:
+                    out["footballcom"] = {"error": exc.__class__.__name__}
         ai = getattr(self.s, "ai", None)
         out["ai_enabled"] = bool(ai and ai.enabled)
         if ai and ai.enabled:

@@ -24,7 +24,9 @@
   const LOAD_URL = "https://www.sportybet.com/ng/m/code-hub/load-code";
   // SportyBet's own share link: www.sportybet.com is app-claimed (iOS universal link "Open share code", Android
   // verified App Link), so it opens the installed app on the code and the website (which loads it) otherwise.
-  const codeUrl = (c) => { const k = String(c || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 16); return k ? `https://www.sportybet.com/?shareCode=${encodeURIComponent(k)}&c=ng` : LOAD_URL; };
+  // bm = the History record's bookmaker ("footballcom" for football.com codes: Any Team Over 1.5), else SportyBet
+  const codeUrl = (c, bm) => { const k = String(c || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 16); if (bm === "footballcom") return k ? `https://www.football.com/ng/?shareCode=${encodeURIComponent(k)}` : "https://www.football.com/ng/"; return k ? `https://www.sportybet.com/?shareCode=${encodeURIComponent(k)}&c=ng` : LOAD_URL; };
+  const bmName = (bm) => (bm === "footballcom" ? "football.com" : "SportyBet");
   const SLIP_KEY = "fra_slip_v2";
   const TIERS = {
     safe: { label: "Safe", target: 5, quick: [2, 3, 5, 8, 10], rule: "Every leg est. ≥80% after the stats check · odds 1.05–1.35 · estimates, not guarantees" },
@@ -47,8 +49,9 @@
     hist: null, histErr: "", histFilter: "all", histOpen: {}, ro: null, roErr: "", roBusy: false, roForm: { target: 2, days: 7, stake: "", allowUnders: false },
     az: null, azBusy: false, azErr: "", azCode: "", azTake: null, azTakeBusy: false, allLg: (() => { try { return localStorage.getItem("fra_alllg") === "1"; } catch (e) { return false; } })(),
     ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
-    homeMode: (() => { try { return localStorage.getItem("fra_home") === "draw5" ? "draw5" : "scan"; } catch (e) { return "scan"; } })(),
+    homeMode: (() => { try { const v = localStorage.getItem("fra_home"); return v === "draw5" || v === "anyteam" ? v : "scan"; } catch (e) { return "scan"; } })(),
     d5Period: "weekend", d5: {}, d5Busy: false, d5Err: "", d5Show: 0,
+    at: null, atBusy: false, atErr: "", atLegs: 10, atLo: "1.15", atHi: "1.35", atText: "",
   };
   const EXCL = [["under", "No unders"], ["corners", "No corners"], ["cards", "No cards"], ["player_props", "No player props"], ["handicap", "No handicaps"], ["combo", "No combos"]];
 
@@ -266,7 +269,7 @@
 
   // ---------------------------------------------------------------- HOME / SCANNER
   function homeSwitch() {
-    return `<div class="seg" role="tablist" aria-label="Scanner mode" style="margin-bottom:12px">${[["scan", "Slip scanner"], ["draw5", "5-min Draw"]].map(([k, v]) => `<button data-act="homemode" data-m="${k}" role="tab" aria-selected="${state.homeMode === k}" class="${state.homeMode === k ? "on" : ""}">${v}</button>`).join("")}</div>`;
+    return `<div class="seg" role="tablist" aria-label="Scanner mode" style="margin-bottom:12px">${[["scan", "Slip scanner"], ["draw5", "5-min Draw"], ["anyteam", "Any Team 1.5"]].map(([k, v]) => `<button data-act="homemode" data-m="${k}" role="tab" aria-selected="${state.homeMode === k}" class="${state.homeMode === k ? "on" : ""}">${v}</button>`).join("")}</div>`;
   }
   // ---------------------------------------------------------------- 5-MINUTE DRAW FINDER (/api/draw5)
   const D5P = [["weekend", "Weekend"], ["midweek", "Midweek"], ["week", "Full week"]];
@@ -307,8 +310,48 @@
     state.d5Busy = false;
     if (state.tab === "home") renderHome();
   }
+  // ---------------------------------------------------------------- ANY TEAM OVER 1.5 on football.com (/api/anyteam)
+  function renderAnyTeam() {
+    const r = state.at;
+    let h = homeSwitch() + `<div style="margin:4px 2px 12px"><div class="label">football.com</div><h1>Any Team Over 1.5</h1>
+      <div class="sub">One football.com code · Yes only · one leg per match · national teams when they play, else top leagues · next 72 h</div></div>
+      <div class="card"><div class="target"><div class="field"><span>Legs</span><input id="atLegs" inputmode="numeric" value="${esc(state.atLegs)}" autocomplete="off"></div>
+      <div class="field"><span>Min odds</span><input id="atLo" inputmode="decimal" value="${esc(state.atLo)}" autocomplete="off"></div>
+      <div class="field"><span>Max odds</span><input id="atHi" inputmode="decimal" value="${esc(state.atHi)}" autocomplete="off"></div></div>
+      <div class="field" style="margin-top:8px"><span>Leagues / teams (optional)</span><input id="atText" value="${esc(state.atText)}" placeholder="e.g. nigeria egypt, afcon qualifiers, premier league" autocomplete="off"></div>
+      <button class="btn" data-act="atrun" ${state.atBusy ? "disabled" : ""} style="margin-top:10px">${state.atBusy ? "Booking…" : "Get the code"}</button>
+      ${r && r.status === "booked" ? `<button class="btn secondary" data-act="atrefresh" ${state.atBusy ? "disabled" : ""}>${IC.refresh}Refresh (new picks)</button>` : ""}</div>`;
+    if (state.atBusy) h += `<div class="card"><div class="scanning"><div class="radar"></div>Reading football.com…<div class="steps">matches → Any Team Over 1.5 prices → one code</div></div></div>`;
+    else if (state.atErr) h += `<div class="error">${esc(state.atErr)}</div>`;
+    else if (r && r.status !== "booked") h += `<div class="card">${r.rules ? `<div class="rules rulesline"><b>Rules:</b> ${esc(r.rules)}</div>` : ""}<div class="note">${esc(r.message || "No code this time.")}</div></div>`;
+    else if (r) {
+      h += `<div class="card port"><div class="rules rulesline"><b>Rules:</b> ${esc(r.rules)}</div>
+        <div class="label" style="text-align:center">football.com code</div>
+        <div class="code" id="codeText">${esc(r.code)}</div>
+        <div class="sub" style="text-align:center">Total odds ${f2(r.total_odds)} · first kickoff ${esc(r.first_kickoff_local)} WAT · est ${pct(r.est_prob, 1)}</div>
+        ${r.short_note ? `<div class="note">${esc(r.short_note)}</div>` : ""}
+        <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="opencode" data-c="${esc(r.code)}" data-bm="footballcom">${IC.open}Open in football.com</button></div>
+        <div class="btnrow">${imgBtn(r.history_id ? { history_id: r.history_id } : { code: r.code })}</div>
+        <div class="sub" style="text-align:center;margin-top:6px">${r.history_id ? "Saved to History" : ""}</div></div>
+        <div class="card flush">${(r.legs || []).map((l, i) => `<div class="leg"><div class="lg-meta">${flag(l)}<span class="ellip">${esc(leagueShort(l.league))}</span><span class="dot">·</span><span class="num">${esc(kickDay(l.kickoff))} ${esc(kickTime(l.kickoff))}</span></div>
+          <div class="top"><span class="d5rank num">${i + 1}</span>${teamsBlock(l, "grow")}<span class="num">${f2(l.odds)}</span></div>
+          <div class="mkt"><span class="ellip">Any Team Over 1.5</span> <span class="pick">Yes</span> <span class="sub">· est ${pct(l.est, 1)}</span></div></div>`).join("")}</div>`;
+    }
+    h += `<div class="disc">Est. = football.com's Yes/No price with the margin removed; combined chance assumes independent legs. Estimates, not guarantees. 18+.</div>`;
+    $view.innerHTML = h;
+  }
+  async function runAnyTeam(refresh) {
+    const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+    state.atLegs = v("atLegs") || state.atLegs; state.atLo = v("atLo") || state.atLo; state.atHi = v("atHi") || state.atHi; state.atText = v("atText");
+    state.atBusy = true; state.atErr = ""; hap("medium"); if (state.tab === "home") renderHome();
+    try { state.at = await api("/api/anyteam", { legs: Number(state.atLegs) || 10, min_odds: Number(state.atLo) || 1.15, max_odds: Number(state.atHi) || 1.35, text: state.atText, refresh: !!refresh }); hapN(state.at.status === "booked" ? "success" : "warning"); if (state.at.status === "booked") { state.hist = null; store.set("hist", null); } }
+    catch (e) { state.atErr = e.message; hapN("error"); }
+    state.atBusy = false;
+    if (state.tab === "home") renderHome();
+  }
   function renderHome() {
     if (state.homeMode === "draw5") return renderDraw5();
+    if (state.homeMode === "anyteam") return renderAnyTeam();
     const t = TIERS[state.tier];
     let html = homeSwitch() + `<div style="margin:4px 2px 12px"><div class="label">Market scanner</div><h1>Build a slip</h1>
       <div class="sub">Every SportyBet market · top leagues · form, home/away &amp; H2H checked</div></div>
@@ -756,7 +799,7 @@
         if (m.analysis && m.analysis.summary) { const a = m.analysis, s2 = a.summary;
           h += `<div class="card" style="max-width:88%;margin:4px 0 8px"><div class="sub">${a.code ? "Code " + esc(a.code) : "From your screenshot"} · ${s2.legs} legs${s2.unmatched ? " · " + s2.unmatched + " couldn't match" : ""}</div><div style="margin:4px 0"><b>Grade ${esc(s2.grade || "–")}</b> · ${esc(a.verdict || "")}</div><div class="sub">Total odds ${s2.odds_known === false ? "n/a" : f2(s2.total_odds)} · est. hit chance ${pc(s2.chance)}</div></div><div class="btnrow" style="max-width:88%"><button class="btn small" data-act="aiaz" data-k="${i}">Open full analysis</button></div>`; }
         if (m.slip && m.slip.legs && m.slip.legs.length && !m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="bookslip" data-k="chat:${i}">Book this slip</button><button class="btn small secondary" data-act="slipall" data-k="chat:${i}">Add to slip</button>${m.slip.slip_id ? imgBtn({ slip_id: m.slip.slip_id }, IC.image + "Image") : ""}</div>`;
-        if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="opencode" data-c="${esc(m.code)}">${IC.open}Open in SportyBet</button>${imgBtn({ code: m.code }, IC.image + "Image")}</div>`;
+        if (m.code) h += `<div class="btnrow" style="max-width:88%"><button class="btn small" data-act="copytext" data-t="${esc(m.code)}">Copy ${esc(m.code)}</button><button class="btn small secondary" data-act="opencode" data-c="${esc(m.code)}"${m.bookmaker === "football.com" ? ' data-bm="footballcom"' : ""}>${IC.open}Open in ${m.bookmaker === "football.com" ? "football.com" : "SportyBet"}</button>${imgBtn({ code: m.code }, IC.image + "Image")}</div>`;
         else if (m.analysis && m.analysis.id && !(m.slip && m.slip.legs && m.slip.legs.length)) h += `<div class="btnrow" style="max-width:88%">${imgBtn({ analysis_id: m.analysis.id }, IC.image + "Slip image")}</div>`;
       }
     });
@@ -796,7 +839,7 @@
       const r = await api("/api/ai", body);
       const ed = r.edit || null;
       const eslip = ed && ed.ok && ed.slip && ed.slip.legs ? { ...ed.slip, slip_id: ed.sid } : null;
-      state.chat.push({ role: "bot", text: r.reply, slip: eslip || (r.slip && r.slip.legs ? r.slip : null), code: r.code, tools: r.tools, edit: ed, analysis: r.analysis || null });
+      state.chat.push({ role: "bot", text: r.reply, slip: eslip || (r.slip && r.slip.legs ? r.slip : null), code: r.code, bookmaker: r.bookmaker || "", tools: r.tools, edit: ed, analysis: r.analysis || null });
       if (r.context) state.aiCtx = r.context;
       if (ed && ed.ok) state.aiCtx = ed.section === "rollover_preview" ? { kind: "preview", token: ed.token, slip_id: ed.slip_id, label: `Rollover day ${ed.day || ""} preview` } : { kind: ed.section === "scan" ? "scan" : "ai", sid: ed.sid, label: "Edited slip" };
       hapN("success");
@@ -934,7 +977,7 @@
         ${l.score || l.note ? `<div class="score">${esc(l.score)}${l.note ? ` <span class="sub">${esc(l.note)}</span>` : ""}</div>` : ""}</div>
       <div class="hodds num">${f2(l.odds)}${l.est != null ? `<small>${pct(l.est)}</small>` : ""}</div></div>`;
   }
-  function openChip(c) { return ` <button class="codechip open" data-act="opencode" data-c="${esc(c)}" aria-label="Open ${esc(c)} in the SportyBet app">${IC.open}Open</button>`; }
+  function openChip(c, bm) { return ` <button class="codechip open" data-act="opencode" data-c="${esc(c)}"${bm ? ` data-bm="${esc(bm)}"` : ""} aria-label="Open ${esc(c)} in the ${bmName(bm)} app">${IC.open}Open</button>`; }
   function histCard(r) {
     const d = r.data, legs = d.legs || [];
     const won = legs.filter((l) => l.status === "won").length, lost = legs.filter((l) => l.status === "lost").length, live = legs.filter((l) => l.status === "live").length;
@@ -943,7 +986,7 @@
     const tag = (d.rollover_id ? `Rollover · day ${d.rollover_day}` : (d.label || d.tier || "Slip")) + (early.length && r.status === "won" ? ` · won early (${Math.max(...early)}')` : "");
     const seg = legs.map((l) => `<i class="${(STATUS[l.status] || STATUS.pending)[2]}"></i>`).join("");
     return `<div class="card hcard s-${r.status}">
-      <div class="hhead"><div class="grow"><div class="label">${esc(tag)}${d.test ? " · test" : ""}</div><div class="hcode">${d.code ? `<button class="codechip" data-act="copytext" data-t="${esc(d.code)}">${esc(d.code)}</button>${r.status === "pending" ? openChip(d.code) : ""}` : `<span class="sub">no code</span>`}<span class="sub">${esc(fmtWhen(r.created_at))}</span></div></div>
+      <div class="hhead"><div class="grow"><div class="label">${esc(tag)}${d.test ? " · test" : ""}</div><div class="hcode">${d.code ? `<button class="codechip" data-act="copytext" data-t="${esc(d.code)}">${esc(d.code)}</button>${r.status === "pending" ? openChip(d.code, d.bookmaker) : ""}` : `<span class="sub">no code</span>`}<span class="sub">${esc(fmtWhen(r.created_at))}</span></div></div>
         <div class="hright"><div class="num hbig">${f2(d.effective_odds || d.total_odds)}</div>${statusPill(r.status)}</div></div>
       <div class="segbar">${seg}</div>
       <div class="hstats"><span>${won}/${legs.length} won</span>${lost ? `<span class="c-red">${lost} lost</span>` : ""}${live ? `<span class="c-live">${live} live</span>` : ""}${d.est_prob != null ? `<span>est ${pct(d.est_prob, 1)}</span>` : ""}
@@ -1137,6 +1180,8 @@
     else if (a === "homemode") { state.homeMode = t.dataset.m; try { localStorage.setItem("fra_home", state.homeMode); } catch (e) {} hapSel(); renderHome(); window.scrollTo(0, 0); }
     else if (a === "d5period") { state.d5Period = t.dataset.p; state.d5Err = ""; state.d5Show = 0; hapSel(); if (!state.d5[state.d5Period]) runDraw5(); else renderHome(); }
     else if (a === "d5run") { const r = state.d5[state.d5Period]; runDraw5(!!(r && r.status === "booked")); }
+    else if (a === "atrun") runAnyTeam(false);
+    else if (a === "atrefresh") runAnyTeam(true);
     else if (a === "d5more") { state.d5Show = state.d5Show > 0 ? 0 : 1; renderHome(); }
     else if (a === "dir") { state.dir = t.dataset.v; try { localStorage.setItem("fra_dir", state.dir); } catch (e) {} hapSel(); renderHome(); }
     else if (a === "alllg") { state.allLg = !state.allLg; try { localStorage.setItem("fra_alllg", state.allLg ? "1" : "0"); } catch (e) {} hapSel(); renderHome(); }
@@ -1165,7 +1210,7 @@
     else if (a === "copycode") { const c = document.getElementById("codeText").textContent; toast((await copy(c)) ? "Code copied" : "Press and hold the code to copy"); hap("light"); }
     else if (a === "copytext" || a === "copyinline") { const c = t.dataset.t || t.textContent; toast((await copy(c)) ? `Copied ${c}` : "Couldn't copy"); hap("light"); }
     else if (a === "openhub") openLink(LOAD_URL);
-    else if (a === "opencode") { hap("light"); openLink(codeUrl(t.dataset.c)); }
+    else if (a === "opencode") { hap("light"); openLink(codeUrl(t.dataset.c, t.dataset.bm)); }
     else if (a === "mrange") { saveScroll(); stopLive(); state.mRange = t.dataset.r; renderLeagues(); restoreScroll(); }
     else if (a === "livematch") { saveScroll(); state.lm = null; state.mStack.push({ name: "live", arg: t.dataset.id }); render(); window.scrollTo(0, 0); }
     else if (a === "openurl") openLink(t.dataset.u);

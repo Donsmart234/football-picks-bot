@@ -303,6 +303,8 @@ def settle_leg(leg: dict, r: MatchResult) -> tuple[str, str]:
     try:
         if mid == MINUTE_1X2:
             return _minute_1x2_final(leg, ft)
+        if mid == ANY_TEAM_OVER:
+            return _any_team_over(leg, *ft), ""
         if mid in FAMILIES:
             fam = FAMILIES[mid]
             if fam.period == "ft":
@@ -349,6 +351,16 @@ def settle_leg(leg: dict, r: MatchResult) -> tuple[str, str]:
 
 
 MINUTE_1X2 = "900069"      # SportyBet "1X2 from 1 to N minute" (specifier minute=N), e.g. the 5-minute draw
+ANY_TEAM_OVER = "60045"    # football.com "Any Team Over X.5" (specifier total=N.5): 74 Yes, 76 No, regular time
+
+
+def _any_team_over(leg: dict, h: int, a: int) -> str:
+    """Yes wins when either team scores more than the line in regular time (total=1.5: one side scores 2+)."""
+    line = float(spec_value(leg.get("specifier") or "", "total") or "nan")
+    if line != line:
+        return "check"
+    hit = h > line or a > line
+    return _wl({"74": hit, "76": not hit}.get(leg.get("outcome_id", "")))
 
 
 def _minute_1x2_final(leg: dict, ft) -> tuple[str, str]:
@@ -413,7 +425,12 @@ def early_settle(leg: dict, r: MatchResult) -> tuple[str, str] | None:
     tag = f"({r.minute}')" if r.minute else ("(HT)" if r.phase == "ht" else "")
     out: str | None = None
     try:
-        if mid == MINUTE_1X2:
+        if mid == ANY_TEAM_OVER:
+            # a side already past the line can't go back: Yes won / No lost (regular time only, see above)
+            line = float(spec_value(leg.get("specifier") or "", "total") or "nan")
+            if line == line and (i > line or j > line):
+                out = {"74": "won", "76": "lost"}.get(leg.get("outcome_id", ""))
+        elif mid == MINUTE_1X2:
             # "1X2 from 1 to N minute": 0-0 with the clock already past minute N+1 means the window ended level
             n = int(spec_value(leg.get("specifier") or "", "minute") or "0")
             past = r.phase in ("ht", "2h") or (r.minute is not None and r.minute >= n + 2)

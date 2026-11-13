@@ -219,7 +219,8 @@ def leg_record(l: dict) -> dict:
 
 def slip_record(legs: list[dict], code: str | None, source: str, tier: str = "custom", label: str = "",
                 total_odds: float | None = None, est_prob: float | None = None, test: bool = False,
-                rollover_id: str = "", rollover_day: int = 0, target: float | None = None) -> dict:
+                rollover_id: str = "", rollover_day: int = 0, target: float | None = None,
+                bookmaker: str = "") -> dict:
     lr = [leg_record(l) for l in legs]
     tot = total_odds
     if tot is None:
@@ -235,4 +236,4 @@ def slip_record(legs: list[dict], code: str | None, source: str, tier: str = "cu
         "code": code or "", "source": source, "tier": tier, "label": label or tier.title(),
         "total_odds": round(float(tot), 2), "est_prob": None if est_prob is None else round(est_prob, 4),
         "target": target, "legs": lr, "notified": False, "test": test, "rollover_id": rollover_id,
-        "rollover_day": rollover_day, "created_ts": time.time()}}
+        "rollover_day": rollover_day, "created_ts": time.time(), **({"bookmaker": bookmaker} if bookmaker else {})}}

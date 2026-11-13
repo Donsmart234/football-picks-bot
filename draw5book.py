@@ -56,13 +56,13 @@ class UsedStore:
     """Event ids already put in a 5-min-draw code, per owner + window. Persisted in the history store (Supabase in
     production, SQLite locally) as one record per owner+period; an in-memory copy is used when the store is down."""
 
-    def __init__(self, history=None):
+    def __init__(self, history=None, prefix: str = "d5u", kind: str = USED_KIND):
         self.history = history
+        self.prefix, self.kind = prefix, kind       # anyteam.py keeps its own used ids ("atu", "atused")
         self._mem: dict[str, dict] = {}
 
-    @staticmethod
-    def rid(owner, period: str) -> str:
-        return f"d5u_{owner}_{period}"
+    def rid(self, owner, period: str) -> str:
+        return f"{self.prefix}_{owner}_{period}"
 
     async def load(self, owner, period: str, wkey: str) -> dict:
         rid = self.rid(owner, period)
@@ -98,7 +98,7 @@ class UsedStore:
         self._mem[rid] = data
         if self.history is not None:
             try:
-                await self.history.save({"id": rid, "kind": USED_KIND, "status": "active", "data": data})
+                await self.history.save({"id": rid, "kind": self.kind, "status": "active", "data": data})
             except Exception as exc:
                 log.warning("draw5 used-ids save failed: %s", exc.__class__.__name__)
 

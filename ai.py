@@ -90,6 +90,8 @@ Rules:
   independent. You can answer general football or SportyBet questions from knowledge, flagging uncertainty.
 - 5-MINUTE DRAWS ("5 min draw", "draw in the first 5 minutes") are answered by the bot's own finder (/draw5 weekend |
   midweek | week, or the Scanner tab's 5-min Draw section), never by scan_markets; if asked indirectly, point there.
+- ANY TEAM OVER 1.5 ("any team over 1.5", football.com's market) is answered by the bot's own builder (/anyteam [legs]
+  [min-max odds] [league/team words], one booked football.com code), never by scan_markets; point there if asked.
 - Load codes at https://www.sportybet.com/ng/m/code-hub/load-code (or Load Code in the SportyBet app)."""
 
 TOOLS = [{"functionDeclarations": [
@@ -418,6 +420,18 @@ class Analyst:
             self._save(chat_id, "model", reply[:1500])
             return {"reply": reply, "slip": None, "code": out.get("code"), "tools": ["draw5"], "model": "draw5",
                     "analysis": None, "draw5": {k: v for k, v in out.items() if k != "legs"}}
+        import anyteam
+        if anyteam.wants_anyteam(text) and getattr(self.s, "footballcom", None) is not None:
+            # "any team over 1.5 10 legs": one booked football.com code (anyteam.py), no model call
+            out = await anyteam.build(self.s, chat_id, text)
+            reply = strip_emoji(anyteam.code_plain(out))
+            if out.get("url"):
+                reply += f"\nOpen in football.com: {out['url']}"
+            self._save(chat_id, "user", text)
+            self._save(chat_id, "model", reply[:1500])
+            return {"reply": reply, "slip": None, "code": out.get("code"), "tools": ["anyteam"], "model": "anyteam",
+                    "analysis": None, "anyteam": {k: v for k, v in out.items() if k not in ("legs", "pool")},
+                    "code_url": out.get("url"), "bookmaker": "football.com"}
         if not self.enabled:
             return {"reply": "The AI analyst isn't configured (GEMINI_API_KEY missing).", "slip": None, "code": None}
         contents = self.history(chat_id) + [{"role": "user", "parts": [{"text": text}]}]

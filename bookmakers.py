@@ -144,9 +144,14 @@ class BookmakerAdapter(abc.ABC):
 
 
 class SportyBetNG(BookmakerAdapter):
+    """SportyBet Nigeria. Also the base of every other site on the same Sportradar/SportyBet platform (football.com):
+    a subclass only changes BASE, BRAND, KEY, the share link and the Referer/Origin headers (see FootballComNG)."""
     name = "SportyBet NG"
+    KEY = "sportybet"          # short id stored on History records ("bookmaker")
+    BRAND = "SportyBet"        # used in user-facing messages
     load_code_url = "https://www.sportybet.com/ng/m/code-hub/load-code"
     BASE = "https://www.sportybet.com/api/ng"
+    API_PATH = "/api/ng"       # what the relay's p= parameter starts with
 
     def code_url(self, code: str) -> str:
         return sportybet_share_url(code)
@@ -165,13 +170,16 @@ class SportyBetNG(BookmakerAdapter):
     def __init__(self, cache_seconds: int = config.SPORTYBET_CACHE_SECONDS, relay_url: str | None = None):
         # Relay mode (default): every call goes through a small proxy (Supabase Edge Function) whose egress
         # IP isn't challenged by SportyBet's AWS WAF, unlike Render's. Direct mode when the relay is unset.
-        self.relay = (config.SPORTYBET_RELAY_URL if relay_url is None else relay_url).strip().rstrip("/")
+        self.relay = (self._default_relay() if relay_url is None else relay_url).strip().rstrip("/")
         self._client = httpx.AsyncClient(headers=self.HEADERS, timeout=httpx.Timeout(15.0), http2=False)
         self._cache: dict[int, tuple[float, list[Event]]] = {}
         self._cache_seconds = cache_seconds
         self._locks: dict[int, asyncio.Lock] = {}
         self._mk_cache: dict[str, tuple[float, list[dict]]] = {}
         self._mk_sem = asyncio.Semaphore(6)
+
+    def _default_relay(self) -> str:
+        return config.SPORTYBET_RELAY_URL
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -180,7 +188,7 @@ class SportyBetNG(BookmakerAdapter):
         """path is relative to /api/ng (e.g. '/orders/share'). Returns (url, params) for relay or direct mode."""
         params = dict(params or {})
         if self.relay:
-            return self.relay, {"p": "/api/ng" + path, **params}
+            return self.relay, {"p": self.API_PATH + path, **params}
         return self.BASE + path, params
 
     @staticmethod
@@ -188,7 +196,7 @@ class SportyBetNG(BookmakerAdapter):
         upstream = r.headers.get("x-upstream-status")
         waf = r.headers.get("x-upstream-waf") or r.headers.get("x-amzn-waf-action")
         if waf or r.status_code == 202 or (upstream and upstream == "202"):
-            raise httpx.HTTPStatusError(f"SportyBet WAF challenge ({waf or 202})", request=r.request, response=r)
+            raise httpx.HTTPStatusError(f"WAF challenge ({waf or 202})", request=r.request, response=r)
         r.raise_for_status()
 
     async def _get_page(self, hours: int, page: int, market_ids: str | None = None) -> dict:
@@ -210,7 +218,7 @@ class SportyBetNG(BookmakerAdapter):
             except (httpx.HTTPError, ValueError) as exc:
                 if attempt == 1:
                     raise
-                log.warning("SportyBet page %s failed (%s), retrying once", page, exc)
+                log.warning("%s page %s failed (%s), retrying once", self.BRAND, page, exc)
                 await asyncio.sleep(1.5)
         return {}
 
@@ -290,14 +298,14 @@ class SportyBetNG(BookmakerAdapter):
                     try:
                         return await self._get_page(hours, p, market_ids)
                     except Exception as exc:
-                        log.warning("SportyBet page %s skipped: %s", p, exc)
+                        log.warning("%s page %s skipped: %s", self.BRAND, p, exc)
                         return {}
 
             results = await asyncio.gather(*(fetch(p) for p in range(2, pages + 1)))
             for data in results:
                 self._extract(data, seen, events)
             events.sort(key=lambda e: (e.start, e.league_full, e.home))
-            log.info("SportyBet: %d events (totalNum=%d, %d pages, %dh)", len(events), total, pages, hours)
+            log.info("%s: %d events (totalNum=%d, %d pages, %dh)", self.BRAND, len(events), total, pages, hours)
             self._cache[key] = (time.time(), events)
             return events
 
@@ -391,10 +399,10 @@ class SportyBetNG(BookmakerAdapter):
             payload = r.json() or {}
         except httpx.HTTPStatusError as exc:
             return {"ok": False, "kind": "unavailable",
-                    "error": f"SportyBet didn't answer (HTTP {exc.response.status_code}). Try again in a minute."}
+                    "error": f"{self.BRAND} didn't answer (HTTP {exc.response.status_code}). Try again in a minute."}
         except (httpx.HTTPError, ValueError) as exc:
             return {"ok": False, "kind": "unavailable",
-                    "error": f"SportyBet didn't answer ({exc.__class__.__name__}). Try again in a minute."}
+                    "error": f"{self.BRAND} didn't answer ({exc.__class__.__name__}). Try again in a minute."}
         data = payload.get("data") if isinstance(payload, dict) else None
         if not data or str(payload.get("bizCode")) != "10000":
             msg = (payload.get("message") or payload.get("innerMsg") or "") if isinstance(payload, dict) else ""
@@ -420,14 +428,59 @@ class SportyBetNG(BookmakerAdapter):
             url, q = self._url("/orders/share")
             r = await self._client.post(url, params=q, json=body, headers={"Content-Type": "application/json"})
             if r.headers.get("x-upstream-waf") or r.status_code == 202:
-                raise BookingError("SportyBet's firewall blocked the request. Try again in a minute.")
+                raise BookingError(f"{self.BRAND}'s firewall blocked the request. Try again in a minute.")
             payload = r.json()
         except httpx.TimeoutException as exc:
-            raise BookingError("SportyBet took too long to answer. Try again in a minute.") from exc
+            raise BookingError(f"{self.BRAND} took too long to answer. Try again in a minute.") from exc
         except (httpx.HTTPError, ValueError) as exc:
-            raise BookingError(f"SportyBet did not answer the booking request ({exc.__class__.__name__}).") from exc
+            raise BookingError(f"{self.BRAND} did not answer the booking request ({exc.__class__.__name__}).") from exc
         code = (payload.get("data") or {}).get("shareCode") if isinstance(payload, dict) else None
         if not code:
             msg = payload.get("message") if isinstance(payload, dict) else str(payload)[:200]
-            raise BookingError(f"SportyBet refused the booking: {msg} (HTTP {r.status_code})")
+            raise BookingError(f"{self.BRAND} refused the booking: {msg} (HTTP {r.status_code})")
         return code
+
+
+# ------------------------------------------------------------------ football.com Nigeria
+FOOTBALLCOM_SHARE = "https://www.football.com/ng/?shareCode={code}"
+
+
+def footballcom_share_url(code: str) -> str:
+    c = re.sub(r"[^A-Za-z0-9]", "", str(code or ""))[:16]
+    return FOOTBALLCOM_SHARE.format(code=c.upper()) if c else "https://www.football.com/ng/"
+
+
+class FootballComNG(SportyBetNG):
+    """football.com Nigeria: the same Sportradar/SportyBet platform and JSON as SportyBet NG (factsCenter list / event,
+    POST /orders/share, GET /orders/share/<code>), only at www.football.com/api/ng (verified 2026-11-13). It carries
+    markets SportyBet doesn't, e.g. 60045 "Any Team Over X.5". Direct calls by default; FOOTBALLCOM_RELAY_URL can
+    point at a relay that forwards ?p=/api/ng/... to www.football.com (the SportyBet relay only reaches sportybet.com)."""
+    name = "football.com NG"
+    KEY = "footballcom"
+    BRAND = "football.com"
+    load_code_url = "https://www.football.com/ng/"
+    BASE = "https://www.football.com/api/ng"
+    HEADERS = {**SportyBetNG.HEADERS, "Referer": "https://www.football.com/ng/", "Origin": "https://www.football.com"}
+
+    def __init__(self, cache_seconds: int = config.SPORTYBET_CACHE_SECONDS, relay_url: str | None = None):
+        super().__init__(cache_seconds, relay_url)
+        self._mk_sem = asyncio.Semaphore(12)     # event-detail reads (60045 is only in the detail)
+
+    def _default_relay(self) -> str:
+        return config.FOOTBALLCOM_RELAY_URL
+
+    def code_url(self, code: str) -> str:
+        return footballcom_share_url(code)
+
+
+# Every bookmaker the bot can book on, by History key. Add a new site here (same platform: subclass SportyBetNG and
+# change BASE / BRAND / KEY / code_url; other platforms: implement BookmakerAdapter).
+BOOKMAKERS: dict[str, type[BookmakerAdapter]] = {"sportybet": SportyBetNG, "footballcom": FootballComNG}
+BOOKMAKER_LABEL = {"sportybet": "SportyBet", "footballcom": "football.com"}
+
+
+def share_url_for(bookmaker_key: str | None, code: str) -> str:
+    """Open link for a code booked on `bookmaker_key` (History records carry it; empty = SportyBet)."""
+    if (bookmaker_key or "").lower() in ("footballcom", "football.com", "football.com ng"):
+        return footballcom_share_url(code)
+    return sportybet_share_url(code)

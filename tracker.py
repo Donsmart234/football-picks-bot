@@ -128,7 +128,8 @@ class Tracker:
 
     async def record(self, legs: list[dict], code: str | None, source: str, tier: str = "custom", label: str = "",
                      total_odds: float | None = None, est_prob: float | None = None, test: bool = False,
-                     rollover_id: str = "", rollover_day: int = 0, target: float | None = None) -> dict | None:
+                     rollover_id: str = "", rollover_day: int = 0, target: float | None = None,
+                     bookmaker: str = "") -> dict | None:
         if not code and source not in ("rollover",):
             # History = booked slips only: scanner / AI / app slips are saved when a booking code exists
             log.info("history: not saving unbooked %s slip", source)
@@ -136,7 +137,7 @@ class Tracker:
         try:
             legs = await self.enrich(legs)
             rec = slip_record(legs, code, source, tier, label, total_odds, est_prob, test, rollover_id,
-                              rollover_day, target)
+                              rollover_day, target, bookmaker=bookmaker)
             ok = await self.history.save(rec)
             if ok:
                 log.info("history: saved %s (%s, %d legs)", rec["id"], source, len(legs))
@@ -302,7 +303,8 @@ class Tracker:
             n = sum(1 for l in d["legs"] if l.get("status") == "check")
             return await self.send(f"<b>CHECK · {esc(name)} slip</b>" + (f" <code>{esc(d['code'])}</code>" if d.get("code") else "")
                             + f": no leg lost, but {n} leg(s) use a market I can't settle automatically. "
-                            "Check it on SportyBet.", test=d.get("test"))
+                            f"Check it on {'football.com' if d.get('bookmaker') == 'footballcom' else 'SportyBet'}.",
+                            test=d.get("test"))
         elif st == "void":
             return await self.send(f"<b>VOID</b> · {esc(name)} slip: every match was cancelled or voided.", test=d.get("test"))
         return False

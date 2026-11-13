@@ -1,0 +1,133 @@
+{
+ "_note": "Shape of football.com's GET /api/ng/factsCenter/event?eventId=sr:match:75802320&productId=3 (2026-11-13). The 60045 total=1.5 block is the real one (Nigeria v Tanzania, Yes 1.31 / No 3.37); the 1X2 and O/U 2.5 prices are illustrative.",
+ "eventId": "sr:match:75802320",
+ "homeTeamName": "Nigeria",
+ "awayTeamName": "Tanzania",
+ "estimateStartTime": 1763049600000,
+ "status": 0,
+ "sport": {
+  "id": "sr:sport:1",
+  "category": {
+   "id": "sr:category:4",
+   "name": "International",
+   "tournament": {
+    "id": "sr:tournament:1848",
+    "name": "Africa Cup of Nations Qualification"
+   }
+  }
+ },
+ "markets": [
+  {
+   "id": "60045",
+   "specifier": "total=1.5",
+   "product": 3,
+   "desc": "Any Team Over 1.5",
+   "status": 0,
+   "group": "Goals",
+   "groupId": "171121144758MGI11271357",
+   "marketGuide": "Predict whether at least one team will score more goals than the given line during Regular Time.",
+   "title": "",
+   "name": "Any Team Over X.5",
+   "favourite": 0,
+   "outcomes": [
+    {
+     "id": "74",
+     "odds": "1.31",
+     "probability": "0.7342797999",
+     "voidProbability": "0",
+     "isActive": 1,
+     "desc": "Yes",
+     "factor": 1,
+     "originalOdds": "1.31",
+     "outcomeBoosted": 0
+    },
+    {
+     "id": "76",
+     "odds": "3.37",
+     "probability": "0.2657202000",
+     "voidProbability": "0",
+     "isActive": 1,
+     "desc": "No",
+     "factor": 1,
+     "originalOdds": "3.37",
+     "outcomeBoosted": 0
+    }
+   ],
+   "farNearOdds": -1,
+   "sportId": "sr:sport:1",
+   "sourceType": "BET_RADAR"
+  },
+  {
+   "id": "60045",
+   "specifier": "total=2.5",
+   "product": 3,
+   "desc": "Any Team Over 2.5",
+   "status": 0,
+   "outcomes": [
+    {
+     "id": "74",
+     "odds": "2.30",
+     "isActive": 1,
+     "desc": "Yes"
+    },
+    {
+     "id": "76",
+     "odds": "1.57",
+     "isActive": 1,
+     "desc": "No"
+    }
+   ],
+   "sourceType": "BET_RADAR"
+  },
+  {
+   "id": "1",
+   "specifier": "",
+   "product": 3,
+   "desc": "1X2",
+   "status": 0,
+   "outcomes": [
+    {
+     "id": "1",
+     "odds": "1.45",
+     "isActive": 1,
+     "desc": "Home"
+    },
+    {
+     "id": "2",
+     "odds": "4.10",
+     "isActive": 1,
+     "desc": "Draw"
+    },
+    {
+     "id": "3",
+     "odds": "7.50",
+     "isActive": 1,
+     "desc": "Away"
+    }
+   ],
+   "sourceType": "BET_RADAR"
+  },
+  {
+   "id": "18",
+   "specifier": "total=2.5",
+   "product": 3,
+   "desc": "Over/Under",
+   "status": 0,
+   "outcomes": [
+    {
+     "id": "12",
+     "odds": "1.95",
+     "isActive": 1,
+     "desc": "Over 2.5"
+    },
+    {
+     "id": "13",
+     "odds": "1.80",
+     "isActive": 1,
+     "desc": "Under 2.5"
+    }
+   ],
+   "sourceType": "BET_RADAR"
+  }
+ ]
+}
