@@ -7,6 +7,33 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-14): "Safe" is actually safe (safety.py)
+Why: ladder code QAHE0V (13 Nov, stake 1,500) lost on "Mozambique Over 0.5" (0-1). The old Safe bar was est >= 80%,
+and est is (by the backtest weights) the calibrated de-margined bookmaker price; "stats-confirmed" only meant the stats
+model was not more than 3 pts below it, and every national-team competition id counted as a top league. Mozambique
+(FIFA ~100) had scored in 6 of its last 9 (3 of last 5), the stats model said ~76%, Ethiopia had kept 4 clean sheets.
+**A Safe leg now needs all of** (Scanner Safe tier, /scan safe, Mini App Safe, AI safe scans, rollover, ladder, slip
+edits / refreshes of those):
+1. League quality: top-leagues allowlist (leagues.py) without domestic cups (amateur / lower-tier sides); national
+   teams only when both sides are FIFA top ~50 (`safety.TOP_NATIONS`, extend with `TOP_NATIONS_EXTRA`), or a
+   UEFA / CONMEBOL / World Cup competition with the leg backing a top-50 side. Naming leagues / teams widens it.
+2. Market estimate AND the stats model's own Poisson probability each >= 85% (`SAFE_MIN_P`, default 0.85).
+3. A market-specific last-10 record rule: team Over 0.5 = team scored in >= 8/10 and >= 4/5, opponent conceded in
+   >= 6/10; match Over 0.5 / 1.5 / 2.5 = both teams' games over the line (9/10, 7/10 + 3/5, 7/10 + 4/5) and average
+   goals; double chance = backed side lost <= 2/10 (<= 1/5) and clearly stronger (form strength +0.3); 12 = few draws;
+   win / DNB = stronger side with good form; +handicap = backed side lost by more than the line <= 1/10 and 0/5 (an
+   underdog +1.5 or more also needs the favourite not to win by that much often). Fewer than 8 games in the feed or no
+   stats = out (never passes by default). European handicaps, corners, cards, props, specials: never Safe.
+4. Full match only; no unders and no BTTS No unless the user asked for unders.
+Ranking prefers double chance, match Overs and handicap / DNB on the stronger side over single-team goal lines.
+**Ladder:** if no 1-4 leg combination of Safe legs lands on 1.90-2.15, no code is forced: one short ping "No safe 2.00
+today — ladder day held, nothing staked" with the day / stake / savings unchanged (a hold day, not a loss).
+`ladder_preview` / ladder results carry `held`, `safe_legs` (top 12) and `rejected_reasons`. /scan safe returns fewer
+legs or none and says the count. Backtest: `backtest/safe_backtest.py` -> `backtest/SAFE_REPORT.md`. Tests:
+`tests/test_safety.py` (Mozambique v Ethiopia real record, cups, weak national sides, missing stats, unders, halves),
+`tests/test_ladder.py` (hold day, model disagreement, preferred markets). Fixture tests for other features run with the
+old bar via `tests/legacy_safe.py`.
+
 ## What's new (2026-11-13): 2-odds savings ladder (rollover mode)
 The user's "2odds Rollover template" as a rollover mode (`ladder.py`): 16 days at ~2.00 odds a day, stake 1,000 ->
 1,000,000 winning + 568,500 savings, each day's next stake = return - save. Scales with the start stake (x start/1000).

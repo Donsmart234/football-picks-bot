@@ -15,6 +15,7 @@ booked or written to History here:
 """
 from __future__ import annotations
 
+from safety import SAFE_MIN_P as ROLL_MIN_P
 import asyncio
 import json
 import logging
@@ -343,14 +344,14 @@ class SlipEditor:
         sec = ctx.get("section")
         if sec in ("rollover_preview", "rollover_day") and ctx.get("mode") == "ladder":
             head = (f"Section: 2-ODDS SAVINGS LADDER plan {ctx.get('plan_id', '')} day {ctx.get('day', '?')}. Rules for "
-                    "every leg: top leagues only, stats-confirmed, est >=80%, no Under selections, full match only (no "
+                    "every leg: top leagues only, Safe (market and stats model each >=85%, last-10 record check), no Under selections, full match only (no "
                     "half / minute markets), kick-off not started, one pick per match; total odds must stay within "
                     "1.90-2.15.")
             if sec == "rollover_preview":
                 head += " This is a PREVIEW: nothing is booked until the user taps Confirm."
         elif sec in ("rollover_preview", "rollover_day"):
             head = (f"Section: ROLLOVER plan {ctx.get('plan_id', '')} day {ctx.get('day', '?')}, target "
-                    f"{ctx.get('target', 0):g} odds. Rules for every leg: top leagues only, stats-confirmed, est >=80%, "
+                    f"{ctx.get('target', 0):g} odds. Rules for every leg: top leagues only, Safe (market and stats model each >=85%, last-10 record check), "
                     + ("unders allowed" if ctx.get("allow_unders") else "no Under selections")
                     + ", kick-off not started, one pick per match; total odds must stay within 0.97x-1.20x of the target.")
             if sec == "rollover_preview":
@@ -429,7 +430,7 @@ class SlipEditor:
         target = float(d["target"])
         allow_unders = bool(d.get("allow_unders"))
         base = ctx.get("legs") or compact_legs(slip["data"]["legs"])
-        rules = {"lo": target * 0.97, "hi": target * 1.20, "target": target, "min_p": 0.80, "min_odds": 1.12,
+        rules = {"lo": target * 0.97, "hi": target * 1.20, "target": target, "min_p": ROLL_MIN_P, "min_odds": 1.12,
                  "max_odds": target * 1.20, "no_unders": not allow_unders, "require_confirmed": True,
                  "top_only": True, "strict": True, "label": "rollover"}
         lad = d.get("mode") == "ladder"
@@ -442,7 +443,7 @@ class SlipEditor:
             res = await self.s.scanner.ladder_slip(exclude=prev, fresh=True)
             if not res["legs"]:
                 return self._fail(ctx, "No different valid slip exists right now under the ladder rules (top leagues, "
-                                       "every leg est >=80%, 1.90-2.15 odds, no unders, full match only). Your "
+                                       "every leg market and stats model >=85%, 1.90-2.15 odds, no unders, full match only). Your "
                                        "current slip stays.")
             r = {"ok": True, "legs": res["legs"], "change": "New picks for the whole day", "note": "",
                  "total_odds": res["total_odds"], "est_prob": res["est_prob"]}
@@ -452,7 +453,7 @@ class SlipEditor:
                                                      constraints=self._scope(ctx))
             if not res["legs"]:
                 return self._fail(ctx, "No different valid slip exists right now under the same rules (top leagues, "
-                                       f"every leg ≥80% est., ~{target:g} odds" + ("" if allow_unders else ", no unders")
+                                       f"every leg market and stats model ≥85%, ~{target:g} odds" + ("" if allow_unders else ", no unders")
                                   + "). Your current slip stays.")
             r = {"ok": True, "legs": res["legs"], "change": "New picks for the whole day", "note": "",
                  "total_odds": res["total_odds"], "est_prob": res["est_prob"]}
@@ -470,7 +471,7 @@ class SlipEditor:
                     "plan_id": plan["id"], "slip_id": slip["id"]}
         res = {"tier": "rollover", "label": "Ladder 2.00" if lad else "Rollover", "target": target, "total_odds": r["total_odds"],
                "est_prob": r["est_prob"], "reached": True, "legs": r["legs"], "note": "", "edited": True,
-               "rules": {"min_p": 0.80, "leagues": "allowlist", "no_unders": not allow_unders}}
+               "rules": {"min_p": ROLL_MIN_P, "leagues": "allowlist", "no_unders": not allow_unders}}
         token = tr.edit_preview(slip["id"], res)
         return {"ok": True, "section": "rollover_preview", "token": token, "slip_id": slip["id"], "plan_id": plan["id"],
                 "day": slip["data"].get("rollover_day"), "target": target, "allow_unders": allow_unders,

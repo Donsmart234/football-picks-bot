@@ -17,6 +17,9 @@ import time
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+import legacy_safe  # noqa: E402  (old Safe bar for these fixtures; new one: tests/test_safety.py)
+legacy_safe.install()
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "0:test")
 os.environ["SUPABASE_URL"] = ""
 os.environ["DATA_DIR"] = tempfile.mkdtemp()

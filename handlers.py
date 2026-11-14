@@ -37,7 +37,7 @@ HELP = (
     "/scan safe 5 – scan markets, build a slip (tiers: safe, mid, risk, high, audit). Filters: nounders, -corners, "
     "-cards, -props, only:1x2,dc, legs:4-8, minodds:1.2, league:epl, after:18:00, allleagues (top leagues by default)\n"
     "/scan overs 3 · /scan unders 4 legs – Overs only / Unders only (goal lines incl. Asian, full match, every leg "
-    "Safe ≥80%); add asian for Asian lines only\n"
+    "Safe ≥85%); add asian for Asian lines only\n"
     "/ai question – ask the AI analyst (or just type any message)\n"
     "Send a screenshot (betslip, booking code, fixtures, one of my slips) and I'll read it; add a caption to say what you want\n"
     "/today – today's matches by league\n"
@@ -505,7 +505,7 @@ def _edit_html(out: dict) -> tuple[str, Kb | None]:
             lead = ("Confirm to book these picks as today's code; the current (unbooked) slip is marked <i>replaced</i>.")
         text = (f"<b>New picks for today</b> (preview) · Rollover day {out.get('day') or ''} · target "
                 f"{(out.get('target') or 0):g}\n{change}\n{lead}\n{RULE}\n{body}\n{tail}\n<i>Same rules: top leagues, "
-                "every leg ≥80% est." + ("" if out.get("allow_unders") else " No unders.")
+                "every leg ≥85% (market + stats model)." + ("" if out.get("allow_unders") else " No unders.")
                 + " Nothing is booked until you confirm. Estimates, not guarantees. 18+.</i>")
         kb = Kb([[Btn("Confirm: book new code", callback_data=f"RC|{out['token']}")],
                  [Btn("Keep current slip", callback_data="NOOP"), img_btn("p", out["token"], "Slip image")]])
@@ -1047,7 +1047,7 @@ def _ro_text(rec: dict | None) -> str:
     if not rec:
         return ("<b>Rollover</b>\nNo plan running. Pick a daily target (2, 3, 4 or 5 odds) and 3–15 days, e.g.\n"
                 "<code>/rollover 2 7</code> or with a starting stake <code>/rollover 3 5 1000</code>.\n"
-                "Each morning (~09:00) I build that day's slip from top leagues only, stats-confirmed legs ≥80% est., "
+                "Each morning (~09:00) I build that day's slip from top leagues only, Safe legs (market and stats model each ≥85%), "
                 "no under selections (add <code>unders</code> to allow them, e.g. <code>/rollover 3 7 unders</code>), "
                 "as close to the target as possible. A win moves the plan to the next day; a loss ends it. "
                 "If nothing qualifies, I'll say so and suggest skipping the day.\n"
@@ -1211,7 +1211,7 @@ async def _ro_refresh(q, ctx, slip_id: str, exclude_prev: bool) -> None:
     res = out["slip"]
     body = "\n".join([leg_lines(l, i, why=False) for i, l in enumerate(res["legs"], 1)])
     tail = (f"{RULE}\n<b>Total odds <code>{res['total_odds']:.2f}</code></b> · est. hit chance <b>{res['est_prob']:.0%}</b>"
-            "\n<i>Same rules: top leagues, every leg ≥80% est. Estimates, not guarantees. 18+.</i>")
+            "\n<i>Same rules: top leagues, every leg ≥85% (market + stats model). Estimates, not guarantees. 18+.</i>")
     if out["status"] == "preview":
         _remember(ctx, note, {"section": "rollover_preview", "token": out["token"], "slip_id": slip_id,
                               "code": out.get("old_code"), "legs": res["legs"]})

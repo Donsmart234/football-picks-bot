@@ -2,6 +2,7 @@
 market scanner, booking codes). Short per-chat history in SQLite. Everything it says is an estimate."""
 from __future__ import annotations
 
+import safety
 import asyncio
 import logging
 import os
@@ -38,22 +39,22 @@ Rules:
 - Use tools for anything about real fixtures, odds, probabilities, team form/H2H or booking codes. Never invent
   matches, odds, stats or codes. If a tool fails or returns nothing, say so plainly.
 - "Analyze games and give me a safe 5 odds code" => call scan_markets(tier="safe", target_odds=5, day=...), then
-  build_booking_code(slip_id=...) and give the code. Tiers: safe (EVERY leg est. >=80% after the stats check,
-  odds ~1.05-1.35; 80% is an estimate, not a promised accuracy), mid
+  build_booking_code(slip_id=...) and give the code. Tiers: safe (EVERY leg est. >=85% AND the stats model >=85%, top leagues without cups, national teams FIFA top ~50, last-10 record check;
+  odds ~1.05-1.35; an estimate, not a promised accuracy; fewer legs or none is the honest answer), mid
   (>=70%, 1.30-1.70), risk (>=55%, 1.60-2.30), high (value legs 2.0+), audit (full report).
 - FOLLOW THE USER'S INSTRUCTIONS EXACTLY. Translate every rule in the request into scan_markets arguments:
   target_odds, tier, min_leg_prob, min_legs/max_legs, min_leg_odds/max_leg_odds, include_markets/exclude_markets
   (market types: under, over, totals, team_totals, 1x2, double_chance, dnb, handicap, btts, corners, cards,
   player_props, halves, combo, correct_score, exact_goals, odd_even, minutes, specials), include/exclude leagues,
   countries, teams, day, kickoff_after/kickoff_before (local HH:MM). "Sure", "safe", "banker", "low risk" = tier
-  safe (every leg est. >=80%). "Without unders / no under selections" => exclude_markets=["under"] (this removes
+  safe (every leg est. >=85%, market and stats model). "Without unders / no under selections" => exclude_markets=["under"] (this removes
   every Under line: match, team, half, corners, cards, Asian, and combos containing an Under). "Only overs" =>
   include_markets=["over"]. Example: "give me sure 5 odds without under selections" => scan_markets(tier="safe",
   target_odds=5, exclude_markets=["under"]).
 - OVERS ONLY / UNDERS ONLY MODE: "overs only", "only over games", "safe overs slip", "unders only", "safe unders slip
   4 legs", "asian unders", "even Asian under" => scan_markets(tier="safe", goals_direction="over" | "under", ...).
   The mode keeps only goal Over/Under lines in that direction (full-match total, team totals, Asian lines such as
-  "Asian Under 3"), every leg Safe (est. >=80%; on an Asian line est. counts full wins only, a push = stake back),
+  "Asian Under 3"), every leg Safe (est. >=85%; on an Asian line est. counts full wins only, a push = stake back),
   and leaves out 1st/2nd-half and time-window markets (1-60 min, Early Goals) unless the user asks for them. "Asian
   ... only" => also include_markets=["asian"]. Never fill the slip with other markets: if too few legs qualify, say
   how many did and that nothing was padded. Unders stay out of other slips unless the user asks for them.
@@ -81,7 +82,7 @@ Rules:
 - "Who wins X vs Y?" => predict_match. Mention the key numbers (1X2 %, best pick) and the form/H2H facts.
 - Each leg already passed a team-stats check (form, home/away record, goals, H2H); quote its short "why".
 - If a slip falls short of the target, say so honestly instead of padding it. Never add a weaker leg to a Safe slip
-  by hand: book Safe slips only via their slip_id (or pass tier="safe" so every leg is re-checked >=80%).
+  by hand: book Safe slips only via their slip_id (or pass tier="safe" so every leg is re-checked >=85%).
 - Booked codes are saved to the history and tracked; the owner gets a ping when a slip lands or loses.
   recent_history shows past slips and results; rollover plans are managed with /rollover or the Rollover tab.
 - Be brief: Telegram-friendly, short lines, light **bold**, no tables, no headings. Show a slip as one line per leg:
@@ -122,7 +123,7 @@ TOOLS = [{"functionDeclarations": [
                      "best leg per match, top value bets and a slip per tier."),
      "parameters": {"type": "object", "properties": {
          "tier": {"type": "string", "enum": ["safe", "mid", "risk", "high", "audit"],
-                  "description": "safe = every leg est. >=80% ('sure', 'safe', 'banker'); mid >=70%; risk >=55%; high = value"},
+                  "description": "safe = every leg est. >=85% market + stats model ('sure', 'safe', 'banker'); mid >=70%; risk >=55%; high = value"},
          "target_odds": {"type": "number", "description": "total odds target (defaults: safe 5, mid 10, risk 20, high 50)"},
          "day": {"type": "string", "enum": ["today", "tomorrow", "24h", "48h"], "description": "default today"},
          "leagues": {"type": "array", "items": {"type": "string"}, "description": "legacy: league text filters for which matches to scan"},
@@ -145,7 +146,7 @@ TOOLS = [{"functionDeclarations": [
          "stats_confirmed_only": {"type": "boolean", "description": "only legs confirmed by the team-stats check"},
          "goals_direction": {"type": "string", "enum": ["over", "under", "any"],
                              "description": "Overs only / Unders only mode: only goal Over (or Under) lines incl. "
-                                            "Asian lines, full match, every leg Safe >=80%. 'any' = no mode"},
+                                            "Asian lines, full match, every leg Safe >=85%. 'any' = no mode"},
          "all_leagues": {"type": "boolean",
                          "description": "true ONLY if the user explicitly asks for all / any / lower leagues; scans "
                                         "use the top-leagues allowlist by default"}},
@@ -156,7 +157,7 @@ TOOLS = [{"functionDeclarations": [
      "parameters": {"type": "object", "properties": {
          "slip_id": {"type": "string"},
          "tier": {"type": "string", "enum": ["safe", "mid", "risk", "high", "custom"],
-                  "description": "for explicit selections: 'safe' re-checks every leg is est. >=80% and refuses weaker legs"},
+                  "description": "for explicit selections: 'safe' re-checks every leg is Safe (>=85% market + stats model) and refuses weaker legs"},
          "accept_short": {"type": "boolean",
                           "description": "true only if the user agreed to book a slip that fell short of its target"},
          "selections": {"type": "array", "items": {"type": "object", "properties": {
@@ -187,7 +188,7 @@ numbered legs). Treat the message as an edit of THAT slip unless it is plainly j
   list ("first" = 1, "last" = the highest number); or pass team when the user names a team. market = the market words
   they asked for ("over 1.5", "double chance").
 - Understand casual and Nigerian English: "comot", "remove am", "change am", "abeg", "e no sure", "this one no go enter".
-- The section's rules are enforced by the tool (rollover: target odds, top leagues, every leg >=80%, no unders unless the
+- The section's rules are enforced by the tool (rollover: target odds, top leagues, every leg >=85% market + stats model, no unders unless the
   plan allows them, no started matches, no duplicate matches). If the tool says it's impossible, tell the user plainly
   and that the current slip stays. Never invent legs, never scan for an unrelated slip, never book: the bot shows the
   edited slip under the user's message with its own confirm / book buttons.
@@ -643,7 +644,7 @@ class Analyst:
         return None
 
     async def _price_selections(self, sels: list[dict], tier: str) -> tuple[list[dict], list[str]]:
-        """Attach market / pick / odds / est to explicit selections; for tier 'safe' list every leg below 80%."""
+        """Attach market / pick / odds / est to explicit selections; for tier 'safe' list every leg that isn't Safe (safety.py)."""
         out, problems = [], []
         for x in sels:
             e = await self.s.find_event(x["event_id"])
@@ -662,8 +663,9 @@ class Analyst:
                     problems.append(f"{x['event_id']} market {x['market_id']}: can't price it")
                 out.append(x)
                 continue
-            if tier == "safe" and (leg["est"] < 0.80 or leg["verdict"] == "dropped"):
-                problems.append(f"{leg['match']} {leg['pick']} est {leg['est']:.0%}")
+            if tier == "safe" and (leg["est"] < safety.SAFE_MIN_P or leg["verdict"] == "dropped" or not safety.is_safe(leg)):
+                problems.append(f"{leg['match']} {leg['pick']} est {leg['est']:.0%}: "
+                                f"{safety.safe_problem(leg) or 'below the Safe bar'}")
             out.append(leg)
         return out, problems
 
@@ -820,7 +822,7 @@ class Analyst:
                 if hard is not None and not hard.empty():
                     hv = verify(slip, Constraints.from_dict({k: v for k, v in hard.to_dict().items()
                                                              if k not in ("target_odds", "day", "tier")}),
-                                0.80 if slip.get("tier") == "safe" else None)
+                                safety.SAFE_MIN_P if slip.get("tier") == "safe" else None)
                     if not hv["ok"]:
                         return {"error": "Refused: this slip breaks the rules in your request (" +
                                 "; ".join(hv["violations"][:4]) + "). Run scan_markets with those rules."}
@@ -847,7 +849,7 @@ class Analyst:
                                  if rules.leg_problem(l)]
                 if problems:
                     return {"error": "Refused: " + "; ".join(problems[:6]) +
-                            ". Every leg must clear the tier's bar (Safe = est. >=80% after the stats check) and the user's rules; "
+                            ". Every leg must clear the tier's bar (Safe = est. and stats model each >=85%, last-10 record check) and the user's rules; "
                             "I won't add legs that break them."}
                 meta = {"tier": tier, "label": tier.title()}
             if not legs:

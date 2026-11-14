@@ -31,6 +31,7 @@ from markets import (FAMILIES, Family, asian_line, devig_group, line_kind, marke
                      pretty_pick, side_of, spec_value, usable_line)
 import leagues
 import model
+import safety
 from srstats import MatchForm, SportradarStats
 
 log = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ CAUTION = " · caution: "      # marks a red flag inside Leg.why (plain text, no
 TZ = ZoneInfo(config.LOCAL_TZ)
 
 TIERS: dict[str, dict] = {
-    "safe": {"label": "Safe", "min_p": 0.80, "odds": (1.05, 1.35), "target": 5.0, "max_legs": 25},
+    "safe": {"label": "Safe", "min_p": safety.SAFE_MIN_P, "odds": (1.05, 1.35), "target": 5.0, "max_legs": 25},
     "mid": {"label": "Mid-safe", "min_p": 0.70, "odds": (1.30, 1.70), "target": 10.0, "max_legs": 14},
     "risk": {"label": "Risk", "min_p": 0.55, "odds": (1.60, 2.30), "target": 20.0, "max_legs": 10},
     "high": {"label": "High risk", "min_p": 0.30, "odds": (2.00, 8.00), "target": 50.0, "max_legs": 10},
@@ -49,7 +50,7 @@ TIER_ALIASES = {"safe": "safe", "low": "safe", "mid": "mid", "mid-safe": "mid", 
                 "grand-audit": "audit", "all": "audit"}
 DAYS = {"today", "tomorrow", "24h", "48h"}
 MAX_EVENTS = 80
-ROLLOVER_MIN_P = 0.80
+ROLLOVER_MIN_P = safety.SAFE_MIN_P   # 85% since 2026-11-14 (safety.py)
 ROLLOVER_MIN_ODDS = 1.12   # 1.03-1.10 legs add bookmaker margin and leg count for almost no odds
 STATS_EVENTS = 40
 POOL_TTL = 600
@@ -101,15 +102,17 @@ def uid_of(competitor_id: str) -> str:
 
 
 def ladder_leg_ok(l, c: Constraints | None = None) -> bool:
-    """One leg of a 2-odds ladder code: stats-confirmed, est >= 80%, odds >= ROLLOVER_MIN_ODDS, no under / half /
-    time-window market (ladder.py). Kick-off and league are checked by the caller."""
+    """One leg of a 2-odds ladder code: Safe (safety.py: top league incl. national-team quality, market est AND stats
+    model >= 85%, market-specific last-10 rule), stats-confirmed, odds >= ROLLOVER_MIN_ODDS, no under / half /
+    time-window market (ladder.py). Kick-off is checked by the caller."""
     import ladder
     if c is None:
         c = Constraints(exclude_markets=list(ladder.EXCLUDE_MARKETS), stats_confirmed_only=True,
                         min_leg_prob=ladder.MIN_P)
     get = (lambda k, d=None: l.get(k, d)) if isinstance(l, dict) else (lambda k, d=None: getattr(l, k, d))
     return (get("verdict") == "confirmed" and float(get("est") or 0) + 1e-9 >= ladder.MIN_P
-            and float(get("odds") or 0) >= ROLLOVER_MIN_ODDS and c.leg_ok(l, ladder.MIN_P))
+            and float(get("odds") or 0) >= ROLLOVER_MIN_ODDS and c.leg_ok(l, ladder.MIN_P)
+            and safety.is_safe(l))
 
 
 def rollover_allowed(e: Event) -> bool:
@@ -164,6 +167,7 @@ class Leg:
     p_half_win: float = 0.0         # Asian quarter lines: half the stake wins, half comes back
     p_half_loss: float = 0.0        # Asian quarter lines: half the stake lost, half comes back
     fit_parts: tuple = ()           # Asian lines: (push, half_win, half_loss) from the price fit
+    safe_note: str = "not checked"  # safety.leg_problem: "" = passes the Safe model + stats rules (set by apply_stats)
 
     @property
     def ev(self) -> float:
@@ -490,6 +494,12 @@ class Scanner:
               and not_started(l, soon) and not (exclude and sel_key(l) in exclude)]
         if tier == "high":
             ok = [l for l in ok if l.verdict != "demoted" and l.ev >= 0.97]
+        if tier == "safe":
+            # Safe = actually safe (safety.py): league quality, market est AND stats model >= 85%, last-10 rule,
+            # no unders unless the user asked for them, missing stats = out
+            unders = bool(c and (c.direction == "under" or "under" in (c.include_markets or [])))
+            wide = bool(c and c.widens_leagues())
+            ok = [l for l in ok if safety.is_safe(l, allow_unders=unders, widened=wide)]
         if c:
             ok = [l for l in ok if c.leg_ok(l, min_p)]
         return ok
@@ -509,7 +519,8 @@ class Scanner:
         if tier in ("safe", "mid", "risk"):
             # odds gained per unit of hit-probability given up: maximises the slip's combined probability
             c = min(max(l.conf, 0.05), 0.995)
-            return math.log(l.odds) / -math.log(c) * (1.05 if l.verdict == "confirmed" else 1.0)
+            pref = 1.0 if tier != "safe" or safety.preferred_market(l) else 0.97   # single-team goal lines last
+            return math.log(l.odds) / -math.log(c) * (1.05 if l.verdict == "confirmed" else 1.0) * pref
         return l.ev + bonus
 
     def _greedy(self, cands: list[Leg], tier: str, target: float, max_legs: int) -> list[Leg]:
@@ -731,6 +742,7 @@ class Scanner:
         for eid in ids:
             legs = [l for l in pool.legs.get(eid) or [] if l.verdict == "confirmed" and l.est >= min_p
                     and ROLLOVER_MIN_ODDS <= l.odds <= hi_t and c.leg_ok(l, min_p)
+                    and safety.is_safe(l, allow_unders=allow_unders)
                     and not_started(l, soon) and not (exclude and sel_key(l) in exclude)]
             # keep the strongest leg in each odds band so the search can mix short and longer prices
             bands: dict[int, Leg] = {}
@@ -745,9 +757,9 @@ class Scanner:
         legs = sorted(best["legs"], key=lambda l: l.kickoff)
         total = math.prod(l.odds for l in legs) if legs else 0.0
         note = "" if legs else (
-            f"No combination of stats-confirmed legs (each est. ≥{min_p:.0%}) from the top leagues lands on "
-            f"{target:g} odds today ({len(cands)} strong legs in {len(allowed)} top-league matches). "
-            "Suggest skipping today rather than forcing weaker picks.")
+            f"No combination of Safe legs (market and stats model each ≥{min_p:.0%}, last-10 record check) from the "
+            f"top leagues lands on {target:g} odds today ({len(cands)} Safe legs in {len(allowed)} top-league "
+            "matches). Suggest skipping today rather than forcing weaker picks.")
         return {"tier": "rollover", "label": "Rollover", "target": target, "total_odds": round(total, 2),
                 "est_prob": round(best["p"], 4) if legs else 0.0, "reached": bool(legs),
                 "legs": [l.to_json() for l in legs], "candidates": len(cands), "note": note,
@@ -760,10 +772,13 @@ class Scanner:
                 "disclaimer": "Estimates from prices + team stats, not guarantees. 18+."}
 
     async def ladder_slip(self, day: str = "today", exclude: set | None = None, fresh: bool = False) -> dict:
-        """2-odds savings ladder code (ladder.py): total odds 1.90-2.15 (target 2.00), the fewest, strongest Safe legs
-        (est >= 80% each, stats-confirmed), at most ladder.MAX_LEGS, top-leagues allowlist (national-team
-        competitions included), no unders, no half / time-window markets. Home or neutral picks first: a leg that
-        relies on the away team (side == away) is only used when no slip exists without one."""
+        """2-odds savings ladder code (ladder.py): total odds 1.90-2.15 (target 2.00), the fewest, strongest Safe legs,
+        at most ladder.MAX_LEGS. Safe = safety.py: top-leagues allowlist without domestic cups, national teams only
+        from the FIFA top ~50, market estimate AND stats model each >= 85%, market-specific last-10 record check,
+        missing stats = out, no unders, no half / time-window markets. Search order: home / neutral picks in
+        high-hit-rate markets (double chance, match Over, handicap / DNB on the stronger side), then home / neutral
+        incl. single-team goal lines, then away-side picks (said so). Nothing passes -> no code: the ladder day is
+        HELD (nothing staked, the day and stake stay)."""
         import ladder
         c = Constraints(exclude_markets=list(ladder.EXCLUDE_MARKETS), stats_confirmed_only=True,
                         min_leg_prob=ladder.MIN_P)
@@ -773,9 +788,17 @@ class Scanner:
         await self.ensure_stats(pool, allowed)
         lo_t, hi_t = ladder.ODDS_LO, ladder.ODDS_HI
         strong: list[Leg] = []
+        rejected: dict[str, int] = {}
         for e in allowed:
-            strong += [l for l in pool.legs.get(e.event_id) or [] if ladder_leg_ok(l, c)
-                       and l.odds <= hi_t and not_started(l, soon) and not (exclude and sel_key(l) in exclude)]
+            for l in pool.legs.get(e.event_id) or []:
+                if not (l.odds <= hi_t and not_started(l, soon) and not (exclude and sel_key(l) in exclude)):
+                    continue
+                if ladder_leg_ok(l, c):
+                    strong.append(l)
+                elif l.est >= 0.80 and l.odds >= ROLLOVER_MIN_ODDS and "under" not in l.tags:
+                    why = safety.safe_problem(l) or "rules"
+                    key = why.split(" (")[0].split(":")[0][:60]
+                    rejected[key] = rejected.get(key, 0) + 1
 
         def banded(legs: list[Leg]) -> list[Leg]:
             out: dict[tuple, Leg] = {}
@@ -787,7 +810,10 @@ class Scanner:
             return list(out.values())
 
         home_first = [l for l in strong if l.side != "away"]
-        found = search_combo(banded(home_first), lo_t, hi_t, ladder.MAX_LEGS)
+        found = search_combo(banded([l for l in home_first if safety.preferred_market(l)]), lo_t, hi_t,
+                             ladder.MAX_LEGS)
+        if not found:
+            found = search_combo(banded(home_first), lo_t, hi_t, ladder.MAX_LEGS)
         away_used = False
         if not found:
             found = search_combo(banded(strong), lo_t, hi_t, ladder.MAX_LEGS)
@@ -795,23 +821,30 @@ class Scanner:
         legs = sorted(found or [], key=lambda l: l.kickoff)
         total = math.prod(l.odds for l in legs) if legs else 0.0
         est = math.prod(l.est for l in legs) if legs else 0.0
+        best_total = math.prod(sorted((l.odds for l in banded(strong)), reverse=True)[:ladder.MAX_LEGS]) \
+            if strong else 0.0
         if legs:
             note = ("Includes a pick that relies on the away team: no home / neutral-only slip reached 2.00 today."
                     if away_used and any(l.side == "away" for l in legs) else "")
         elif not allowed:
-            note = ("No safe 2.00 slip today: SportyBet lists no top-league or national-team (World Cup qualifier, "
-                    "Nations League, etc.) matches in this window. The ladder holds; no day is lost.")
+            note = (f"{ladder.HOLD_TEXT} SportyBet lists no top-league or national-team matches in this window.")
         else:
-            note = (f"No safe 2.00 slip today: no combination of 1-{ladder.MAX_LEGS} stats-confirmed legs (each est "
-                    f">=80%, full match, no unders) from the {len(allowed)} top-league / national-team matches lands "
-                    f"between {lo_t:.2f} and {hi_t:.2f} ({len(strong)} Safe legs found). The ladder holds; no day "
-                    "is lost.")
+            top_why = sorted(rejected.items(), key=lambda kv: -kv[1])[:3]
+            note = (f"{ladder.HOLD_TEXT} {len(strong)} leg{'s' if len(strong) != 1 else ''} passed the Safe rules "
+                    f"(market and stats model each >={ladder.MIN_P:.0%}, last-10 record check) in {len(allowed)} "
+                    f"top-league / national-team matches; no 1-{ladder.MAX_LEGS} leg combination lands on "
+                    f"{lo_t:.2f}-{hi_t:.2f}" + (f" (best possible {best_total:.2f})" if strong else "") + "."
+                    + (" Most common reasons legs were left out: " + "; ".join(f"{k} ({v})" for k, v in top_why)
+                       + "." if top_why else ""))
         jl = [l.to_json() for l in legs]
         return {"tier": "ladder", "label": "Ladder 2.00", "target": ladder.TARGET, "total_odds": round(total, 2),
                 "est_prob": round(est, 4) if legs else 0.0, "reached": bool(legs), "legs": jl,
                 "candidates": len(strong), "note": note, "away_used": away_used and bool(legs),
-                "rules": {"min_p": ladder.MIN_P, "leagues": "allowlist", "no_unders": True, "full_match": True,
-                          "odds": [lo_t, hi_t], "max_legs": ladder.MAX_LEGS},
+                "held": not legs, "safe_legs": [l.to_json() for l in sorted(strong, key=lambda l: -l.est)[:12]],
+                "rejected_reasons": dict(sorted(rejected.items(), key=lambda kv: -kv[1])[:8]),
+                "rules": {"min_p": ladder.MIN_P, "leagues": "allowlist (no domestic cups, national teams FIFA top ~50)",
+                          "no_unders": True, "full_match": True, "odds": [lo_t, hi_t], "max_legs": ladder.MAX_LEGS,
+                          "model_and_market": True, "last10_check": True},
                 "rules_line": ladder.rules_line(),
                 "constraints": c.to_dict(), "constraint_check": verify({"legs": jl, "target": ladder.TARGET}, c,
                                                                        ladder.MIN_P),
@@ -838,7 +871,8 @@ class Scanner:
             await self.ensure_stats(pool, allowed)
             for e in allowed:
                 out += [l for l in pool.legs.get(e.event_id) or [] if l.verdict == "confirmed" and l.est >= min_p
-                        and l.odds >= ROLLOVER_MIN_ODDS and rc.leg_ok(l, min_p) and not_started(l, soon)]
+                        and l.odds >= ROLLOVER_MIN_ODDS and rc.leg_ok(l, min_p) and not_started(l, soon)
+                        and safety.is_safe(l, allow_unders=allow_unders)]
         elif mode == "scan":
             t = TIER_ALIASES.get((tier or "safe").lower(), "safe")
             cc = c if c is not None and not c.empty() else None
@@ -949,6 +983,7 @@ def apply_stats(leg: Leg, form: MatchForm | None) -> None:
     _apply_stats(leg, form)
     if leg.line_type:
         _asian_stats(leg, form)
+    leg.safe_note = safety.leg_problem(leg, form)
 
 
 def _asian_stats(leg: Leg, form: MatchForm | None) -> None:

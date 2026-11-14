@@ -18,7 +18,7 @@ carrying at least one included tag):
 
 Goals direction (`direction`: over | under | None): the "Overs only" / "Unders only" modes. "over" keeps only Over
 goal-total legs (full-match total Over, team total Over, Asian Over lines); "under" only the Under ones. In these modes
-every leg must reach the Safe bar (>= 80% calibrated estimate; Asian lines: a FULL win, a push is not counted as a win)
+every leg must reach the Safe bar (>= 85% calibrated estimate AND stats model, safety.py; Asian lines: a FULL win, a push is not counted as a win)
 and 1st / 2nd-half and time-window markets (1-60 min, Early Goals...) are left out unless the user asks for them.
 Plain scans keep their own rules (rollover: no unders unless allowed).
 
@@ -31,6 +31,7 @@ GG/NG "No", clean sheets and win-to-nil are their own market types (btts / speci
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, time as dtime
@@ -518,7 +519,7 @@ class Constraints:
             return ""
         return ("Overs only" if self.direction == "over" else "Unders only") + \
             (" (Asian lines only)" if "asian" in self.include_markets else " (incl. Asian lines)") + \
-            " · Safe, every leg ≥80%" + ("" if {"halves", "minutes"} & set(self.include_markets) else " · full match")
+            f" · Safe, every leg ≥{SAFE_P:.0%}" + (" (market + stats model)" if SAFE_P >= 0.85 else "") + ("" if {"halves", "minutes"} & set(self.include_markets) else " · full match")
 
     def rules_line(self) -> str:
         """The 'Rules:' line every slip starts with."""
@@ -559,7 +560,7 @@ class Constraints:
         if self.direction:
             parts.append(self.mode_text())
         if self.tier and not self.direction:
-            parts.append({"safe": "Safe (every leg ≥80%)", "mid": "Mid-safe", "risk": "Risk",
+            parts.append({"safe": f"Safe (every leg ≥{SAFE_P:.0%}, market + stats model)", "mid": "Mid-safe", "risk": "Risk",
                           "high": "High risk"}.get(self.tier, self.tier))
         if self.target_odds:
             parts.append(f"~{self.target_odds:g} odds")
@@ -602,7 +603,7 @@ class Constraints:
         return " · ".join(parts)
 
 
-SAFE_P = 0.80          # the Safe bar (scanner.TIERS["safe"]["min_p"]); the Overs / Unders modes always use it
+SAFE_P = float(os.environ.get("SAFE_MIN_P") or 0.85)   # the Safe bar (= safety.SAFE_MIN_P) (scanner.TIERS["safe"]["min_p"]); the Overs / Unders modes always use it
 
 
 def norm_direction(v) -> str | None:

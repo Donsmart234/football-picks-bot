@@ -29,7 +29,7 @@
   const bmName = (bm) => (bm === "footballcom" ? "football.com" : "SportyBet");
   const SLIP_KEY = "fra_slip_v2";
   const TIERS = {
-    safe: { label: "Safe", target: 5, quick: [2, 3, 5, 8, 10], rule: "Every leg est. ≥80% after the stats check · odds 1.05–1.35 · estimates, not guarantees" },
+    safe: { label: "Safe", target: 5, quick: [2, 3, 5, 8, 10], rule: "Every leg ≥85% on both the market estimate and the stats model, last-10 record check · top leagues, no cups · odds 1.05–1.35 · estimates, not guarantees" },
     mid: { label: "Mid-safe", target: 10, quick: [5, 10, 15, 20], rule: "Legs est. ≥70% · odds 1.30–1.70" },
     risk: { label: "Risk", target: 20, quick: [10, 20, 30, 50], rule: "Legs est. ≥55% · odds 1.60–2.30" },
     high: { label: "High risk", target: 50, quick: [20, 50, 100, 200], rule: "Value legs (est. × odds ≥ ~1) at odds 2.00+" },
@@ -368,7 +368,7 @@
     html += `<div class="label" style="margin-top:12px">Filters</div><div class="chips fchips">${EXCL.map(([k, v]) => `<button class="chip${state.ex.includes(k) ? " on" : ""}" data-act="excl" data-k="${k}" aria-pressed="${state.ex.includes(k)}">${state.ex.includes(k) ? IC.check : ""}${v}</button>`).join("")}</div>`;
     if (state.tier !== "audit") {
       html += `<div class="label" style="margin-top:12px">Goals</div><div class="seg" role="radiogroup" aria-label="Goals direction">${[["any", "Any"], ["over", "Overs only"], ["under", "Unders only"]].map(([k, v]) => `<button data-act="dir" data-v="${k}" role="radio" aria-checked="${state.dir === k}" class="${state.dir === k ? "on" : ""}">${v}</button>`).join("")}</div>`;
-      if (state.dir !== "any") html += `<div class="sub" style="margin:6px 2px 0">${state.dir === "over" ? "Over" : "Under"} goal lines only (match, team, Asian lines) · full match, no half or minute markets · every leg Safe, est. ≥80% (Asian: full wins only, a push returns the stake)</div>`;
+      if (state.dir !== "any") html += `<div class="sub" style="margin:6px 2px 0">${state.dir === "over" ? "Over" : "Under"} goal lines only (match, team, Asian lines) · full match, no half or minute markets · every leg Safe, ≥85% (Asian: full wins only, a push returns the stake)</div>`;
     }
     html += `<div class="chips fchips" style="margin-top:6px"><button class="chip${state.allLg ? " on" : ""}" data-act="alllg" aria-pressed="${state.allLg}">${state.allLg ? IC.check + "All leagues" : "Top leagues only (tap for all)"}</button></div>`;
     html += `<div class="rules">${esc(t.rule)}</div>
@@ -1109,7 +1109,7 @@
     return `<div class="section"><span class="label">2-odds savings ladder</span></div><div class="card t-safe">
       <div class="sub">${esc(state.ro.ladder_rules || "")}</div>
       <div class="target"><div class="field"><span>Starting stake</span><input id="ladstake" inputmode="decimal" value="${esc(f.stake)}" placeholder="1000" autocomplete="off"></div></div>
-      <div class="rules">16 days at ~2.00 odds a day (1.90–2.15), Safe legs only (each est ≥80%), as few legs as possible, top leagues, no unders, full match only, home or neutral picks first. Part of every win is saved; the ladder scales with your stake (1,000 → 1,000,000 winning + 568,500 savings). A cut on day 3 or later restarts 2 days back with that stake taken from savings (day 1 or 2: back to day 1); if savings can't cover it, further back; if not even day 1, the ladder ends. No safe 2.00 code on a day = the ladder holds.</div>
+      <div class="rules">16 days at ~2.00 odds a day (1.90–2.15), Safe legs only (market and stats model each ≥85%, national teams FIFA top ~50, no cups), as few legs as possible, top leagues, no unders, full match only, home or neutral picks first. Part of every win is saved; the ladder scales with your stake (1,000 → 1,000,000 winning + 568,500 savings). A cut on day 3 or later restarts 2 days back with that stake taken from savings (day 1 or 2: back to day 1); if savings can't cover it, further back; if not even day 1, the ladder ends. No safe 2.00 code on a day = the day is held, nothing staked.</div>
       <div class="btnrow"><button class="btn small secondary" data-act="ladtable">Show table</button><button class="btn small" data-act="ladstart" ${state.roBusy ? "disabled" : ""}>Start ladder</button></div>
       ${state.ladTable ? ladderTableHtml(state.ladTable) : ""}</div>`;
   }
@@ -1119,7 +1119,7 @@
   }
   async function renderRollover() {
     if (state.roPlan && !state.roPlan.loading) { renderPlan(); return; }
-    let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Daily compounding plan</div><h1>Rollover</h1><div class="sub">Top leagues · stats-confirmed legs ≥80% each</div></div><button class="iconbtn" data-act="rorefresh" aria-label="Refresh">↻</button></div>`;
+    let h = `<div style="margin:4px 2px 12px" class="hrow"><div><div class="label">Daily compounding plan</div><h1>Rollover</h1><div class="sub">Top leagues · Safe legs ≥85% (market + stats model)</div></div><button class="iconbtn" data-act="rorefresh" aria-label="Refresh">↻</button></div>`;
     if (!state.ro && !state.roBusy) { const c = store.get("ro"); if (c) state.ro = c.json; }
     if (!state.ro && !state.roErr) { $view.innerHTML = h + `<div class="card">${[0, 1, 2].map(() => `<div class="sk sk-line"></div>`).join("")}</div>`; await loadRollover(); if (state.tab !== "rollover") return; }
     else if (!state.roBusy && (!state.roFresh || Date.now() - state.roFresh > 60000)) { state.roFresh = Date.now(); loadRollover(true).then(() => { if (state.tab === "rollover" && !state.roBusy) renderRollover(); }); }

@@ -1,0 +1,357 @@
+{
+ "test_2627": {
+  "matches": 1251,
+  "match_days_top": 64,
+  "legs_old_ladder": {
+   "legs": 396,
+   "hit_rate": 0.8258,
+   "mean_est": 0.8209,
+   "mean_odds": 1.16,
+   "by_market": {
+    "Over 1.5": {
+     "n": 158,
+     "hit": 0.804
+    },
+    "Home over 0.5": {
+     "n": 132,
+     "hit": 0.803
+    },
+    "Away over 0.5": {
+     "n": 57,
+     "hit": 0.877
+    },
+    "DC 1X": {
+     "n": 22,
+     "hit": 0.818
+    },
+    "DC 12": {
+     "n": 13,
+     "hit": 0.923
+    },
+    "DNB home": {
+     "n": 7,
+     "hit": 1.0
+    },
+    "DC X2": {
+     "n": 4,
+     "hit": 1.0
+    },
+    "1X2 home": {
+     "n": 1,
+     "hit": 1.0
+    }
+   }
+  },
+  "legs_new_ladder": {
+   "legs": 0,
+   "hit_rate": null,
+   "mean_est": null,
+   "mean_odds": null,
+   "by_market": {}
+  },
+  "legs_old_scan_safe": {
+   "legs": 1769,
+   "hit_rate": 0.8457,
+   "mean_est": 0.843,
+   "mean_odds": 1.127,
+   "by_market": {
+    "Under 4.5": {
+     "n": 533,
+     "hit": 0.844
+    },
+    "Over 1.5": {
+     "n": 327,
+     "hit": 0.841
+    },
+    "Home over 0.5": {
+     "n": 297,
+     "hit": 0.832
+    },
+    "Away over 0.5": {
+     "n": 157,
+     "hit": 0.873
+    },
+    "DC 12": {
+     "n": 133,
+     "hit": 0.842
+    },
+    "DC 1X": {
+     "n": 88,
+     "hit": 0.83
+    },
+    "1H over 0.5": {
+     "n": 61,
+     "hit": 0.836
+    },
+    "Away under 1.5": {
+     "n": 49,
+     "hit": 0.837
+    }
+   }
+  },
+  "legs_new_scan_safe": {
+   "legs": 120,
+   "hit_rate": 0.9,
+   "mean_est": 0.8786,
+   "mean_odds": 1.081,
+   "by_market": {
+    "Over 1.5": {
+     "n": 51,
+     "hit": 0.863
+    },
+    "Home over 0.5": {
+     "n": 32,
+     "hit": 1.0
+    },
+    "Over 0.5": {
+     "n": 15,
+     "hit": 0.933
+    },
+    "DC 1X": {
+     "n": 9,
+     "hit": 0.889
+    },
+    "Away over 0.5": {
+     "n": 8,
+     "hit": 0.625
+    },
+    "DNB home": {
+     "n": 5,
+     "hit": 1.0
+    }
+   }
+  },
+  "slips_old": {
+   "days": 64,
+   "slips": 14,
+   "won": 7,
+   "hit_rate": 0.5,
+   "days_held": 50,
+   "mean_odds": 1.917,
+   "mean_legs": 4.0
+  },
+  "slips_new_4legs": {
+   "days": 64,
+   "slips": 0,
+   "won": 0,
+   "hit_rate": null,
+   "days_held": 64,
+   "mean_odds": null,
+   "mean_legs": null
+  },
+  "slips_new_6legs_whatif": {
+   "days": 64,
+   "slips": 0,
+   "won": 0,
+   "hit_rate": null,
+   "days_held": 64,
+   "mean_odds": null,
+   "mean_legs": null
+  },
+  "slips_new_rules_at_80_whatif": {
+   "days": 64,
+   "slips": 5,
+   "won": 3,
+   "hit_rate": 0.6,
+   "days_held": 59,
+   "mean_odds": 1.91,
+   "mean_legs": 4.0
+  },
+  "slips_new_10legs_from_1.05_whatif": {
+   "days": 64,
+   "slips": 0,
+   "won": 0,
+   "hit_rate": null,
+   "days_held": 64,
+   "mean_odds": null,
+   "mean_legs": null
+  },
+  "examples_new": []
+ },
+ "all_seasons": {
+  "matches": 11012,
+  "match_days_top": 489,
+  "legs_old_ladder": {
+   "legs": 2868,
+   "hit_rate": 0.8264,
+   "mean_est": 0.8204,
+   "mean_odds": 1.162,
+   "by_market": {
+    "Home over 0.5": {
+     "n": 1003,
+     "hit": 0.816
+    },
+    "Over 1.5": {
+     "n": 964,
+     "hit": 0.837
+    },
+    "Away over 0.5": {
+     "n": 360,
+     "hit": 0.822
+    },
+    "DC 1X": {
+     "n": 263,
+     "hit": 0.814
+    },
+    "DNB home": {
+     "n": 117,
+     "hit": 0.863
+    },
+    "DC 12": {
+     "n": 96,
+     "hit": 0.792
+    },
+    "DC X2": {
+     "n": 27,
+     "hit": 0.926
+    },
+    "Home over 1.5": {
+     "n": 12,
+     "hit": 0.917
+    }
+   }
+  },
+  "legs_new_ladder": {
+   "legs": 5,
+   "hit_rate": 1.0,
+   "mean_est": 0.8575,
+   "mean_odds": 1.136,
+   "by_market": {
+    "DNB home": {
+     "n": 4,
+     "hit": 1.0
+    },
+    "Home over 1.5": {
+     "n": 1,
+     "hit": 1.0
+    }
+   }
+  },
+  "legs_old_scan_safe": {
+   "legs": 15427,
+   "hit_rate": 0.8534,
+   "mean_est": 0.8455,
+   "mean_odds": 1.124,
+   "by_market": {
+    "Under 4.5": {
+     "n": 4767,
+     "hit": 0.866
+    },
+    "Home over 0.5": {
+     "n": 2431,
+     "hit": 0.842
+    },
+    "Over 1.5": {
+     "n": 2021,
+     "hit": 0.855
+    },
+    "Away over 0.5": {
+     "n": 1116,
+     "hit": 0.858
+    },
+    "DC 1X": {
+     "n": 1020,
+     "hit": 0.852
+    },
+    "DC 12": {
+     "n": 1019,
+     "hit": 0.833
+    },
+    "Away under 1.5": {
+     "n": 813,
+     "hit": 0.809
+    },
+    "Over 0.5": {
+     "n": 483,
+     "hit": 0.89
+    }
+   }
+  },
+  "legs_new_scan_safe": {
+   "legs": 962,
+   "hit_rate": 0.9106,
+   "mean_est": 0.8805,
+   "mean_odds": 1.079,
+   "by_market": {
+    "Home over 0.5": {
+     "n": 285,
+     "hit": 0.916
+    },
+    "Over 0.5": {
+     "n": 274,
+     "hit": 0.898
+    },
+    "Over 1.5": {
+     "n": 216,
+     "hit": 0.898
+    },
+    "DC 1X": {
+     "n": 74,
+     "hit": 0.946
+    },
+    "Away over 0.5": {
+     "n": 63,
+     "hit": 0.905
+    },
+    "DNB home": {
+     "n": 33,
+     "hit": 0.97
+    },
+    "DC X2": {
+     "n": 7,
+     "hit": 1.0
+    },
+    "DC 12": {
+     "n": 6,
+     "hit": 0.833
+    }
+   }
+  },
+  "slips_old": {
+   "days": 489,
+   "slips": 135,
+   "won": 68,
+   "hit_rate": 0.5037,
+   "days_held": 354,
+   "mean_odds": 1.912,
+   "mean_legs": 4.0
+  },
+  "slips_new_4legs": {
+   "days": 489,
+   "slips": 0,
+   "won": 0,
+   "hit_rate": null,
+   "days_held": 489,
+   "mean_odds": null,
+   "mean_legs": null
+  },
+  "slips_new_6legs_whatif": {
+   "days": 489,
+   "slips": 0,
+   "won": 0,
+   "hit_rate": null,
+   "days_held": 489,
+   "mean_odds": null,
+   "mean_legs": null
+  },
+  "slips_new_rules_at_80_whatif": {
+   "days": 489,
+   "slips": 42,
+   "won": 18,
+   "hit_rate": 0.4286,
+   "days_held": 447,
+   "mean_odds": 1.913,
+   "mean_legs": 4.0
+  },
+  "slips_new_10legs_from_1.05_whatif": {
+   "days": 489,
+   "slips": 7,
+   "won": 2,
+   "hit_rate": 0.2857,
+   "days_held": 482,
+   "mean_odds": 1.941,
+   "mean_legs": 8.14
+  },
+  "examples_new": []
+ }
+}

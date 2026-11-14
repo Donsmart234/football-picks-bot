@@ -6,7 +6,7 @@
   Sportradar result feed (settle.py). One final Telegram message per slip: "Entered" when the whole slip lands, a short "lost"
   when it loses (sent as soon as one leg loses), "check" when the rest won but a market needs a manual look.
 - Rollover plans: day N of M at a fixed daily target; each morning (≥ 09:00 Africa/Lagos) the day's slip is built
-  from allowlisted top leagues (stats-confirmed legs ≥80% est.), booked, saved and pushed to the owner. A win
+  from allowlisted top leagues (Safe legs: market and stats model each ≥85%), booked, saved and pushed to the owner. A win
   advances the plan (stake compounds), a loss busts it; no qualifying slip = the day is skipped, not forced.
 """
 from __future__ import annotations
@@ -419,9 +419,11 @@ class Tracker:
             d["log"].append(entry)
             await self.history.save(rec)
             if push and lad:
-                await self.send(f"{esc(ladder.rules_line())}\n<b>Ladder day {n}/{m}</b> · stake {d['value']:,.0f} · "
-                                f"savings {float(d.get('savings') or 0):,.0f}\n{RULE}\n{esc(res['note'])}\n"
-                                f"I'll try again tomorrow morning. The ladder stays on day {n}.", test=d.get("test"))
+                # hold day (not a loss): one short ping, nothing booked or staked, day + stake + savings unchanged
+                entry["status"], entry["held"] = "no_slip", True
+                await self.send(f"{esc(ladder.rules_line())}\n<b>{esc(ladder.HOLD_TEXT)}</b>\nDay {n}/{m} stays at stake "
+                                f"{d['value']:,.0f} · savings {float(d.get('savings') or 0):,.0f}. Next try tomorrow "
+                                "~09:00.", test=d.get("test"))
             elif push:
                 await self.send(f"<b>Rollover day {n}/{m}</b> · target {d['target']:g}\n{RULE}\n"
                                 f"No slip today: {esc(res['note'])}\nI'll try again tomorrow morning. The plan stays on day {n}.",
@@ -456,7 +458,7 @@ class Tracker:
                 lines.append(leg_lines(l, i, why=True))
             lines += [RULE, f"<b>Total odds <code>{res['total_odds']:.2f}</code></b> · est. hit chance "
                       f"<b>{res['est_prob']:.0%}</b>{stake}",
-                      "<i>Top leagues only, stats-confirmed legs ≥80% est."
+                      "<i>Top leagues only, Safe legs (market and stats model each ≥85%, last-10 check)."
                       + ("" if d.get("allow_unders") else " No under selections.")
                       + " Estimates, not guarantees. 18+.</i>"]
             markup = day_markup(srec["id"], bool(code), code) if srec else None
@@ -728,10 +730,10 @@ class Tracker:
         if not res["legs"]:
             if d.get("mode") == ladder.MODE:
                 return {"status": "none", "note": ("No different valid slip exists right now under the ladder rules "
-                                                   "(top leagues, every leg est >=80%, 1.90-2.15 odds, no unders, "
+                                                   "(top leagues, every leg market and stats model >=85%, 1.90-2.15 odds, no unders, "
                                                    "full match only). Your current slip stays."), "slip": res}
             return {"status": "none", "note": ("No different valid slip exists right now under the same rules "
-                                               f"(top leagues, every leg ≥80% est., ~{d['target']:g} odds"
+                                               f"(top leagues, every leg market and stats model ≥85%, ~{d['target']:g} odds"
                                                + ("" if d.get("allow_unders") else ", no unders")
                                                + "). Your current slip stays."), "slip": res}
         if {sel_key(l) for l in res["legs"]} == prev:

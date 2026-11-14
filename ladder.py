@@ -25,9 +25,10 @@ save x start / 1000). User's decisions (2026-11-13):
 - a loss on day i (i >= 3) restarts at day i-2, that day's stake taken from savings; a loss on day 1 or 2 restarts
   at day 1. If savings can't cover that stake, go back further to the latest day savings can cover; if even day 1
   can't be covered, the plan ends.
-- each day's code is about 2.00 total odds (1.90-2.15) from Safe legs (est >= 80% each), as few legs as possible,
+- each day's code is about 2.00 total odds (1.90-2.15) from Safe legs (since 2026-11-14: market est AND stats model
+  >= 85% each + last-10 record check, safety.py; was est >= 80%), as few legs as possible,
   top leagues, no unders, no half / time-window markets, home or neutral picks preferred, every leg stats-confirmed.
-- no safe slip on a day = the ladder holds (no day advanced, nothing lost).
+- no safe slip on a day = the ladder holds (no day advanced, nothing lost, nothing staked; one short ping).
 
 Money is tracked honestly with the real odds of each code: a win returns stake x odds; the next day's stake is the
 template stake and everything above it goes to savings (so odds above 2.00 save a little more, odds below 2.00 a
@@ -44,7 +45,7 @@ BASE = 1000.0
 TARGET = 2.0
 ODDS_LO = 1.90
 ODDS_HI = 2.15
-MIN_P = 0.80
+MIN_P = float(__import__("os").environ.get("SAFE_MIN_P") or 0.85)   # market estimate AND stats model, each (safety.py); 80% (market only) until 2026-11-14
 MAX_LEGS = 4
 MIN_STAKE = 100.0
 MAX_STAKE = 100_000_000.0
@@ -57,13 +58,14 @@ DAYS = len(TEMPLATE)
 MODE = "ladder"
 NAME = "2-odds savings ladder"
 EXCLUDE_MARKETS = ("under", "halves", "minutes")
+HOLD_TEXT = "No safe 2.00 today \u2014 ladder day held, nothing staked."
 
 
 def rules_line() -> str:
     """The 'Rules:' line every ladder reply starts with (plain text, no HTML)."""
-    return (f"Rules: {NAME} · code {TARGET:.2f} odds ({ODDS_LO:.2f}-{ODDS_HI:.2f}) · Safe, every leg est >=80% · "
-            f"1-{MAX_LEGS} legs · top leagues · stats-confirmed · no unders · full match only · home or neutral "
-            "picks preferred")
+    return (f"Rules: {NAME} · code {TARGET:.2f} odds ({ODDS_LO:.2f}-{ODDS_HI:.2f}) · Safe, every leg market AND stats "
+            f"model >={MIN_P:.0%} + last-10 check · 1-{MAX_LEGS} legs · top leagues (no cups, national teams FIFA top "
+            "~50) · no unders · full match only · home or neutral picks preferred · no safe code = day held")
 
 
 def r2(x: float) -> float:

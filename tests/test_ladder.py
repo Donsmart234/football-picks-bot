@@ -177,13 +177,18 @@ def money():
 
 # ---------------------------------------------------------------- 3. slip constraints (fake pool)
 def mkleg(eid, odds, est, side=None, market="1X2", pick="Home", mid="1", tags=("1x2",), verdict="confirmed",
-          ko=None, home="Home FC", away="Away FC", league="England · Premier League"):
+          ko=None, home="Home FC", away="Away FC", league="England · Premier League", p_stats=None, safe_note="",
+          utid="17", category_id="sr:category:1", outcome_id=None, specifier=""):
+    """A leg that already went through apply_stats: safe_note "" = passed the Safe model + last-10 rules (safety.py
+    is exercised for real in tests/test_safety.py)."""
     from scanner import Leg
     ko = ko or (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+    oid = outcome_id or ("3" if side == "away" and mid == "1" else "1")
     return Leg(event_id=eid, match=f"{home} v {away}", home=home, away=away, league=league, kickoff=ko,
-               kickoff_local="Sat 21 Nov 16:00", market_id=mid, specifier="", outcome_id="1", market=market, pick=pick,
-               odds=odds, p_market=est, p_feed=None, p_fit=None, est=est, verdict=verdict, why="form + H2H agree",
-               side=side, tags=tuple(tags))
+               kickoff_local="Sat 21 Nov 16:00", market_id=mid, specifier=specifier, outcome_id=oid, market=market,
+               pick=pick, odds=odds, p_market=est, p_feed=None, p_fit=est, p_stats=est if p_stats is None else p_stats,
+               est=est, verdict=verdict, why="form + H2H agree", side=side, tags=tuple(tags), utid=utid,
+               category_id=category_id, safe_note=safe_note)
 
 
 def fake_scanner(legs_by_event: dict, top: set):
@@ -208,7 +213,7 @@ async def slips():
     legs = {
         "e1": [mkleg("e1", 1.40, 0.86, side="home"), mkleg("e1", 1.25, 0.90, market="Over/Under", pick="Under 3.5",
                                                           mid="18", tags=("totals", "under"))],
-        "e2": [mkleg("e2", 1.45, 0.84, side="home"),
+        "e2": [mkleg("e2", 1.45, 0.86, side="home"),
                mkleg("e2", 1.43, 0.95, market="1st Half - Over/Under", pick="Over 0.5", mid="68",
                      tags=("halves", "over", "totals"))],
         "e3": [mkleg("e3", 1.42, 0.91, side="away", pick="Away")],          # strong away pick
@@ -223,7 +228,7 @@ async def slips():
     ids = sorted(l["event_id"] for l in L)
     check(bool(L), f"a slip is found ({ids}, total {res['total_odds']})")
     check(ladder.ODDS_LO <= res["total_odds"] <= ladder.ODDS_HI, f"total odds {res['total_odds']} in 1.90-2.15")
-    check(all(l["est"] >= 0.80 for l in L), "every leg Safe (est >= 80%)")
+    check(all(l["est"] >= 0.85 and l["p_stats"] >= 0.85 for l in L), "every leg Safe (market and stats model >= 85%)")
     check(not any("under" in l["tags"] for l in L), "no unders")
     check(not any({"halves", "minutes"} & set(l["tags"]) for l in L), "no half / time-window markets")
     check("e4" not in ids, "non-top league left out")
@@ -240,15 +245,46 @@ async def slips():
     # nothing reaches the window -> honest note, no legs
     legs3 = {"e1": [mkleg("e1", 1.20, 0.92, side="home")], "e2": [mkleg("e2", 1.25, 0.90, side="home")]}
     res3 = await fake_scanner(legs3, top={"e1", "e2"}).ladder_slip()
-    check(not res3["legs"] and res3["note"].startswith("No safe 2.00 slip today") and "holds" in res3["note"],
-          "no qualifying slip: 'No safe 2.00 slip today ... holds'")
+    check(not res3["legs"] and res3["note"].startswith(ladder.HOLD_TEXT) and res3["held"],
+          f"no qualifying slip: '{ladder.HOLD_TEXT}' (hold day, nothing forced)")
+    check("best possible" in res3["note"] and "2 legs passed" in res3["note"], "hold note says how many legs passed")
     res4 = await fake_scanner({"e4": [mkleg("e4", 2.0, 0.85)]}, top=set()).ladder_slip()
     check(not res4["legs"] and "national-team" in res4["note"], "no top-league / national-team matches: said plainly")
     # started matches are never picked
     past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-    legs5 = {"e1": [mkleg("e1", 1.40, 0.86, side="home", ko=past)], "e2": [mkleg("e2", 1.45, 0.84, side="home")]}
+    legs5 = {"e1": [mkleg("e1", 1.40, 0.86, side="home", ko=past)], "e2": [mkleg("e2", 1.45, 0.86, side="home")]}
     res5 = await fake_scanner(legs5, top={"e1", "e2"}).ladder_slip()
     check(not res5["legs"], "a match that kicked off is never used")
+
+    # new Safe rules inside the ladder: a leg the market rates 86% but the stats model only 78% is out; a leg whose
+    # last-10 check failed (safe_note set) is out; a national-team leg between non-top-50 sides is out; a domestic
+    # cup leg is out -> nothing can make 2.00, the day is held
+    legs6 = {
+        "e1": [mkleg("e1", 1.40, 0.86, side="home", p_stats=0.78)],
+        "e2": [mkleg("e2", 1.45, 0.88, side="home", safe_note="Home FC scored over 0.5 in only 6/10")],
+        "e3": [mkleg("e3", 1.42, 0.90, side="home", home="Mozambique", away="Ethiopia", utid="1848",
+                     category_id="sr:category:4", league="International · Africa Cup of Nations Qualification")],
+        "e4": [mkleg("e4", 1.45, 0.90, side="home", home="Salamanca CF UDS", away="Celta", utid="329",
+                     category_id="sr:category:32", league="Spain · Copa del Rey")],
+    }
+    res6 = await fake_scanner(legs6, top=set(legs6)).ladder_slip()
+    check(not res6["legs"] and res6["held"] and res6["candidates"] == 0,
+          f"model disagrees / last-10 fails / weak national sides / cup -> no code, day held ({res6['note'][:90]})")
+    # strong national sides still count
+    legs7 = {"e1": [mkleg("e1", 1.40, 0.88, side="home", home="Germany", away="Serbia", utid="23755",
+                          category_id="sr:category:4", league="International · UEFA Nations League")],
+             "e2": [mkleg("e2", 1.45, 0.87, side="home")]}
+    res7 = await fake_scanner(legs7, top=set(legs7)).ladder_slip()
+    check(len(res7["legs"]) == 2, "Germany v Serbia (both FIFA top 50, Nations League) is allowed")
+    # preferred markets first: a DC leg beats a single-team goal line of similar strength
+    legs8 = {"e1": [mkleg("e1", 1.40, 0.90, side="home", market="Home Over/Under", pick="Home FC Over 0.5", mid="19",
+                          tags=("team_totals", "over"), outcome_id="12", specifier="total=0.5"),
+                    mkleg("e1", 1.41, 0.88, side="home", market="Double Chance", pick="Home or Draw", mid="10",
+                          tags=("double_chance",), outcome_id="9")],
+             "e2": [mkleg("e2", 1.45, 0.87, side="home")]}
+    res8 = await fake_scanner(legs8, top=set(legs8)).ladder_slip()
+    check([l["market_id"] for l in res8["legs"] if l["event_id"] == "e1"] == ["10"],
+          "double chance preferred over a team goal line")
     return res
 
 
@@ -417,7 +453,13 @@ async def tracker_flow():
                        "note": "No safe 2.00 slip today: test."}
     tr.bot.sent.clear()
     e = await tr.generate_day(p3)
-    check(e["status"] == "no_slip" and "stays on day 5" in tr.bot.sent[-1][1], "no safe slip: hold message, day 5 kept")
+    check(e["status"] == "no_slip" and ladder.HOLD_TEXT in tr.bot.sent[-1][1] and "Day 5/16 stays at stake 4,000"
+          in tr.bot.sent[-1][1], "no safe slip: one short hold ping, day 5 + stake kept")
+    p4 = await tr.history.get(rec2["id"])
+    check(p4["data"]["current_day"] == 5 and p4["data"]["value"] == 4000 and len(tr.bot.sent) == 1
+          and not any(r.get("outcome") == "lost" and r.get("date") == e["date"] and r.get("day") == 5
+                      for r in p4["data"].get("ledger", [])[-1:]) and tr.bot.sent[-1][1].count("\n") <= 3,
+          "hold day: not a loss, no ledger row, nothing booked, one ping")
     starts_rules(tr.bot.sent[-1][1], "hold message")
     return tr, rec2
 
