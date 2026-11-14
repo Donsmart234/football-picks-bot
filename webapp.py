@@ -1058,7 +1058,8 @@ class MiniApp:
         return web.json_response({"id": pm.id})
 
     async def diag(self, request: web.Request) -> web.Response:
-        out: dict = {"time": datetime.now(timezone.utc).isoformat()}
+        out: dict = {"time": datetime.now(timezone.utc).isoformat(),
+                     "commit": (os.environ.get("RENDER_GIT_COMMIT") or "")[:7]}   # deployed commit (Render sets it)
         t = time.time()
         try:
             evs = await self.s.bookmaker.list_events(24)
