@@ -799,7 +799,7 @@ class Scanner:
                     strong.append(l)
                 elif l.est >= 0.80 and l.odds >= ROLLOVER_MIN_ODDS and "under" not in l.tags:
                     why = safety.safe_problem(l) or ("not stats-confirmed" if l.verdict != "confirmed" else "rules")
-                    key = re.sub(r"\d+(\.\d+)?%", "N%", why.split(" (")[0].split(":")[0])[:60]
+                    key = re.sub(r" \d+(\.\d+)?% below", " below", why.split(" (")[0].split(":")[0])[:60]
                     rejected[key] = rejected.get(key, 0) + 1
                     if l.p_fit is not None and FAMILIES.get(l.market_id) and FAMILIES[l.market_id].period == "ft":
                         near.append((min(l.est, l.p_stats if l.p_stats is not None else 0.0), l, why))
