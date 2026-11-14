@@ -154,10 +154,11 @@ class Tracker:
             now = datetime.now(timezone.utc)
             self.last_tick = now.isoformat(timespec="seconds")
             pending = await self.history.list("slip", ["pending"], limit=200)
-            # slips settled early (a leg locked from the live score) are re-checked once their matches end
-            since = (now - timedelta(days=4)).isoformat(timespec="seconds")
+            # slips settled early (a leg locked from the live score) are re-checked once their matches end;
+            # 16 days back so a 2-week code (football.com Any Team, window 2w) booked days ago is still re-checked
+            since = (now - timedelta(days=16)).isoformat(timespec="seconds")
             try:
-                recent = await self.history.list("slip", ["won", "lost"], limit=60, since=since)
+                recent = await self.history.list("slip", ["won", "lost"], limit=150, since=since)
             except Exception:
                 recent = []
             pending += [r for r in recent if r["data"].get("early_open")]

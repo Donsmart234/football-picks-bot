@@ -15,6 +15,10 @@ event detail doesn't carry it) and only in the event detail, not the upcoming li
        same window (used ids in the history store, kind 'atused').
 
 Defaults agreed 2026-11-13: 10 legs, leg odds 1.15-1.35, Yes only, one leg per match, not started, next 72 h.
+Window option (2026-11-14): "3d" (next 3 days, default), "1w" (next 7 days), "2w" (next 14 days). football.com lists
+games ~1-2 weeks ahead, so a week window takes whatever is listed inside it. In a week window the automatic scope is
+decided per WAT day (national teams on days with >= 4 senior national-team matches, top leagues on the other days), so
+an international break followed by league weekends gives both; the 3-day window keeps the whole-window rule.
 Estimates, not guarantees: the combined chance assumes the legs are independent.
 """
 from __future__ import annotations
@@ -51,6 +55,10 @@ MAX_LEGS = 50
 MIN_LEAD = timedelta(minutes=5)          # matches must start at least this far ahead
 DETAIL_CONCURRENCY = 12
 MAX_DETAILS = 260                         # cap on event-detail reads per search (top leagues over 72 h ~ 150)
+MAX_DETAILS_LONG = 300                    # week windows: the 300 likeliest candidates (list Poisson pre-check)
+DETAIL_TTL = 600                          # event details cached 10 min (1w and 2w share reads, football.com rate-limits)
+WINDOWS = {"3d": 72, "1w": 168, "2w": 336}
+WINDOW_TEXT = {"3d": "next 3 days", "1w": "next 7 days", "2w": "next 14 days"}
 AUTO_NATIONAL_MIN = 4                     # national-team matches in the window that switch the default scope on
 RESULT_TTL = 300
 USED_PREFIX, USED_KIND = "atu", "atused"
@@ -117,6 +125,13 @@ class Request:
     refresh: bool = False
     n_given: bool = False
     odds_given: bool = False
+    win: str = "3d"                # 3d | 1w | 2w ("" = custom hours)
+    win_given: bool = False
+
+    @property
+    def multi_day(self) -> bool:
+        """Week windows: the automatic scope is decided per day."""
+        return not self.day and self.hours > DEFAULT_HOURS
 
     @property
     def named(self) -> bool:
@@ -124,8 +139,36 @@ class Request:
         return bool(self.competitions or (lc is not None and (lc.include_leagues or lc.include_countries)))
 
 
-def parse_request(text: str, n: int | None = None, lo: float | None = None, hi: float | None = None) -> Request:
-    """'/anyteam 8 1.2-1.3 nigeria egypt today' -> Request. Numbers given as arguments win over the text."""
+_WIN_2W = re.compile(r"\b(?:2|two)\s*-?\s*weeks?\b|\b14\s*-?\s*days?\b|\bfortnight\b|\b2\s*w(?:ks?)?\b", re.I)
+_WIN_1W = re.compile(r"\b(?:1|one|a)\s*-?\s*week\b|\b7\s*-?\s*days?\b|\b1\s*w(?:k)?\b|\bweek\b", re.I)
+_WIN_3D = re.compile(r"\b(?:3|three)\s*-?\s*days?\b|\b3\s*d\b", re.I)
+
+
+def parse_window(text: str) -> tuple[str, str]:
+    """('1w', text without the window words) for "for the week" / "1 week" / "7 days"; '2w' for "2 weeks" /
+    "14 days" / "fortnight"; '3d' for "3 days"; ('', text) when no window is named. "weekend" / "midweek" are not
+    week windows."""
+    t = text or ""
+    for key, rx in (("2w", _WIN_2W), ("1w", _WIN_1W), ("3d", _WIN_3D)):
+        m = rx.search(t)
+        if m:
+            return key, t[:m.start()] + " " + t[m.end():]
+    return "", t
+
+
+def norm_window(w) -> str:
+    """API / Mini App value -> '3d' | '1w' | '2w' | '' (unknown)."""
+    s = str(w or "").strip().lower().replace(" ", "")
+    if s in WINDOWS:
+        return s
+    k, _ = parse_window(str(w or ""))
+    return k or {"72h": "3d", "168h": "1w", "336h": "2w", "week": "1w", "7d": "1w", "14d": "2w"}.get(s, "")
+
+
+def parse_request(text: str, n: int | None = None, lo: float | None = None, hi: float | None = None,
+                  win: str | None = None) -> Request:
+    """'/anyteam 8 1.2-1.3 nigeria egypt today' -> Request. Numbers given as arguments win over the text.
+    Window words: "week" / "1 week" / "7 days" -> 1w, "2 weeks" / "14 days" / "fortnight" -> 2w, "3 days" -> 3d."""
     t = " " + (text or "").lower().replace("\u2013", "-").replace("\u2014", "-").replace(",", " , ") + " "
     r = Request(competitions=[])
     r.refresh = bool(re.search(r"\b(refresh|new\s+(picks|code|games|matches)|another|different)\b", t))
@@ -146,9 +189,16 @@ def parse_request(text: str, n: int | None = None, lo: float | None = None, hi: 
         if m2:
             r.hi, r.odds_given = float(m2.group(1)), True
             t = t.replace(m2.group(0), " ")
+    wk, t = parse_window(t)
+    if win is not None and norm_window(win):
+        wk = norm_window(win)
+    if wk:
+        r.win, r.win_given, r.hours = wk, True, WINDOWS[wk]
     mh = re.search(r"\b(?:next\s+)?(\d{1,3})\s*(?:h|hrs?|hours?)\b", t)
     if mh:
-        r.hours = max(1, min(168, int(mh.group(1))))
+        if not r.win_given:
+            r.hours = max(1, min(WINDOWS["2w"], int(mh.group(1))))
+            r.win = next((k for k, v in WINDOWS.items() if v == r.hours), "")
         t = t[:mh.start()] + " " + t[mh.end():]
     for d in ("today", "tomorrow", "weekend"):
         if re.search(rf"\b{d}\b", t):
@@ -233,7 +283,7 @@ def window(req: Request, now: datetime | None = None) -> dict:
         label = "this weekend"
     else:
         end = loc + timedelta(hours=req.hours)
-        label = f"next {req.hours} h"
+        label = WINDOW_TEXT.get(req.win) if WINDOWS.get(req.win) == req.hours else f"next {req.hours} h"
     key = (req.day or f"{req.hours}h") + ":" + loc.strftime("%Y-%m-%d")
     return {"start": now, "end": end.astimezone(timezone.utc), "label": label, "key": key}
 
@@ -283,6 +333,25 @@ def scope_events(events: list, req: Request, now: datetime, win: dict) -> tuple[
     if req.named or inc:
         return "filter", [e for e in evs if in_filter(e, req, inc)], info
     national = [e for e in evs if is_national(e, req.youth, req.women)]
+    if req.scope == "auto" and req.multi_day:
+        # week windows: per WAT day, national teams when >= 4 senior national-team matches are on, else top leagues
+        by_day: dict = {}
+        for e in national:
+            by_day.setdefault(e.start.astimezone(TZ).date(), []).append(e)
+        nat_days = {d for d, xs in by_day.items() if len(xs) >= AUTO_NATIONAL_MIN}
+        out, used = [], set()
+        for e in evs:
+            d = e.start.astimezone(TZ).date()
+            if d in nat_days:
+                if is_national(e, req.youth, req.women):
+                    out.append(e)
+                    used.add("national")
+            elif leagues.is_top(e):
+                out.append(e)
+                used.add("top")
+        info["national_days"] = sorted(x.isoformat() for x in nat_days)
+        sc = "mixed" if len(used) == 2 else (used.pop() if used else ("national" if nat_days else "top"))
+        return sc, out, info
     if req.scope == "all":
         return "all", [e for e in evs if req.women or not _WOMEN.search(f"{e.league} {e.home} {e.away}")], info
     if req.scope == "national" or (req.scope == "auto" and len(national) >= AUTO_NATIONAL_MIN):
@@ -290,7 +359,8 @@ def scope_events(events: list, req: Request, now: datetime, win: dict) -> tuple[
     return "top", [e for e in evs if leagues.is_top(e)], info
 
 
-SCOPE_TEXT = {"national": "national teams", "top": "top leagues", "all": "all leagues"}
+SCOPE_TEXT = {"national": "national teams", "top": "top leagues", "all": "all leagues",
+              "mixed": "national teams on international days, top leagues on the others"}
 
 
 def scope_label(scope: str, info: dict) -> str:
@@ -393,6 +463,21 @@ def _product(legs: list[dict], key: str) -> float:
 
 
 # ------------------------------------------------------------------ finder
+def list_p(e) -> float | None:
+    """P(either team scores 2+) from the list's 1X2 + O/U 2.5 (Poisson), or None without those prices."""
+    from draw5 import devig
+    from scanner import fit_lambdas
+    p = devig([e.odds("1", k) for k in ("1", "2", "3")])
+    if not p:
+        return None
+    t = {"h": p[0], "d": p[1], "a": p[2]}
+    q = devig([e.odds("18", "12", "total=2.5"), e.odds("18", "13", "total=2.5")])
+    if q:
+        t["o"] = q[0]
+    lam = fit_lambdas(t)
+    return p_any_team_2plus(*lam) if lam else None
+
+
 def list_prefilter(e, hi: float) -> bool:
     """Cheap pre-check from the list's 1X2 + O/U 2.5 (no extra request): keep the match when a Poisson fit says an
     Any Team Over 1.5 Yes at odds <= hi is plausible (loose margin: 0.15 below the price's implied chance). Matches
@@ -421,12 +506,13 @@ class AnyTeamFinder:
         self.last_source = ""
         self._cache: dict[str, tuple[float, dict]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._details: dict[str, tuple[float, dict]] = {}
 
     async def find(self, req: Request, fresh: bool = False, now: datetime | None = None) -> dict:
         """Every qualifying Yes leg in scope, ranked: {scope, scope_label, window, pool, offered, checked, ...}."""
         now = (now or _now()).astimezone(timezone.utc)
         win = window(req, now)
-        key = repr((win["key"], req.lo, req.hi, req.scope, req.youth, req.women, req.team_text.strip(),
+        key = repr((win["key"], req.hours, req.lo, req.hi, req.scope, req.youth, req.women, req.team_text.strip(),
                     tuple(c[0] for c in req.competitions or [])))
         hit = self._cache.get(key)
         if hit and not fresh and time.time() - hit[0] < RESULT_TTL:
@@ -445,8 +531,8 @@ class AnyTeamFinder:
 
     async def _find(self, req: Request, win: dict, now: datetime) -> dict:
         t0 = time.time()
-        hours = min(200, max(24, math.ceil((win["end"] - now).total_seconds() / 3600) + 2))
-        hours = next((h for h in (24, 48, 72, 168, 200) if h >= hours), 200)
+        hours = min(340, max(24, math.ceil((win["end"] - now).total_seconds() / 3600) + 2))
+        hours = next((h for h in (24, 48, 72, 168, 200, 340) if h >= hours), 340)
         events = None
         if self.lister is not None:
             try:
@@ -461,12 +547,26 @@ class AnyTeamFinder:
         scope, cands, info = scope_events(events, req, now, win)
         n_scope = len(cands)
         cands = [e for e in cands if list_prefilter(e, req.hi)]
-        cands = sorted(cands, key=lambda e: e.start)[:MAX_DETAILS]
+        n_pre = len(cands)
+        if req.multi_day and len(cands) > MAX_DETAILS_LONG:
+            # bounded reads over a week: the likeliest by the list's Poisson check (no price -> neutral 1/hi)
+            cands = sorted(cands, key=lambda e: -(list_p(e) if list_p(e) is not None else 1 / req.hi))
+            cands = cands[:MAX_DETAILS_LONG]
+        cands = sorted(cands, key=lambda e: e.start)[:MAX_DETAILS_LONG if req.multi_day else MAX_DETAILS]
         sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+        cache_hits = 0
 
         async def one(e):
+            nonlocal cache_hits
+            hit = self._details.get(e.event_id)
+            if hit and time.time() - hit[0] < DETAIL_TTL:
+                cache_hits += 1
+                return e, hit[1]
             async with sem:
-                return e, await self.bm._event_raw(e.event_id)
+                raw = await self.bm._event_raw(e.event_id)
+            if raw is not None:
+                self._details[e.event_id] = (time.time(), raw)
+            return e, raw
 
         rows = await asyncio.gather(*(one(e) for e in cands))
         pool, counts = [], {"offered": 0, "closed": 0, "out_of_range": 0, "no_answer": 0, "not_open": 0}
@@ -490,9 +590,16 @@ class AnyTeamFinder:
         pool = rank(pool)
         for i, l in enumerate(pool, 1):
             l["rank"] = i
+        if len(self._details) > 1500:
+            cut = time.time() - DETAIL_TTL
+            self._details = {k: v for k, v in self._details.items() if v[0] >= cut}
+        kos = sorted(l["kickoff"] for l in pool)
         return {"scope": scope, "scope_label": scope_label(scope, info), "filter": info,
                 "window_label": win["label"], "window_key": f"{scope}|{win['key']}|{scope_label(scope, info)}",
                 "window_start": win["start"].isoformat(), "window_end": win["end"].isoformat(),
+                "window": req.win or f"{req.hours}h", "window_hours": req.hours,
+                "pool_first_kickoff": kos[0] if kos else None, "pool_last_kickoff": kos[-1] if kos else None,
+                "national_days": info.get("national_days"), "prefiltered": n_pre, "detail_cache_hits": cache_hits,
                 "lo": req.lo, "hi": req.hi, "matches_in_scope": n_scope, "checked": len(rows),
                 "list_source": self.last_source,
                 "qualifying": len(pool), **counts, "pool": pool, "bookmaker": BOOKMAKER_LABEL,
@@ -518,22 +625,23 @@ def _used_store(services):
     return st
 
 
-def rules_text(req: Request, n: int, scope_lbl: str) -> str:
-    return f"{LABEL} (Yes), {n} legs, odds {req.lo:.2f}-{req.hi:.2f}, {scope_lbl}"
+def rules_text(req: Request, n: int, scope_lbl: str, win_lbl: str = "") -> str:
+    return f"{LABEL} (Yes), {n} legs, odds {req.lo:.2f}-{req.hi:.2f}, {scope_lbl}" + (f", {win_lbl}" if win_lbl else "")
 
 
 async def build(services, owner, text: str = "", refresh: bool = False, book: bool = True, test: bool = False,
-                fresh: bool = False, n: int | None = None, lo: float | None = None, hi: float | None = None) -> dict:
+                fresh: bool = False, n: int | None = None, lo: float | None = None, hi: float | None = None,
+                win: str | None = None) -> dict:
     """Returns {status, rules, message, code?, url?, legs, n, requested, total_odds, est_prob, first_kickoff_local,
     history_id?, scope, ...}. status: booked | listed | none | exhausted | error."""
-    req = parse_request(text, n, lo, hi)
+    req = parse_request(text, n, lo, hi, win)
     refresh = refresh or req.refresh
     finder = getattr(services, "anyteam", None)
     if finder is None:
         finder = AnyTeamFinder(services.footballcom, lister=getattr(services, "bookmaker", None))
     base = {"status": "error", "legs": [], "n": 0, "requested": req.n, "code": None, "url": None, "total_odds": 0,
             "est_prob": 0, "history_id": None, "refresh": refresh, "bookmaker": BOOKMAKER_LABEL, "text": text,
-            "lo": req.lo, "hi": req.hi}
+            "lo": req.lo, "hi": req.hi, "window": req.win or f"{req.hours}h"}
     try:
         res = await finder.find(req, fresh=fresh)
     except Exception as exc:
@@ -541,8 +649,11 @@ async def build(services, owner, text: str = "", refresh: bool = False, book: bo
         return {**base, "rules": "", "message": "football.com didn't answer the Any Team Over 1.5 search. "
                                                 "Tap Try again in a minute."}
     scope_lbl = res["scope_label"]
+    wl = res["window_label"]
     base.update(scope=res["scope"], scope_label=scope_lbl, window_label=res["window_label"],
-                qualifying=res["qualifying"], offered=res["offered"], matches_in_scope=res["matches_in_scope"])
+                qualifying=res["qualifying"], offered=res["offered"], matches_in_scope=res["matches_in_scope"],
+                checked=res["checked"], window_start=res.get("window_start"), window_end=res.get("window_end"),
+                pool_first_kickoff=res.get("pool_first_kickoff"), pool_last_kickoff=res.get("pool_last_kickoff"))
     store = _used_store(services)
     wkey = res["window_key"]
     used = {} if test else await store.load(owner, "anyteam", wkey)
@@ -555,10 +666,10 @@ async def build(services, owner, text: str = "", refresh: bool = False, book: bo
         msg = (f"No {what} match in the {res['window_label']} has football.com's Any Team Over 1.5 Yes at odds "
                f"{req.lo:.2f}-{req.hi:.2f} right now ({res['matches_in_scope']} matches in scope, "
                f"{res['offered']} of the {res['checked']} read offer the market).")
-        return {**base, "status": "none", "rules": rules_text(req, 0, scope_lbl), "message": msg}
+        return {**base, "status": "none", "rules": rules_text(req, 0, scope_lbl, wl), "message": msg}
     legs = choose(res["pool"], req.n, used if refresh else None)
     if not legs:
-        return {**base, "status": "exhausted", "rules": rules_text(req, 0, scope_lbl),
+        return {**base, "status": "exhausted", "rules": rules_text(req, 0, scope_lbl, wl),
                 "message": (f"No new matches left: all {res['qualifying']} qualifying {scope_lbl} matches in the "
                             f"{res['window_label']} were already in your earlier Any Team codes.")}
     if not book:
@@ -584,7 +695,7 @@ async def build(services, owner, text: str = "", refresh: bool = False, book: bo
                 if not legs:
                     break
     if not code:
-        return {**base, "rules": rules_text(req, len(legs), scope_lbl),
+        return {**base, "rules": rules_text(req, len(legs), scope_lbl, wl),
                 "message": f"football.com didn't create the code: {err or 'the market closed while booking'}. "
                            "Tap Try again."}
     out = _summary(base, req, legs, scope_lbl, res, refresh)
@@ -608,6 +719,7 @@ async def build(services, owner, text: str = "", refresh: bool = False, book: bo
 def _summary(base: dict, req: Request, legs: list[dict], scope_lbl: str, res: dict, refresh: bool) -> dict:
     n = len(legs)
     first = min(datetime.fromisoformat(l["kickoff"]) for l in legs)
+    last = max(datetime.fromisoformat(l["kickoff"]) for l in legs)
     short = ""
     if n < req.n:
         short = (f"Only {n} {scope_lbl if res['scope'] == 'filter' else SCOPE_TEXT.get(res['scope'], '')} "
@@ -616,13 +728,21 @@ def _summary(base: dict, req: Request, legs: list[dict], scope_lbl: str, res: di
                  + f"have Any Team Over 1.5 Yes at {req.lo:.2f}-{req.hi:.2f}, so this code has {n}, not {req.n}.")
     return {**base, "legs": legs, "n": n, "total_odds": round(_product(legs, "odds"), 2),
             "est_prob": round(_product(legs, "est"), 4), "first_kickoff": first.isoformat(),
-            "first_kickoff_local": fmt_local(first), "rules": rules_text(req, n, scope_lbl), "short_note": short,
+            "first_kickoff_local": fmt_local(first), "last_kickoff": last.isoformat(),
+            "last_kickoff_local": fmt_local(last), "window_label": res["window_label"],
+            "window_start": res.get("window_start"), "window_end": res.get("window_end"),
+            "rules": rules_text(req, n, scope_lbl, res["window_label"]), "short_note": short,
             "message": short, "label": LABEL}
 
 
 # ------------------------------------------------------------------ output (no emojis anywhere)
 def _e(s) -> str:
     return html.escape(str(s or ""), quote=False)
+
+
+def by_kickoff(legs: list[dict]) -> list[dict]:
+    """Legs in kickoff order (the reply lists them by date; the booked selection set is the same)."""
+    return sorted(legs, key=lambda l: (l.get("kickoff") or "", l.get("home") or ""))
 
 
 def leg_line(i: int, l: dict) -> str:
@@ -643,14 +763,15 @@ def code_html(out: dict) -> str:
         rows.append("<b>Picks only (nothing booked)</b>")
     rows += [f"Total odds <b>{out['total_odds']:,.2f}</b>",
              f"First kickoff: {_e(out['first_kickoff_local'])} WAT",
-             f"Combined estimated chance: {out['est_prob']:.1%}", ""]
-    rows += [_e(leg_line(i, l)) for i, l in enumerate(out.get("legs") or [], 1)]
+             f"Last kickoff: {_e(out.get('last_kickoff_local') or out['first_kickoff_local'])} WAT",
+             f"Combined estimated chance: {out['est_prob']:.1%} (estimates, not guarantees)", ""]
+    rows += [_e(leg_line(i, l)) for i, l in enumerate(by_kickoff(out.get("legs") or []), 1)]
     if out.get("short_note"):
         rows += ["", f"Note: {_e(out['short_note'])}"]
     if st == "booked" and out.get("unavailable"):
         rows.append(f"Note: football.com shows {out['unavailable']} of the legs as unavailable now.")
     tail = "Saved to History. " if out.get("history_id") else ""
-    rows.append(f"<i>{tail}Estimates, not guarantees. 18+.</i>")
+    rows.append(f"<i>{tail}18+.</i>")
     return "\n".join(rows)
 
 

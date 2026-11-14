@@ -705,7 +705,7 @@ class MiniApp:
 
     async def anyteam(self, request: web.Request) -> web.Response:
         """football.com Any Team Over 1.5 (anyteam.py): {"text": "league / team words", "legs": 10, "min_odds": 1.15,
-        "max_odds": 1.35, "refresh": bool}. Default: books ONE football.com code and saves it to History (bookmaker
+        "max_odds": 1.35, "window": "3d" | "1w" | "2w", "refresh": bool}. Default: books ONE football.com code and saves it to History (bookmaker
         football.com). {"list": true} = the picks that would be booked plus the whole ranked pool, nothing booked.
         Admin only: {"test": true} books a TEST record (deletable via /api/admin/delete_test, not counted for Refresh)."""
         import anyteam as at
@@ -722,7 +722,7 @@ class MiniApp:
             out = await at.build(self.s, int(user.get("id") or 0), str(data.get("text") or "")[:300],
                                  refresh=bool(data.get("refresh")), book=not data.get("list"), test=test,
                                  fresh=bool(data.get("fresh")), n=num("legs", int), lo=num("min_odds"),
-                                 hi=num("max_odds"))
+                                 hi=num("max_odds"), win=str(data.get("window") or "") or None)
         except Exception as exc:
             log.warning("anyteam failed: %s", exc, exc_info=True)
             return web.json_response({"error": "The Any Team Over 1.5 search failed (football.com didn't answer). "

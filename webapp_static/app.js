@@ -51,7 +51,7 @@
     ex: (() => { try { return JSON.parse(localStorage.getItem("fra_ex") || "[]"); } catch (e) { return []; } })(),
     homeMode: (() => { try { const v = localStorage.getItem("fra_home"); return v === "draw5" || v === "anyteam" ? v : "scan"; } catch (e) { return "scan"; } })(),
     d5Period: "weekend", d5: {}, d5Busy: false, d5Err: "", d5Show: 0,
-    at: null, atBusy: false, atErr: "", atLegs: 10, atLo: "1.15", atHi: "1.35", atText: "",
+    at: null, atBusy: false, atErr: "", atWin: "3d", atLegs: 10, atLo: "1.15", atHi: "1.35", atText: "",
   };
   const EXCL = [["under", "No unders"], ["corners", "No corners"], ["cards", "No cards"], ["player_props", "No player props"], ["handicap", "No handicaps"], ["combo", "No combos"]];
 
@@ -311,29 +311,32 @@
     if (state.tab === "home") renderHome();
   }
   // ---------------------------------------------------------------- ANY TEAM OVER 1.5 on football.com (/api/anyteam)
+  const ATW = [["3d", "3 days"], ["1w", "1 week"], ["2w", "2 weeks"]];
   function renderAnyTeam() {
     const r = state.at;
     let h = homeSwitch() + `<div style="margin:4px 2px 12px"><div class="label">football.com</div><h1>Any Team Over 1.5</h1>
-      <div class="sub">One football.com code · Yes only · one leg per match · national teams when they play, else top leagues · next 72 h</div></div>
-      <div class="card"><div class="target"><div class="field"><span>Legs</span><input id="atLegs" inputmode="numeric" value="${esc(state.atLegs)}" autocomplete="off"></div>
+      <div class="sub">One football.com code · Yes only · one leg per match · national teams when they play, else top leagues</div></div>
+      <div class="card"><div class="seg" role="radiogroup" aria-label="Window" style="margin-bottom:10px">${ATW.map(([k, v]) => `<button data-act="atwin" data-w="${k}" role="radio" aria-checked="${state.atWin === k}" class="${state.atWin === k ? "on" : ""}">${v}</button>`).join("")}</div>
+      <div class="target"><div class="field"><span>Legs</span><input id="atLegs" inputmode="numeric" value="${esc(state.atLegs)}" autocomplete="off"></div>
       <div class="field"><span>Min odds</span><input id="atLo" inputmode="decimal" value="${esc(state.atLo)}" autocomplete="off"></div>
       <div class="field"><span>Max odds</span><input id="atHi" inputmode="decimal" value="${esc(state.atHi)}" autocomplete="off"></div></div>
       <div class="field" style="margin-top:8px"><span>Leagues / teams (optional)</span><input id="atText" value="${esc(state.atText)}" placeholder="e.g. nigeria egypt, afcon qualifiers, premier league" autocomplete="off"></div>
       <button class="btn" data-act="atrun" ${state.atBusy ? "disabled" : ""} style="margin-top:10px">${state.atBusy ? "Booking…" : "Get the code"}</button>
       ${r && r.status === "booked" ? `<button class="btn secondary" data-act="atrefresh" ${state.atBusy ? "disabled" : ""}>${IC.refresh}Refresh (new picks)</button>` : ""}</div>`;
-    if (state.atBusy) h += `<div class="card"><div class="scanning"><div class="radar"></div>Reading football.com…<div class="steps">matches → Any Team Over 1.5 prices → one code</div></div></div>`;
+    if (state.atBusy) h += `<div class="card"><div class="scanning"><div class="radar"></div>Reading football.com…<div class="steps">${state.atWin === "3d" ? "" : "up to ~1 min for a week window · "}matches → Any Team Over 1.5 prices → one code</div></div></div>`;
     else if (state.atErr) h += `<div class="error">${esc(state.atErr)}</div>`;
     else if (r && r.status !== "booked") h += `<div class="card">${r.rules ? `<div class="rules rulesline"><b>Rules:</b> ${esc(r.rules)}</div>` : ""}<div class="note">${esc(r.message || "No code this time.")}</div></div>`;
     else if (r) {
       h += `<div class="card port"><div class="rules rulesline"><b>Rules:</b> ${esc(r.rules)}</div>
         <div class="label" style="text-align:center">football.com code</div>
         <div class="code" id="codeText">${esc(r.code)}</div>
-        <div class="sub" style="text-align:center">Total odds ${f2(r.total_odds)} · first kickoff ${esc(r.first_kickoff_local)} WAT · est ${pct(r.est_prob, 1)}</div>
+        <div class="sub" style="text-align:center">Total odds ${f2(r.total_odds)} · est ${pct(r.est_prob, 1)}</div>
+        <div class="sub" style="text-align:center">First kickoff ${esc(r.first_kickoff_local)} WAT · last ${esc(r.last_kickoff_local || r.first_kickoff_local)} WAT</div>
         ${r.short_note ? `<div class="note">${esc(r.short_note)}</div>` : ""}
         <div class="btnrow"><button class="btn" data-act="copycode">Copy code</button><button class="btn secondary" data-act="opencode" data-c="${esc(r.code)}" data-bm="footballcom">${IC.open}Open in football.com</button></div>
         <div class="btnrow">${imgBtn(r.history_id ? { history_id: r.history_id } : { code: r.code })}</div>
         <div class="sub" style="text-align:center;margin-top:6px">${r.history_id ? "Saved to History" : ""}</div></div>
-        <div class="card flush">${(r.legs || []).map((l, i) => `<div class="leg"><div class="lg-meta">${flag(l)}<span class="ellip">${esc(leagueShort(l.league))}</span><span class="dot">·</span><span class="num">${esc(kickDay(l.kickoff))} ${esc(kickTime(l.kickoff))}</span></div>
+        <div class="card flush">${(r.legs || []).slice().sort((a, b) => String(a.kickoff).localeCompare(String(b.kickoff))).map((l, i) => `<div class="leg"><div class="lg-meta">${flag(l)}<span class="ellip">${esc(leagueShort(l.league))}</span><span class="dot">·</span><span class="num">${esc(kickDay(l.kickoff))} ${esc(kickTime(l.kickoff))}</span></div>
           <div class="top"><span class="d5rank num">${i + 1}</span>${teamsBlock(l, "grow")}<span class="num">${f2(l.odds)}</span></div>
           <div class="mkt"><span class="ellip">Any Team Over 1.5</span> <span class="pick">Yes</span> <span class="sub">· est ${pct(l.est, 1)}</span></div></div>`).join("")}</div>`;
     }
@@ -344,7 +347,7 @@
     const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
     state.atLegs = v("atLegs") || state.atLegs; state.atLo = v("atLo") || state.atLo; state.atHi = v("atHi") || state.atHi; state.atText = v("atText");
     state.atBusy = true; state.atErr = ""; hap("medium"); if (state.tab === "home") renderHome();
-    try { state.at = await api("/api/anyteam", { legs: Number(state.atLegs) || 10, min_odds: Number(state.atLo) || 1.15, max_odds: Number(state.atHi) || 1.35, text: state.atText, refresh: !!refresh }); hapN(state.at.status === "booked" ? "success" : "warning"); if (state.at.status === "booked") { state.hist = null; store.set("hist", null); } }
+    try { state.at = await api("/api/anyteam", { legs: Number(state.atLegs) || 10, min_odds: Number(state.atLo) || 1.15, max_odds: Number(state.atHi) || 1.35, text: state.atText, window: state.atWin, refresh: !!refresh }); hapN(state.at.status === "booked" ? "success" : "warning"); if (state.at.status === "booked") { state.hist = null; store.set("hist", null); } }
     catch (e) { state.atErr = e.message; hapN("error"); }
     state.atBusy = false;
     if (state.tab === "home") renderHome();
@@ -1211,6 +1214,7 @@
     else if (a === "homemode") { state.homeMode = t.dataset.m; try { localStorage.setItem("fra_home", state.homeMode); } catch (e) {} hapSel(); renderHome(); window.scrollTo(0, 0); }
     else if (a === "d5period") { state.d5Period = t.dataset.p; state.d5Err = ""; state.d5Show = 0; hapSel(); if (!state.d5[state.d5Period]) runDraw5(); else renderHome(); }
     else if (a === "d5run") { const r = state.d5[state.d5Period]; runDraw5(!!(r && r.status === "booked")); }
+    else if (a === "atwin") { const v = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : null; }; ["atLegs", "atLo", "atHi", "atText"].forEach((k) => { const x = v(k); if (x !== null) state[k] = x; }); state.atWin = t.dataset.w; state.at = null; state.atErr = ""; hapSel(); renderHome(); }
     else if (a === "atrun") runAnyTeam(false);
     else if (a === "atrefresh") runAnyTeam(true);
     else if (a === "d5more") { state.d5Show = state.d5Show > 0 ? 0 : 1; renderHome(); }

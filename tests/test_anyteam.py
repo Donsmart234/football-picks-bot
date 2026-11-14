@@ -263,7 +263,7 @@ def test_filters():
                                                                      for l in out["legs"]),
           "top leagues only (6), lower league not used to pad")
     check("Only 6" in out["short_note"] and "not 10" in out["short_note"], "fewer than asked said plainly")
-    check(out["rules"].endswith("top leagues"), "rules say top leagues")
+    check(out["rules"].endswith("top leagues, next 3 days"), f"rules say top leagues + window ({out['rules']})")
     out = asyncio.run(anyteam.build(svc2, TEST_CHAT, "all leagues", book=False))
     check(out["scope"] == "all" and len(out["legs"]) == 10, "all leagues lifts the scope")
 
@@ -320,11 +320,15 @@ def test_booking_flow():
     check(abs(out["total_odds"] - round(anyteam._product(out["legs"], "odds"), 2)) < 1e-9, "total odds = product")
     body = anyteam.code_html(out)
     lines = anyteam.code_plain(out).split("\n")
-    check(lines[0] == "Rules: Any Team Over 1.5 (Yes), 10 legs, odds 1.15-1.35, national teams", f"first line ({lines[0]})")
+    check(lines[0] == "Rules: Any Team Over 1.5 (Yes), 10 legs, odds 1.15-1.35, national teams, next 3 days",
+          f"first line ({lines[0]})")
     check("football.com code: FCT001" in lines, "code line says football.com")
     check(any(l.startswith("Total odds ") for l in lines) and any(l.startswith("First kickoff: ") and l.endswith(" WAT")
                                                                    for l in lines)
-          and any(l.startswith("Combined estimated chance: ") for l in lines), "total odds, first kickoff WAT, chance")
+          and any(l.startswith("Combined estimated chance: ") and l.endswith("(estimates, not guarantees)")
+                  for l in lines)
+          and any(l.startswith("Last kickoff: ") and l.endswith(" WAT") for l in lines),
+          "total odds, first + last kickoff WAT, chance (estimates, not guarantees)")
     legl = [l for l in lines if re.match(r"^\d+\. ", l)]
     check(len(legl) == 10 and all(re.match(r"^\d+\. .+ v .+ @\d\.\d\d, \w{3} \d\d \w{3} \d\d:\d\d WAT$", l) for l in legl),
           f"legs: Home v Away @odds, kickoff WAT ({legl[0] if legl else ''})")
@@ -517,7 +521,252 @@ def test_no_emoji_source():
         check(not EMOJI.search(txt), f"{f}: no emoji")
 
 
+# ---------------------------------------------------------------- window option (3 days / 1 week / 2 weeks)
+def test_window_parse():
+    print("window parsing (3 days / 1 week / 2 weeks)")
+    P = anyteam.parse_request
+    r = P("")
+    check((r.win, r.hours) == ("3d", 72), "default window 3d = 72 h")
+    cases = [("week", "1w"), ("1 week", "1w"), ("7 days", "1w"), ("any team over 1.5 for the week", "1w"),
+             ("anyteam this week", "1w"), ("one week", "1w"), ("2 weeks", "2w"), ("14 days", "2w"),
+             ("fortnight", "2w"), ("any team over 1.5 for 2 weeks", "2w"), ("two weeks", "2w"),
+             ("any team over 1.5 for a fortnight", "2w"), ("3 days", "3d"), ("any team over 1.5 next 3 days", "3d")]
+    for t, want in cases:
+        r = P(t)
+        check(r.win == want and r.hours == anyteam.WINDOWS[want] and r.n == 10 and not r.n_given,
+              f"{t!r} -> {want}, legs stay 10 ({r.win}, {r.hours} h, {r.n})")
+    r = P("anyteam 15 2 weeks")
+    check((r.win, r.n) == ("2w", 15), f"'15 2 weeks' -> 2w, 15 legs ({r.win}, {r.n})")
+    r = P("any team over 1.5 20 legs for the week 1.2-1.3")
+    check((r.win, r.n, r.lo, r.hi) == ("1w", 20, 1.2, 1.3), "'20 legs for the week 1.2-1.3'")
+    r = P("anyteam 60 fortnight")
+    check(r.win == "2w" and r.n == anyteam.MAX_LEGS, "legs capped at 50 in a 2-week window")
+    for t in ("any team over 1.5 weekend", "any team over 1.5 midweek"):
+        r = P(t)
+        check(r.win == "3d" and not r.win_given, f"{t!r} is not a week window")
+    check(P("any team over 1.5 weekend").day == "weekend", "weekend still the weekend day filter")
+    r = P("48h")
+    check(r.hours == 48 and r.win == "", "custom hours kept (48 h)")
+    r = P("", win="2w")
+    check((r.win, r.hours) == ("2w", 336), "API window '2w'")
+    r = P("for the week", win="3d")
+    check(r.win == "3d", "API window wins over the text")
+    for v, want in (("1w", "1w"), ("2W", "2w"), ("3d", "3d"), ("1 week", "1w"), ("2 weeks", "2w"), ("bogus", ""),
+                    ("", "")):
+        check(anyteam.norm_window(v) == want, f"norm_window({v!r}) == {want!r}")
+    check(anyteam.wants_anyteam("any team over 1.5 for the week") and anyteam.wants_anyteam("any team over 1.5 for 2 weeks"),
+          "chat phrases with a window still route to the builder")
+    now = NOW
+    w1 = anyteam.window(P("week"), now)
+    w2 = anyteam.window(P("2 weeks"), now)
+    check(abs((w1["end"] - now).total_seconds() - 7 * 86400) < 2 and w1["label"] == "next 7 days", "1w = now + 7 days")
+    check(abs((w2["end"] - now).total_seconds() - 14 * 86400) < 2 and w2["label"] == "next 14 days", "2w = now + 14 days")
+    check(anyteam.window(P(""), now)["label"] == "next 3 days" and w1["key"] != w2["key"], "labels / used-id keys per window")
+
+
+def window_world():
+    """International break then league weekends: national teams on day 0-1 (5 a day, plus one EPL match on day 0),
+    EPL + a lower league on day 5, EPL on day 11, EPL on day 15 (outside 2 weeks)."""
+    tz = anyteam.TZ
+    d0 = (NOW.astimezone(tz) + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    evs, det, i = [], {}, 0
+
+    def add(day, hour, cat, tour, home, away, yes=1.2):
+        nonlocal i
+        e = mk_event(200 + i, cat=cat, tour=tour, home=home, away=away,
+                     start=(d0 + timedelta(days=day, hours=hour)).astimezone(timezone.utc))
+        i += 1
+        evs.append(e)
+        det[e.event_id] = raw_detail(e.event_id, yes=yes, no=4.5)
+        return e
+    nat = ("sr:tournament:11", "World Cup Qualification")
+    epl = ("sr:tournament:17", "Premier League")
+    for day in (0, 1):
+        for k in range(5):
+            add(day, 13 + k, INTL, nat, f"Nat{day}{k}", f"Opp{day}{k}", yes=1.18 + 0.01 * k)
+    add(0, 15, ENG, epl, "Spurs", "Fulham")                                   # club game on a national day
+    for k in range(3):
+        add(5, 13 + k, ENG, epl, f"Epl5{k}", f"Eplb5{k}", yes=1.22)
+    add(5, 16, ENG, ("sr:tournament:173", "National League"), "Low5", "Lowb5")   # not a top league
+    for k in range(3):
+        add(11, 14 + k, ENG, epl, f"Epl11{k}", f"Eplb11{k}", yes=1.24)
+    add(15, 15, ENG, epl, "Late", "Later")                                    # beyond 14 days
+    return evs, det, d0
+
+
+def test_window_filter():
+    print("candidates filtered by window")
+    evs, det, d0 = window_world()
+    svc, fc = make_svc(evs, det)
+    homes = lambda out: {l["home"] for l in out["pool"]}    # noqa: E731
+    o3 = asyncio.run(anyteam.build(svc, TEST_CHAT, "", book=False))
+    check(o3["scope"] == "national" and homes(o3) == {f"Nat{d}{k}" for d in (0, 1) for k in range(5)},
+          f"3 days: national teams only, whole-window rule unchanged ({sorted(homes(o3))})")
+    o1 = asyncio.run(anyteam.build(svc, TEST_CHAT, "any team over 1.5 for the week", book=False))
+    want1 = {f"Nat{d}{k}" for d in (0, 1) for k in range(5)} | {f"Epl5{k}" for k in range(3)}
+    check(homes(o1) == want1, f"1 week: national days + top leagues on day 5, no lower league, nothing past 7 days "
+                              f"({sorted(homes(o1) ^ want1)})")
+    check(o1["scope"] == "mixed" and o1["n"] == 10 and o1["requested"] == 10, "1 week: mixed scope, default 10 legs")
+    check("Spurs" not in homes(o1), "club match on an international day not used in auto scope")
+    o2 = asyncio.run(anyteam.build(svc, TEST_CHAT, "", book=False, win="2w", n=50))
+    want2 = want1 | {f"Epl11{k}" for k in range(3)}
+    check(homes(o2) == want2 and "Late" not in homes(o2), "2 weeks: adds day 11, not day 15")
+    check(o2["n"] == len(want2) and "so this code has 16, not 50" in o2["short_note"],
+          f"fewer than asked: books what exists and says the count ({o2['short_note']})")
+    check(o2["rules"] == "Any Team Over 1.5 (Yes), 16 legs, odds 1.15-1.35, national teams on international days, "
+                         "top leagues on the others, next 14 days", f"rules include the window ({o2['rules']})")
+    first = min(l["kickoff"] for l in o2["legs"])
+    last = max(l["kickoff"] for l in o2["legs"])
+    check(o2["first_kickoff"] == first and o2["last_kickoff"] == last
+          and o2["last_kickoff_local"] == anyteam.fmt_local(datetime.fromisoformat(last)), "first + last kickoff")
+    o2n = asyncio.run(anyteam.build(svc, TEST_CHAT, "national teams 2 weeks", book=False))
+    check(o2n["scope"] == "national" and all(h.startswith("Nat") for h in homes(o2n)), "explicit national scope kept")
+    o2t = asyncio.run(anyteam.build(svc, TEST_CHAT, "top leagues 2 weeks", book=False))
+    check(o2t["scope"] == "top" and "Spurs" in homes(o2t) and "Low5" not in homes(o2t) and "Late" not in homes(o2t),
+          "explicit top leagues over 2 weeks (allowlist as before)")
+
+    print("reply format for a week window")
+    lines = anyteam.code_plain(o2).split("\n")
+    check(lines[0].startswith("Rules: ") and lines[0].endswith("next 14 days"), "first line Rules: ... window")
+    check(any(l.startswith("First kickoff: ") for l in lines) and any(l.startswith("Last kickoff: ") for l in lines),
+          "first and last kickoff lines (WAT)")
+    legl = [l for l in lines if re.match(r"^\d+\. ", l)]
+    kos = [datetime.strptime(re.search(r", (\w{3} \d\d \w{3} \d\d:\d\d) WAT$", l).group(1) + f" {d0.year}",
+                             "%a %d %b %H:%M %Y") for l in legl]
+    check(len(legl) == 16 and kos == sorted(kos), "legs listed in kickoff order with the date")
+    check(any("Note: Only 16" in l for l in lines), "count note in the reply")
+    body = anyteam.code_html(o2)
+    check(not EMOJI.search(body) and tg_check(body) is True, "no emoji, valid Telegram HTML")
+
+    print("bounded reads: details cached across windows")
+    reads0 = fc.reads
+    asyncio.run(anyteam.build(svc, TEST_CHAT, "week", book=False, fresh=True))
+    check(fc.reads == reads0, f"1 week again (fresh) re-uses cached details ({fc.reads - reads0} new reads)")
+    old_cap = anyteam.MAX_DETAILS_LONG
+    anyteam.MAX_DETAILS_LONG = 5
+    svc_c, fc_c = make_svc(evs, det)
+    oc = asyncio.run(anyteam.build(svc_c, TEST_CHAT, "2 weeks", book=False))
+    anyteam.MAX_DETAILS_LONG = old_cap
+    check(fc_c.reads == 5 and oc["checked"] == 5, f"week windows read at most MAX_DETAILS_LONG details ({fc_c.reads})")
+
+
+def test_window_refresh_and_api():
+    print("Refresh keeps the window (Telegram) + /api/anyteam window")
+    import handlers
+    import webapp
+    from test_draw5_telegram import TEST_CHAT as CB_CHAT, FakeMsg, make_ctx, run_callback
+    evs, det, _ = window_world()
+    svc, fc = make_svc(evs, det)
+    ctx = make_ctx(svc, args=["5", "2", "weeks"])
+    log = []
+    msg = FakeMsg(log)
+    upd = SimpleNamespace(effective_message=msg, effective_user=SimpleNamespace(id=CB_CHAT),
+                          effective_chat=SimpleNamespace(id=CB_CHAT))
+    asyncio.run(handlers.anyteam_cmd(upd, ctx))
+    st = ctx.application.bot_data["anyteam"]
+    tok = next(iter(st))
+    check(st[tok]["out"]["window_label"] == "next 14 days" and len(fc.booked[-1]) == 5, "/anyteam 5 2 weeks -> 14 days")
+    check(any("(next 14 days)" in str(x[1]) for x in log if x[0] == "reply"), "progress note names the window")
+    run_callback(ctx, f"AT|r|{tok}", msg)
+    tok2 = [k for k in st if k != tok][0]
+    o = st[tok2]["out"]
+    check(o["window_label"] == "next 14 days" and o["rules"].endswith("next 14 days") and o.get("refresh"),
+          "Refresh (new picks) keeps the 2-week window")
+    check(not (set(fc.booked[0]) & set(fc.booked[1])), "Refresh books new matches only")
+
+    class Req(dict):
+        def __init__(self, body):
+            super().__init__(tg_user={"id": TEST_CHAT, "admin": False})
+            self.body = body
+
+        async def json(self):
+            return self.body
+
+    def call(body):
+        wa = webapp.MiniApp.__new__(webapp.MiniApp)
+        wa.s = svc
+        resp = asyncio.run(wa.anyteam(Req(body)))
+        raw = resp.body
+        if resp.headers.get("Content-Encoding") == "gzip":
+            import gzip
+            raw = gzip.decompress(raw)
+        return json.loads(raw)
+    n_booked = len(fc.booked)
+    d1, d2, d3 = call({"list": True, "window": "1w"}), call({"list": True, "window": "2w"}), call({"list": True})
+    check(len(fc.booked) == n_booked, "list mode books nothing")
+    check(d1["window"] == "1w" and d1["window_label"] == "next 7 days" and d1["reply"].split("\n")[0].endswith(
+        "next 7 days"), "API window 1w")
+    check(d2["window"] == "2w" and d2["qualifying"] == 16 and d2["pool_last_kickoff"], "API window 2w: 16 qualify")
+    check(d3["window"] == "3d" and d3["qualifying"] == 10, "API default 3 days")
+    js = open(os.path.join(os.path.dirname(__file__), "..", "webapp_static", "app.js"), encoding="utf-8").read()
+    check('["1w", "1 week"]' in js and '["2w", "2 weeks"]' in js and "window: state.atWin" in js,
+          "Mini App: 3 days / 1 week / 2 weeks selector sent as window")
+
+
+def test_multiday_settlement():
+    print("multi-day code: settles per leg, open until the last match")
+    import tracker as T
+    from settle import MatchResult
+    from storage import Storage
+    st = Storage(os.path.join(tempfile.mkdtemp(), "md.sqlite3"))
+
+    class Svc:
+        storage, bookmaker = st, None
+
+        async def find_event(self, eid):
+            return None
+    tr = T.Tracker(Svc())
+    sent = []
+
+    class Bot:
+        async def send_message(self, chat_id, text, **kw):
+            sent.append((chat_id, text))
+    tr.bot = Bot()
+    tr.owner = lambda: TEST_CHAT          # fake chat, never the owner's
+    base = {"market_id": "60045", "specifier": "total=1.5", "outcome_id": "74", "pick": "Yes",
+            "market": "Any Team Over 1.5", "odds": 1.2, "est": 0.8, "home_uid": "1", "away_uid": "2"}
+    now = datetime.now(timezone.utc)
+    legs = [dict(base, event_id="sr:match:901", home="A", away="B", kickoff=(now - timedelta(hours=3)).isoformat()),
+            dict(base, event_id="sr:match:902", home="C", away="D", kickoff=(now - timedelta(hours=3)).isoformat()),
+            dict(base, event_id="sr:match:903", home="E", away="F", kickoff=(now + timedelta(days=12)).isoformat())]
+    results = {"sr:match:901": MatchResult(state="ended", ft=(2, 0)),
+               "sr:match:902": MatchResult(state="ended", ft=(3, 1)),
+               "sr:match:903": MatchResult(state="ended", ft=(2, 2))}
+    calls = []
+
+    class Res:
+        async def result(self, eid, need_stats=False):
+            calls.append(eid)
+            return results[eid]
+
+        async def aclose(self):
+            pass
+    tr.results = Res()
+    rec = asyncio.run(tr.record(legs, "FCMULTI", "anyteam", label="Any Team Over 1.5 · football.com",
+                                bookmaker="footballcom", test=True))
+    asyncio.run(tr.tick())
+    r = asyncio.run(tr.history.get(rec["id"]))
+    sts = [l["status"] for l in r["data"]["legs"]]
+    check(r["status"] == "pending" and sts[:2] == ["won", "won"] and sts[2] in ("pending", None, ""),
+          f"day-1 legs won, slip still open for the leg in 12 days ({r['status']}, {sts})")
+    check("sr:match:903" not in calls and not sent, "future leg not looked up, no ping yet")
+    for l in legs:
+        l["kickoff"] = (now - timedelta(hours=3)).isoformat()
+    r["data"]["legs"][2]["kickoff"] = (now - timedelta(hours=3)).isoformat()   # time passes: the last match ends
+    asyncio.run(tr.history.save(r))
+    asyncio.run(tr.tick())
+    r = asyncio.run(tr.history.get(rec["id"]))
+    check(r["status"] == "won" and [l["status"] for l in r["data"]["legs"]] == ["won", "won", "won"],
+          "settles when the last match ends")
+    check(len(sent) == 1 and sent[0][0] == TEST_CHAT, "one ping, to the fake chat")
+    asyncio.run(tr.aclose())
+
+
 if __name__ == "__main__":
+    test_window_parse()
+    test_window_filter()
+    test_window_refresh_and_api()
+    test_multiday_settlement()
     test_adapter()
     test_parse()
     test_filters()

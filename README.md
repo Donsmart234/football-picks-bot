@@ -27,6 +27,19 @@ settlement; one ping per slip carrying the ladder outcome (restart day, stake fr
 reply starts with a Rules: line. Admin: `GET /api/ladder/plan?stake=`, `POST /api/admin/ladder_preview` (nothing
 booked). Tests: `tests/test_ladder.py`.
 
+## What's new (2026-11-14): Any Team Over 1.5 window (3 days / 1 week / 2 weeks)
+- Window: `3d` (next 3 days, default), `1w` (next 7 days), `2w` (next 14 days). `/anyteam week`, `/anyteam 15 2 weeks`,
+  chat "any team over 1.5 for the week" / "for 2 weeks" / "fortnight" / "7 days" / "14 days", the AI intercept (same text
+  parse), `POST /api/anyteam {"window": "3d"|"1w"|"2w"}`, Mini App Any Team 1.5 selector (3 days / 1 week / 2 weeks).
+  "weekend" / "midweek" are not week windows. football.com lists ~1-2 weeks ahead: whatever is listed inside is used.
+- Legs default 10 (max 50), odds 1.15-1.35 and ranking unchanged. In a week window the auto scope is per WAT day:
+  national teams on days with >= 4 senior national-team matches, top leagues on the others (3 days keeps the
+  whole-window rule). Detail reads bounded: the 300 likeliest candidates (list Poisson check), 12 at a time, details
+  cached 10 min.
+- Reply: Rules line ends with the window, code, total odds, first and last kickoff (WAT), combined estimate (estimates,
+  not guarantees), legs in kickoff order with dates. Refresh keeps the window (used ids per window). Multi-day codes
+  settle per leg and stay pending until the last match; early-settled slips are re-verified for 16 days.
+
 ## What's new (2026-11-13): football.com "Any Team Over 1.5" codes
 football.com NG runs the same Sportradar/SportyBet platform and JSON at `https://www.football.com/api/ng`, and it carries
 market **60045 "Any Team Over X.5"** (specifier `total=1.5`, outcome `74` = Yes, `76` = No) that SportyBet doesn't. The
@@ -46,7 +59,7 @@ the SportyBet list (same `sr:match` ids, already cached via the relay; football.
 pre-checked with a Poisson fit of 1X2 + O/U 2.5, then each event detail is read from football.com (12 at a time).
 Ranking: de-margined Yes from the Yes/No pair (power method); the Poisson P(either team scores 2+) is kept as a check.
 
-Where: `/anyteam [legs] [min-max odds] [league/team words] [today|tomorrow|weekend|48h]`, chat "any team over 1.5 ..."
+Where: `/anyteam [legs] [min-max odds] [league/team words] [today|tomorrow|weekend|48h|week|2 weeks]`, chat "any team over 1.5 ..."
 (routed before the AI), the Mini App Scanner's "Any Team 1.5" tab, `POST /api/anyteam {"text", "legs", "min_odds",
 "max_odds", "refresh"}` (`{"list": true}` = picks only, nothing booked; admin `{"test": true}` = test record). Reply:
 `Rules: Any Team Over 1.5 (Yes), N legs, odds a-b, national teams|top leagues`, the football.com code, total odds, first

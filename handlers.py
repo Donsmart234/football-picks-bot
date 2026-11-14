@@ -52,8 +52,9 @@ HELP = (
     "/draw5 weekend · /draw5 midweek · /draw5 week – one SportyBet code of 50 five-minute draws (SportyBet '1X2 from 1 "
     "to 5 minute' = Draw, no German leagues); Refresh books 50 new matches (or just type \"5 min draw weekend\")\n"
     "/anyteam [legs] [min-max odds] [league/team words] – one football.com code of Any Team Over 1.5 (Yes); default "
-    "10 legs, odds 1.15-1.35, national teams when they play (else top leagues), next 72 h. E.g. /anyteam, "
-    "/anyteam 8 1.2-1.3, /anyteam nigeria egypt, /anyteam afcon qualifiers today (or type \"any team over 1.5\")\n"
+    "10 legs, odds 1.15-1.35, national teams when they play (else top leagues), next 3 days; add week / 2 weeks for a "
+    "7- or 14-day window. E.g. /anyteam, /anyteam 8 1.2-1.3, /anyteam week, /anyteam 15 2 weeks, /anyteam nigeria "
+    "egypt, /anyteam afcon qualifiers today (or type \"any team over 1.5 for the week\")\n"
     "/reset – clear the AI chat memory"
 )
 
@@ -1856,8 +1857,11 @@ async def _at_run(msg, ctx, text: str, owner: int = 0, refresh: bool = False) ->
     import time as _t
     import uuid
     s = svc(ctx)
+    wk = anyteam.parse_window(text)[0]
     note = await msg.reply_text(("Booking new Any Team Over 1.5 picks" if refresh else
-                                 "Building your Any Team Over 1.5 code") + " on football.com... ~30 s")
+                                 "Building your Any Team Over 1.5 code") + " on football.com"
+                                + {"1w": " (next 7 days)", "2w": " (next 14 days)"}.get(wk, "")
+                                + "... " + ("~1 min" if wk in ("1w", "2w") else "~30 s"))
     try:
         out = await anyteam.build(s, owner, text, refresh=refresh)
     except Exception as exc:

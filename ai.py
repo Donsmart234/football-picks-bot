@@ -91,7 +91,8 @@ Rules:
 - 5-MINUTE DRAWS ("5 min draw", "draw in the first 5 minutes") are answered by the bot's own finder (/draw5 weekend |
   midweek | week, or the Scanner tab's 5-min Draw section), never by scan_markets; if asked indirectly, point there.
 - ANY TEAM OVER 1.5 ("any team over 1.5", football.com's market) is answered by the bot's own builder (/anyteam [legs]
-  [min-max odds] [league/team words], one booked football.com code), never by scan_markets; point there if asked.
+  [min-max odds] [week | 2 weeks] [league/team words], one booked football.com code; window next 3 days by default,
+  "for the week" = 7 days, "2 weeks" = 14 days), never by scan_markets; point there if asked.
 - The 2-ODDS SAVINGS LADDER (the user's 16-day "2odds rollover template": ~2.00 a day, part of each win saved, a cut
   restarts 2 days back from savings) is run by the bot itself: /rollover ladder [stake], /rollover ladder plan [stake]
   or the Rollover tab. Never build or promise ladder codes yourself; point there.
