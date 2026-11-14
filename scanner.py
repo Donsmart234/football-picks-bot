@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -789,6 +790,7 @@ class Scanner:
         lo_t, hi_t = ladder.ODDS_LO, ladder.ODDS_HI
         strong: list[Leg] = []
         rejected: dict[str, int] = {}
+        near: list[tuple] = []
         for e in allowed:
             for l in pool.legs.get(e.event_id) or []:
                 if not (l.odds <= hi_t and not_started(l, soon) and not (exclude and sel_key(l) in exclude)):
@@ -796,9 +798,11 @@ class Scanner:
                 if ladder_leg_ok(l, c):
                     strong.append(l)
                 elif l.est >= 0.80 and l.odds >= ROLLOVER_MIN_ODDS and "under" not in l.tags:
-                    why = safety.safe_problem(l) or "rules"
-                    key = why.split(" (")[0].split(":")[0][:60]
+                    why = safety.safe_problem(l) or ("not stats-confirmed" if l.verdict != "confirmed" else "rules")
+                    key = re.sub(r"\d+(\.\d+)?%", "N%", why.split(" (")[0].split(":")[0])[:60]
                     rejected[key] = rejected.get(key, 0) + 1
+                    if l.p_fit is not None and FAMILIES.get(l.market_id) and FAMILIES[l.market_id].period == "ft":
+                        near.append((min(l.est, l.p_stats if l.p_stats is not None else 0.0), l, why))
 
         def banded(legs: list[Leg]) -> list[Leg]:
             out: dict[tuple, Leg] = {}
@@ -829,7 +833,9 @@ class Scanner:
         elif not allowed:
             note = (f"{ladder.HOLD_TEXT} SportyBet lists no top-league or national-team matches in this window.")
         else:
-            top_why = sorted(rejected.items(), key=lambda kv: -kv[1])[:3]
+            noise = ("no goals model", "half / period", "European handicap")
+            top_why = sorted(((k, v) for k, v in rejected.items() if not k.startswith(noise)),
+                             key=lambda kv: -kv[1])[:3]
             note = (f"{ladder.HOLD_TEXT} {len(strong)} leg{'s' if len(strong) != 1 else ''} passed the Safe rules "
                     f"(market and stats model each >={ladder.MIN_P:.0%}, last-10 record check) in {len(allowed)} "
                     f"top-league / national-team matches; no 1-{ladder.MAX_LEGS} leg combination lands on "
@@ -841,7 +847,10 @@ class Scanner:
                 "est_prob": round(est, 4) if legs else 0.0, "reached": bool(legs), "legs": jl,
                 "candidates": len(strong), "note": note, "away_used": away_used and bool(legs),
                 "held": not legs, "safe_legs": [l.to_json() for l in sorted(strong, key=lambda l: -l.est)[:12]],
-                "rejected_reasons": dict(sorted(rejected.items(), key=lambda kv: -kv[1])[:8]),
+                "rejected_reasons": dict(sorted(rejected.items(), key=lambda kv: -kv[1])[:10]),
+                "near_misses": [{"match": l.match, "league": l.league, "pick": l.pick, "odds": l.odds,
+                                 "est": round(l.est, 3), "p_stats": None if l.p_stats is None else round(l.p_stats, 3),
+                                 "why": why} for _, l, why in sorted(near, key=lambda x: -x[0])[:10]],
                 "rules": {"min_p": ladder.MIN_P, "leagues": "allowlist (no domestic cups, national teams FIFA top ~50)",
                           "no_unders": True, "full_match": True, "odds": [lo_t, hi_t], "max_legs": ladder.MAX_LEGS,
                           "model_and_market": True, "last10_check": True},

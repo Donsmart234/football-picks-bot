@@ -271,9 +271,9 @@ def leg_problem(l, form, min_p: float | None = None) -> str:
     if ps is None:
         return "missing team stats (no model probability)"
     if est + 1e-9 < min_p:
-        return f"market estimate {est:.0%} below {min_p:.0%}"
+        return f"market estimate {est:.1%} below {min_p:.0%}"
     if ps + 1e-9 < min_p:
-        return f"stats model {ps:.0%} below {min_p:.0%} (market says {est:.0%})"
+        return f"stats model {ps:.1%} below {min_p:.0%} (market says {est:.1%})"
     if _get(l, "verdict") != "confirmed":
         return f"stats verdict: {_get(l, 'verdict')}"
     return stats_problem(l, form)
@@ -288,9 +288,9 @@ def safe_problem(l, allow_unders: bool = False, widened: bool = False) -> str:
         return note
     ps, est = _get(l, "p_stats"), float(_get(l, "est") or 0)      # re-checked here so a stale / edited leg can't slip by
     if ps is None or ps + 1e-9 < SAFE_MIN_P:
-        return "stats model below the Safe bar" if ps is not None else "missing team stats (no model probability)"
+        return f"stats model {ps:.1%} below {SAFE_MIN_P:.0%}" if ps is not None else "missing team stats (no model probability)"
     if est + 1e-9 < SAFE_MIN_P:
-        return f"market estimate {est:.0%} below {SAFE_MIN_P:.0%}"
+        return f"market estimate {est:.1%} below {SAFE_MIN_P:.0%}"
     if not allow_unders and under_like(l):
         return "under / BTTS No (no unders unless asked)"
     if not widened:
