@@ -434,17 +434,18 @@ class SlipEditor:
                  "max_odds": target * 1.20, "no_unders": not allow_unders, "require_confirmed": True,
                  "top_only": True, "strict": True, "label": "rollover"}
         lad = d.get("mode") == "ladder"
-        if lad:                       # 2-odds savings ladder (ladder.py): its own odds window and leg rules
+        if lad:                       # savings ladder (ladder.py): the plan's odds band and leg rules
             import ladder
-            rules.update(lo=ladder.ODDS_LO, hi=ladder.ODDS_HI, target=ladder.TARGET, max_odds=ladder.ODDS_HI,
-                         no_unders=True, label="ladder")
+            band = ladder.band_of(d)
+            rules.update(lo=band[0], hi=band[1], target=ladder.plan_odds(band), max_odds=band[1],
+                         min_odds=ladder.LEG_MIN_ODDS, no_unders=True, label="ladder")
         if op.get("action") == "rebuild" and lad:
             prev = {slipedit.sel_key(l) for l in base} | {slipedit.sel_key(l) for l in slip["data"]["legs"]}
-            res = await self.s.scanner.ladder_slip(exclude=prev, fresh=True)
+            res = await self.s.scanner.ladder_slip(exclude=prev, fresh=True, band=band)
             if not res["legs"]:
                 return self._fail(ctx, "No different valid slip exists right now under the ladder rules (top leagues, "
-                                       "every leg market and stats model >=85%, 1.90-2.15 odds, no unders, full match only). Your "
-                                       "current slip stays.")
+                                       f"every leg market and stats model >=85%, {ladder.band_text(band)} odds, no "
+                                       "unders, full match only). Your current slip stays.")
             r = {"ok": True, "legs": res["legs"], "change": "New picks for the whole day", "note": "",
                  "total_odds": res["total_odds"], "est_prob": res["est_prob"]}
         elif op.get("action") == "rebuild":

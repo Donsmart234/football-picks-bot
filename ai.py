@@ -94,9 +94,9 @@ Rules:
 - ANY TEAM OVER 1.5 ("any team over 1.5", football.com's market) is answered by the bot's own builder (/anyteam [legs]
   [min-max odds] [week | 2 weeks] [league/team words], one booked football.com code; window next 3 days by default,
   "for the week" = 7 days, "2 weeks" = 14 days), never by scan_markets; point there if asked.
-- The 2-ODDS SAVINGS LADDER (the user's 16-day "2odds rollover template": ~2.00 a day, part of each win saved, a cut
-  restarts 2 days back from savings) is run by the bot itself: /rollover ladder [stake], /rollover ladder plan [stake]
-  or the Rollover tab. Never build or promise ladder codes yourself; point there.
+- The SAVINGS LADDER (the user's 16-day "2odds rollover template" re-derived for a 1.50-1.80 code a day since
+  2026-11-14, part of each win saved, a cut restarts 2 days back from savings, no safe code = day held) is run by the
+  bot itself: /rollover ladder [stake] [1.5-1.8], /rollover ladder plan [stake] or the Rollover tab. Never build or promise ladder codes yourself; point there.
 - Load codes at https://www.sportybet.com/ng/m/code-hub/load-code (or Load Code in the SportyBet app)."""
 
 TOOLS = [{"functionDeclarations": [
@@ -409,39 +409,45 @@ class Analyst:
         """Plain-text ladder answer (starts with the Rules line). A plan is started only from the owner's chat."""
         import ladder
         tr = self.s.tracker
+        band = ladder.norm_band(li.get("band"))
+        rl = ladder.rules_line(band)
+        if li.get("band_error"):
+            return rl + "\n" + li["band_error"]
         try:
             start = ladder.check_start(li.get("stake"))
         except ValueError as exc:
-            return ladder.rules_line() + "\n" + str(exc)
+            return rl + "\n" + str(exc)
         if li["action"] == "plan":
-            return ladder.plan_table_text(start, html=False)
+            return ladder.plan_table_text(start, html=False, band=band)
         if li["action"] == "start":
             owner = tr.owner()
             if not owner or int(chat_id) != int(owner):
-                return (ladder.rules_line() + "\nLadder plans are started from the owner's chat only, so nothing "
-                        "was started here.\n\n" + ladder.plan_table_text(start, html=False))
+                return (rl + "\nLadder plans are started from the owner's chat only, so nothing "
+                        "was started here.\n\n" + ladder.plan_table_text(start, html=False, band=band))
             try:
-                rec, day = await tr.create_ladder(start)
+                rec, day = await tr.create_ladder(start, band=band)
             except ValueError as exc:
-                return ladder.rules_line() + "\n" + str(exc)
-            d = (await tr.history.get(rec["id"]) or rec)["data"]
-            out = [ladder.rules_line(), f"2-odds savings ladder started at {start:,.0f}: day 1 stake "
-                   f"{ladder.stake_for(1, start):,.0f}, {ladder.DAYS} days, template total "
-                   f"{ladder.totals(start)['final_return']:,.0f} winning + {ladder.totals(start)['savings']:,.0f} savings."]
+                return rl + "\n" + str(exc)
+            tot = ladder.totals(start, band)
+            out = [rl, f"Savings ladder started at {start:,.0f}: code {ladder.band_text(band)} a day, day 1 stake "
+                   f"{ladder.stake_for(1, start, band):,.0f}, {ladder.DAYS} days, template total "
+                   f"{tot['final_return']:,.0f} winning + {tot['savings']:,.0f} savings."]
             if day and day.get("status") == "pending":
                 out.append(f"Today's code {day.get('code') or '(not booked)'} · {day.get('total_odds', 0):.2f} odds "
                            f"· {day.get('legs')} legs: sent to Telegram with every leg's estimate and reason.")
             elif day and day.get("status") == "no_slip":
-                out.append("No safe 2.00 code today: " + (day.get("note") or "") + " The ladder holds on day 1.")
+                out.append(f"No safe {ladder.band_text(band)} code today: " + (day.get("note") or "")
+                           + " The ladder holds on day 1.")
             else:
                 out.append("The first code comes at ~09:00 WAT.")
             out.append("Status any time: /rollover. Estimates, not guarantees. 18+.")
             return "\n".join(out)
         rec = await tr.active_rollover() or next(iter(await tr.rollovers(1)), None)
         if not rec or rec["data"].get("mode") != ladder.MODE:
-            return ladder.plan_table_text(start, html=False)
+            return ladder.plan_table_text(start, html=False, band=band)
         d = rec["data"]
-        lines = [ladder.rules_line(), f"Ladder ({rec['status']}) · start {d['start']:,.0f} · day "
+        lines = [ladder.rules_line(ladder.band_of(d)), f"Ladder ({rec['status']}) · start {d['start']:,.0f} · code "
+                 f"{ladder.band_text(ladder.band_of(d))} · day "
                  f"{min(d['current_day'], ladder.DAYS)}/{ladder.DAYS} · stake {float(d.get('value') or 0):,.0f} · "
                  f"savings {float(d.get('savings') or 0):,.0f} · restarts {int(d.get('restarts') or 0)}"]
         lines += ladder.ledger_lines(d, 8)
@@ -482,7 +488,7 @@ class Analyst:
         import ladder
         li = ladder.parse_intent(text)
         if li and getattr(self.s, "tracker", None) is not None:
-            # "start the 2 odds ladder with 2k" / "ladder plan 1.5k": the 2-odds savings ladder, no model call
+            # "start the 2 odds ladder with 2k" / "ladder plan 1.5k": the savings ladder, no model call
             reply = await self._ladder(chat_id, li)
             self._save(chat_id, "user", text)
             self._save(chat_id, "model", reply[:1500])

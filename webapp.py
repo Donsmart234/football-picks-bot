@@ -143,6 +143,20 @@ def _prediction_json(p) -> dict:
 
 
 # ------------------------------------------------------------------ app
+
+
+def _band_param(v):
+    """A ladder band from an API value: "1.5-1.8", [1.5, 1.8] or empty (None = the default). Raises ValueError."""
+    import ladder
+    if v in (None, "", []):
+        return None
+    if isinstance(v, (list, tuple)) and len(v) == 2:
+        return ladder.check_band(v[0], v[1])
+    b = ladder.parse_band(str(v))
+    if not b:
+        raise ValueError("band must be an odds range like 1.5-1.8")
+    return b
+
 class MiniApp:
     def __init__(self, services: Services, bot_token: str | None = None, owner_id: int | None = None):
         self.s = services
@@ -494,7 +508,15 @@ class MiniApp:
         import ladder
         return self._gz(web.json_response({"active": act, "past": past, "day_slip": day_slip, "tickets": tickets,
                                            "targets": [2, 3, 4, 5], "days": [3, 15],
-                                           "ladder_rules": ladder.rules_line()}))
+                                           "ladder_rules": ladder.rules_line(),
+                                           "ladder_active": ({"rules": ladder.rules_line(ladder.band_of(act["data"])),
+                                                              "band": list(ladder.band_of(act["data"])),
+                                                              "totals": ladder.totals(act["data"]["start"],
+                                                                                      ladder.band_of(act["data"]))}
+                                                             if act and act["data"].get("mode") == ladder.MODE
+                                                             else None),
+                                           "ladder_default_band": list(ladder.DEFAULT_BAND),
+                                           "ladder_band_limits": [ladder.BAND_MIN, ladder.BAND_MAX]}))
 
     async def rollover_tickets(self, request: web.Request) -> web.Response:
         """Every day's ticket of one plan (active or past): legs, status, stake / return, running bankroll."""
@@ -528,7 +550,7 @@ class MiniApp:
                 return web.json_response({"ok": True, "rollover": await tr.history.get(rec["id"]), "day": day})
             if act == "ladder_start":
                 stake = data.get("stake")
-                rec, day = await tr.create_ladder(stake if stake not in (None, "") else None,
+                rec, day = await tr.create_ladder(stake if stake not in (None, "") else None, band=_band_param(data.get("band")),
                                                   autobook=bool(data.get("book", True)) or not admin,
                                                   test=bool(data.get("test")) and admin,
                                                   push=bool(data.get("push", True)) or not admin)
@@ -564,24 +586,31 @@ class MiniApp:
         return web.json_response({"error": "unknown action"}, status=400)
 
     async def ladder_plan(self, request: web.Request) -> web.Response:
-        """The 2-odds savings ladder table scaled to ?stake= (default 1000): rows, totals, rules line, text."""
+        """The savings ladder table scaled to ?stake= (default 1000) for ?band=1.5-1.8 (default): rows, totals, rules
+        line, text."""
         import ladder
         try:
             start = ladder.check_start(request.query.get("stake") or None)
+            band = ladder.norm_band(_band_param(request.query.get("band")))
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
-        return web.json_response({"rules": ladder.rules_line(), "rows": ladder.plan_rows(start),
-                                  "totals": ladder.totals(start), "text": ladder.plan_table_text(start, html=False)})
+        return web.json_response({"rules": ladder.rules_line(band), "band": list(band), "rows": ladder.plan_rows(start, band),
+                                  "totals": ladder.totals(start, band),
+                                  "text": ladder.plan_table_text(start, html=False, band=band)})
 
     async def admin_ladder_preview(self, request: web.Request) -> web.Response:
-        """Admin: today's ladder code as a PREVIEW (nothing booked, saved or sent). {exclude: [sel keys]} optional."""
+        """Admin: today's ladder code as a PREVIEW (nothing booked, saved or sent). {day, fresh, band: "1.5-1.8"}."""
         if not request["tg_user"].get("admin"):
             return web.json_response({"error": "forbidden"}, status=403)
         data = await self._json(request)
         day = str(data.get("day") or "today")
         if day not in ("today", "tomorrow", "24h", "48h"):
             return web.json_response({"error": "day: today | tomorrow | 24h | 48h"}, status=400)
-        res = await self.s.scanner.ladder_slip(day=day, fresh=bool(data.get("fresh")))
+        try:
+            band = _band_param(data.get("band"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        res = await self.s.scanner.ladder_slip(day=day, fresh=bool(data.get("fresh")), band=band)
         return self._gz(web.json_response({"preview": True, "booked": False, **res}))
 
     async def admin_tick(self, request: web.Request) -> web.Response:

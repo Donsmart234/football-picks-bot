@@ -7,6 +7,44 @@ code is just a shareable slip you load on SportyBet yourself.
 
 > Every prediction is an estimate, never a guarantee. 18+. Bet only what you can afford to lose.
 
+## What's new (2026-11-14, later): savings ladder target 1.50-1.80 a day
+The ladder's daily code is now **1.50-1.80 total odds** (user's choice, 14 Nov 2026), with the strict Safe rules kept:
+1-4 legs, one per match, every leg passing safety.py (market est AND stats model each >= 85%, last-10 record, top
+leagues minus cups, national teams FIFA top ~50), no unders / half / minute markets, home or neutral picks first, and
+the combo with the **highest combined estimate inside the range**. Leg price floor relaxed 1.12 -> **1.05**
+(`LADDER_LEG_MIN_ODDS`; 85% legs price ~1.05-1.15), and the leg shortlist keeps the strongest leg per match per finer
+odds band (1.05/1.08/1.11/1.15/1.20/...), so a 1.02 line no longer pushes out the same match's 1.11 line.
+No safe code in the range -> "No safe 1.50-1.80 code today — ladder day held, nothing staked" (day, stake, savings kept).
+
+**Template (ladder.derive_template), re-derived the way the user's 2.00 template works:** planned at the band's middle
+(1.65); each next stake = stake x 0.75 x 1.65 rounded to 2 significant figures (the user's template rolls ~3/4 of each
+return and saves ~1/4), never above stake x 1.50 (a win at the floor funds the next day), and cut where needed so the
+savings after each day cover a restart 2 days back (as the user's template does). 16 days. At 1,000:
+1,000 · 1,200 · 1,400 · 1,700 · 2,100 · 2,600 · 3,200 · 4,000 · 4,900 · 6,100 · 7,500 · 9,300 · 12,000 · 15,000 ·
+19,000 · 24,000 -> **39,600 winning + 36,150 savings** if all 16 days land at 1.65 (scales with the stake). Money still
+uses real odds (win: everything above the next template stake is saved), restart 2 days back from savings, ends when
+day 1 can't be covered, void below the next stake replays the day. The user's own 1.90-2.15 template is kept for
+plans started before this change (no `band` in the plan) and for "/rollover ladder 1k 1.9-2.15".
+
+**Where:** `/rollover ladder [stake] [a-b]` (e.g. `/rollover ladder 1k 1.5-1.8`; range 1.40-3.00, >= 0.05 wide),
+`/rollover ladder plan [stake] [a-b]`, chat "start the 2 odds ladder with 1k 1.5-1.8", Mini App Rollover tab (stake +
+"Daily code (total odds)" field; running card shows the plan's band and its day-16 return), `GET /api/ladder/plan?stake=&band=`,
+`POST /api/rollover {action: "ladder_start", stake, band}`, `POST /api/admin/ladder_preview {day, band?}` (nothing
+booked). The Rules line shows the band. Per-plan band stored in `plan.data.band`.
+
+**Backtest** (`backtest/ladder_backtest.py` -> `backtest/LADDER_REPORT.md`; same data as safe_backtest, 489 top-league
+days, 15 European leagues, no national teams / cups / Asian handicaps; most lines priced from the Poisson fit):
+| Daily code | codes / 489 days | won | hit rate |
+|---|---|---|---|
+| old rules, 2.00 | 143 | 69 | 48.3% |
+| new rules, 2.00 | 0 | - | - |
+| old rules, 1.50-1.80 | 234 | 142 | 60.7% |
+| **new rules, 1.50-1.80, legs >= 1.05 (now)** | **6** | 5 | 83% (tiny sample) |
+| what-if new rules, 1.50-1.80, up to 6 legs | 48 | 27 | 56.3% |
+16-day ladders: no config completed a single ladder on the real day sequence (old 2.00: 44 ladders, 43 busted; old
+1.50-1.80: 67 ladders, 66 busted, mean net -734 per 1,000). With the strict rules the 1.50-1.80 ladder only gets a code
+on ~1 day in 80 in this data, so it will mostly hold. Estimates, not guarantees.
+
 ## What's new (2026-11-14): "Safe" is actually safe (safety.py)
 Why: ladder code QAHE0V (13 Nov, stake 1,500) lost on "Mozambique Over 0.5" (0-1). The old Safe bar was est >= 80%,
 and est is (by the backtest weights) the calibrated de-margined bookmaker price; "stats-confirmed" only meant the stats

@@ -1,0 +1,1246 @@
+{
+ "test_2627": {
+  "matches": 1251,
+  "match_days_top": 64,
+  "configs": {
+   "old rules, 2.00 (1.90-2.15), legs >=1.12 [production until 14 Nov]": {
+    "days": 64,
+    "codes": 16,
+    "days_held": 48,
+    "won": 8,
+    "hit_rate": 0.5,
+    "mean_odds": 1.916,
+    "mean_est": 0.4408,
+    "mean_legs": 4.0
+   },
+   "new rules, 2.00 (1.90-2.15), legs >=1.12 [14 Nov safe change]": {
+    "days": 64,
+    "codes": 0,
+    "days_held": 64,
+    "won": 0,
+    "hit_rate": null,
+    "mean_odds": null,
+    "mean_est": null,
+    "mean_legs": null
+   },
+   "new rules, 2.00 (1.90-2.15), legs >=1.05": {
+    "days": 64,
+    "codes": 0,
+    "days_held": 64,
+    "won": 0,
+    "hit_rate": null,
+    "mean_odds": null,
+    "mean_est": null,
+    "mean_legs": null
+   },
+   "old rules, 1.50-1.80, legs >=1.12": {
+    "days": 64,
+    "codes": 31,
+    "days_held": 33,
+    "won": 18,
+    "hit_rate": 0.5806,
+    "mean_odds": 1.53,
+    "mean_est": 0.5571,
+    "mean_legs": 3.03
+   },
+   "new rules, 1.50-1.80, legs >=1.12": {
+    "days": 64,
+    "codes": 0,
+    "days_held": 64,
+    "won": 0,
+    "hit_rate": null,
+    "mean_odds": null,
+    "mean_est": null,
+    "mean_legs": null
+   },
+   "new rules, 1.50-1.80, legs >=1.08": {
+    "days": 64,
+    "codes": 1,
+    "days_held": 63,
+    "won": 1,
+    "hit_rate": 1.0,
+    "mean_odds": 1.516,
+    "mean_est": 0.5575,
+    "mean_legs": 4.0
+   },
+   "new rules, 1.50-1.80, legs >=1.05 [new default]": {
+    "days": 64,
+    "codes": 1,
+    "days_held": 63,
+    "won": 1,
+    "hit_rate": 1.0,
+    "mean_odds": 1.516,
+    "mean_est": 0.5575,
+    "mean_legs": 4.0
+   },
+   "new rules, 1.50-1.80, legs >=1.03": {
+    "days": 64,
+    "codes": 1,
+    "days_held": 63,
+    "won": 1,
+    "hit_rate": 1.0,
+    "mean_odds": 1.516,
+    "mean_est": 0.5575,
+    "mean_legs": 4.0
+   },
+   "what-if: new rules, 1.50-1.80, legs >=1.05, up to 6 legs": {
+    "days": 64,
+    "codes": 7,
+    "days_held": 57,
+    "won": 5,
+    "hit_rate": 0.7143,
+    "mean_odds": 1.513,
+    "mean_est": 0.5126,
+    "mean_legs": 5.0
+   }
+  }
+ },
+ "all_seasons": {
+  "matches": 11012,
+  "match_days_top": 489,
+  "configs": {
+   "old rules, 2.00 (1.90-2.15), legs >=1.12 [production until 14 Nov]": {
+    "days": 489,
+    "codes": 143,
+    "days_held": 346,
+    "won": 69,
+    "hit_rate": 0.4825,
+    "mean_odds": 1.912,
+    "mean_est": 0.4402,
+    "mean_legs": 4.0,
+    "real_sequence": {
+     "ladders": 44,
+     "completed": 0,
+     "busted": 43,
+     "running_at_end": 1,
+     "mean_savings_at_end": 213.0,
+     "mean_net": -787.0,
+     "ladders_detail": [
+      {
+       "from": "2024-09-21",
+       "to": "2024-09-22",
+       "ended": "busted",
+       "codes": 2,
+       "restarts": 0,
+       "savings": 403.0,
+       "winning": 0.0,
+       "net": -597.0
+      },
+      {
+       "from": "2024-09-28",
+       "to": "2024-09-28",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-09-29",
+       "to": "2024-10-26",
+       "ended": "busted",
+       "codes": 5,
+       "restarts": 1,
+       "savings": 580.0,
+       "winning": 0.0,
+       "net": -420.0
+      },
+      {
+       "from": "2024-10-27",
+       "to": "2024-10-27",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-02",
+       "to": "2024-11-02",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-03",
+       "to": "2024-11-03",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-09",
+       "to": "2024-11-09",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-10",
+       "to": "2024-11-23",
+       "ended": "busted",
+       "codes": 2,
+       "restarts": 0,
+       "savings": 420.0,
+       "winning": 0.0,
+       "net": -580.0
+      },
+      {
+       "from": "2024-11-29",
+       "to": "2024-12-23",
+       "ended": "busted",
+       "codes": 10,
+       "restarts": 3,
+       "savings": 963.0,
+       "winning": 0.0,
+       "net": -37.0
+      },
+      {
+       "from": "2024-12-29",
+       "to": "2025-01-26",
+       "ended": "busted",
+       "codes": 7,
+       "restarts": 2,
+       "savings": 534.5,
+       "winning": 0.0,
+       "net": -465.5
+      },
+      {
+       "from": "2025-02-01",
+       "to": "2025-02-09",
+       "ended": "busted",
+       "codes": 4,
+       "restarts": 1,
+       "savings": 271.0,
+       "winning": 0.0,
+       "net": -729.0
+      },
+      {
+       "from": "2025-02-15",
+       "to": "2025-02-15",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      }
+     ]
+    },
+    "bootstrap": {
+     "runs": 20000,
+     "completed_pct": 0.01,
+     "busted_pct": 99.98,
+     "mean_savings_at_end": 292.0,
+     "mean_net": -565.0,
+     "median_net": -1000.0,
+     "mean_codes": 3.2
+    },
+    "examples": [
+     [
+      "2024-09-21",
+      true,
+      1.903,
+      4,
+      0.4394,
+      [
+       "DNB home",
+       "Over 1.5",
+       "Home over 0.5",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2024-09-22",
+      false,
+      1.905,
+      4,
+      0.4307,
+      [
+       "Over 1.5",
+       "Home over 0.5",
+       "Home over 0.5",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2024-09-28",
+      false,
+      1.912,
+      4,
+      0.4441,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2024-09-29",
+      true,
+      1.905,
+      4,
+      0.4458,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2024-10-05",
+      true,
+      1.906,
+      4,
+      0.4455,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2024-10-06",
+      true,
+      1.908,
+      4,
+      0.4151,
+      [
+       "Over 1.5",
+       "Over 1.5",
+       "Over 1.5",
+       "Over 1.5"
+      ]
+     ]
+    ]
+   },
+   "new rules, 2.00 (1.90-2.15), legs >=1.12 [14 Nov safe change]": {
+    "days": 489,
+    "codes": 0,
+    "days_held": 489,
+    "won": 0,
+    "hit_rate": null,
+    "mean_odds": null,
+    "mean_est": null,
+    "mean_legs": null,
+    "real_sequence": {
+     "ladders": 0,
+     "completed": 0,
+     "busted": 0,
+     "running_at_end": 0,
+     "mean_savings_at_end": null,
+     "mean_net": null,
+     "ladders_detail": []
+    },
+    "bootstrap": null,
+    "examples": []
+   },
+   "new rules, 2.00 (1.90-2.15), legs >=1.05": {
+    "days": 489,
+    "codes": 0,
+    "days_held": 489,
+    "won": 0,
+    "hit_rate": null,
+    "mean_odds": null,
+    "mean_est": null,
+    "mean_legs": null,
+    "real_sequence": {
+     "ladders": 0,
+     "completed": 0,
+     "busted": 0,
+     "running_at_end": 0,
+     "mean_savings_at_end": null,
+     "mean_net": null,
+     "ladders_detail": []
+    },
+    "bootstrap": null,
+    "examples": []
+   },
+   "old rules, 1.50-1.80, legs >=1.12": {
+    "days": 489,
+    "codes": 234,
+    "days_held": 255,
+    "won": 142,
+    "hit_rate": 0.6068,
+    "mean_odds": 1.536,
+    "mean_est": 0.5604,
+    "mean_legs": 3.0,
+    "real_sequence": {
+     "ladders": 67,
+     "completed": 0,
+     "busted": 66,
+     "running_at_end": 1,
+     "mean_savings_at_end": 266.0,
+     "mean_net": -734.0,
+     "ladders_detail": [
+      {
+       "from": "2024-09-14",
+       "to": "2024-09-29",
+       "ended": "busted",
+       "codes": 7,
+       "restarts": 1,
+       "savings": 575.2,
+       "winning": 0.0,
+       "net": -424.8
+      },
+      {
+       "from": "2024-09-30",
+       "to": "2024-10-04",
+       "ended": "busted",
+       "codes": 2,
+       "restarts": 0,
+       "savings": 357.0,
+       "winning": 0.0,
+       "net": -643.0
+      },
+      {
+       "from": "2024-10-05",
+       "to": "2024-10-18",
+       "ended": "busted",
+       "codes": 3,
+       "restarts": 0,
+       "savings": 796.6,
+       "winning": 0.0,
+       "net": -203.4
+      },
+      {
+       "from": "2024-10-19",
+       "to": "2024-10-19",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-10-20",
+       "to": "2024-10-20",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-10-26",
+       "to": "2024-10-27",
+       "ended": "busted",
+       "codes": 2,
+       "restarts": 0,
+       "savings": 311.0,
+       "winning": 0.0,
+       "net": -689.0
+      },
+      {
+       "from": "2024-10-30",
+       "to": "2024-10-30",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-01",
+       "to": "2024-11-01",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-02",
+       "to": "2024-11-02",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-03",
+       "to": "2024-11-04",
+       "ended": "busted",
+       "codes": 2,
+       "restarts": 0,
+       "savings": 340.0,
+       "winning": 0.0,
+       "net": -660.0
+      },
+      {
+       "from": "2024-11-08",
+       "to": "2024-11-10",
+       "ended": "busted",
+       "codes": 3,
+       "restarts": 0,
+       "savings": 714.2,
+       "winning": 0.0,
+       "net": -285.8
+      },
+      {
+       "from": "2024-11-23",
+       "to": "2024-12-26",
+       "ended": "busted",
+       "codes": 17,
+       "restarts": 3,
+       "savings": 371.3,
+       "winning": 0.0,
+       "net": -628.7
+      }
+     ]
+    },
+    "bootstrap": {
+     "runs": 20000,
+     "completed_pct": 0.31,
+     "busted_pct": 99.69,
+     "mean_savings_at_end": 353.0,
+     "mean_net": -533.0,
+     "median_net": -699.0,
+     "mean_codes": 3.7
+    },
+    "examples": [
+     [
+      "2024-09-14",
+      true,
+      1.504,
+      3,
+      0.5679,
+      [
+       "Home over 0.5",
+       "Over 1.5",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2024-09-15",
+      true,
+      1.51,
+      3,
+      0.5561,
+      [
+       "Over 1.5",
+       "Over 1.5",
+       "DC 1X"
+      ]
+     ],
+     [
+      "2024-09-21",
+      true,
+      1.503,
+      3,
+      0.6003,
+      [
+       "DNB home",
+       "DNB home",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2024-09-22",
+      true,
+      1.501,
+      3,
+      0.5595,
+      [
+       "Over 0.5",
+       "Over 1.5",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2024-09-26",
+      true,
+      1.573,
+      3,
+      0.5525,
+      [
+       "Away over 0.5",
+       "Over 1.5",
+       "Away over 0.5"
+      ]
+     ],
+     [
+      "2024-09-28",
+      false,
+      1.502,
+      3,
+      0.5591,
+      [
+       "DC 12",
+       "DC 1X",
+       "DC 1X"
+      ]
+     ]
+    ]
+   },
+   "new rules, 1.50-1.80, legs >=1.12": {
+    "days": 489,
+    "codes": 0,
+    "days_held": 489,
+    "won": 0,
+    "hit_rate": null,
+    "mean_odds": null,
+    "mean_est": null,
+    "mean_legs": null,
+    "real_sequence": {
+     "ladders": 0,
+     "completed": 0,
+     "busted": 0,
+     "running_at_end": 0,
+     "mean_savings_at_end": null,
+     "mean_net": null,
+     "ladders_detail": []
+    },
+    "bootstrap": null,
+    "examples": []
+   },
+   "new rules, 1.50-1.80, legs >=1.08": {
+    "days": 489,
+    "codes": 6,
+    "days_held": 483,
+    "won": 5,
+    "hit_rate": 0.8333,
+    "mean_odds": 1.516,
+    "mean_est": 0.5535,
+    "mean_legs": 4.0,
+    "real_sequence": {
+     "ladders": 2,
+     "completed": 0,
+     "busted": 1,
+     "running_at_end": 1,
+     "mean_savings_at_end": 0.0,
+     "mean_net": -1000.0,
+     "ladders_detail": [
+      {
+       "from": "2025-01-11",
+       "to": "2025-01-11",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-01-25",
+       "to": "2026-09-12",
+       "ended": "running",
+       "codes": 5,
+       "restarts": 0,
+       "savings": 2222.9,
+       "winning": 0.0,
+       "day": 6,
+       "net": null
+      }
+     ]
+    },
+    "bootstrap": {
+     "runs": 20000,
+     "completed_pct": 35.41,
+     "busted_pct": 64.59,
+     "mean_savings_at_end": 7351.0,
+     "mean_net": 19239.0,
+     "median_net": -278.79999999999995,
+     "mean_codes": 12.7
+    },
+    "examples": [
+     [
+      "2025-01-11",
+      false,
+      1.512,
+      4,
+      0.5499,
+      [
+       "Home over 0.5",
+       "DC 1X",
+       "Home over 0.5",
+       "Away over 0.5"
+      ]
+     ],
+     [
+      "2025-01-25",
+      true,
+      1.502,
+      4,
+      0.5446,
+      [
+       "Home over 0.5",
+       "Away over 0.5",
+       "DC X2",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2025-02-02",
+      true,
+      1.538,
+      4,
+      0.5512,
+      [
+       "Away over 0.5",
+       "Over 1.5",
+       "DNB home",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2025-11-29",
+      true,
+      1.514,
+      4,
+      0.5684,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "DNB home",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2026-02-07",
+      true,
+      1.513,
+      4,
+      0.5496,
+      [
+       "Home over 0.5",
+       "Away over 0.5",
+       "Over 1.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2026-09-12",
+      true,
+      1.516,
+      4,
+      0.5575,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5"
+      ]
+     ]
+    ]
+   },
+   "new rules, 1.50-1.80, legs >=1.05 [new default]": {
+    "days": 489,
+    "codes": 6,
+    "days_held": 483,
+    "won": 5,
+    "hit_rate": 0.8333,
+    "mean_odds": 1.511,
+    "mean_est": 0.5551,
+    "mean_legs": 4.0,
+    "real_sequence": {
+     "ladders": 2,
+     "completed": 0,
+     "busted": 1,
+     "running_at_end": 1,
+     "mean_savings_at_end": 0.0,
+     "mean_net": -1000.0,
+     "ladders_detail": [
+      {
+       "from": "2025-01-11",
+       "to": "2025-01-11",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-01-25",
+       "to": "2026-09-12",
+       "ended": "running",
+       "codes": 5,
+       "restarts": 0,
+       "savings": 2191.7,
+       "winning": 0.0,
+       "day": 6,
+       "net": null
+      }
+     ]
+    },
+    "bootstrap": {
+     "runs": 20000,
+     "completed_pct": 34.69,
+     "busted_pct": 65.31,
+     "mean_savings_at_end": 7060.0,
+     "mean_net": 18642.0,
+     "median_net": -281.6,
+     "mean_codes": 12.6
+    },
+    "examples": [
+     [
+      "2025-01-11",
+      false,
+      1.512,
+      4,
+      0.5499,
+      [
+       "Home over 0.5",
+       "DC 1X",
+       "Home over 0.5",
+       "Away over 0.5"
+      ]
+     ],
+     [
+      "2025-01-25",
+      true,
+      1.502,
+      4,
+      0.5446,
+      [
+       "Home over 0.5",
+       "Away over 0.5",
+       "DC X2",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2025-02-02",
+      true,
+      1.512,
+      4,
+      0.5608,
+      [
+       "Over 1.5",
+       "Away over 0.5",
+       "DNB home",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2025-11-29",
+      true,
+      1.514,
+      4,
+      0.5684,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "DNB home",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2026-02-07",
+      true,
+      1.513,
+      4,
+      0.5496,
+      [
+       "Home over 0.5",
+       "Away over 0.5",
+       "Over 1.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2026-09-12",
+      true,
+      1.516,
+      4,
+      0.5575,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5"
+      ]
+     ]
+    ]
+   },
+   "new rules, 1.50-1.80, legs >=1.03": {
+    "days": 489,
+    "codes": 6,
+    "days_held": 483,
+    "won": 5,
+    "hit_rate": 0.8333,
+    "mean_odds": 1.511,
+    "mean_est": 0.5551,
+    "mean_legs": 4.0,
+    "real_sequence": {
+     "ladders": 2,
+     "completed": 0,
+     "busted": 1,
+     "running_at_end": 1,
+     "mean_savings_at_end": 0.0,
+     "mean_net": -1000.0,
+     "ladders_detail": [
+      {
+       "from": "2025-01-11",
+       "to": "2025-01-11",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-01-25",
+       "to": "2026-09-12",
+       "ended": "running",
+       "codes": 5,
+       "restarts": 0,
+       "savings": 2191.7,
+       "winning": 0.0,
+       "day": 6,
+       "net": null
+      }
+     ]
+    },
+    "bootstrap": {
+     "runs": 20000,
+     "completed_pct": 34.69,
+     "busted_pct": 65.31,
+     "mean_savings_at_end": 7060.0,
+     "mean_net": 18642.0,
+     "median_net": -281.6,
+     "mean_codes": 12.6
+    },
+    "examples": [
+     [
+      "2025-01-11",
+      false,
+      1.512,
+      4,
+      0.5499,
+      [
+       "Home over 0.5",
+       "DC 1X",
+       "Home over 0.5",
+       "Away over 0.5"
+      ]
+     ],
+     [
+      "2025-01-25",
+      true,
+      1.502,
+      4,
+      0.5446,
+      [
+       "Home over 0.5",
+       "Away over 0.5",
+       "DC X2",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2025-02-02",
+      true,
+      1.512,
+      4,
+      0.5608,
+      [
+       "Over 1.5",
+       "Away over 0.5",
+       "DNB home",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2025-11-29",
+      true,
+      1.514,
+      4,
+      0.5684,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "DNB home",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2026-02-07",
+      true,
+      1.513,
+      4,
+      0.5496,
+      [
+       "Home over 0.5",
+       "Away over 0.5",
+       "Over 1.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2026-09-12",
+      true,
+      1.516,
+      4,
+      0.5575,
+      [
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5",
+       "Home over 0.5"
+      ]
+     ]
+    ]
+   },
+   "what-if: new rules, 1.50-1.80, legs >=1.05, up to 6 legs": {
+    "days": 489,
+    "codes": 48,
+    "days_held": 441,
+    "won": 27,
+    "hit_rate": 0.5625,
+    "mean_odds": 1.517,
+    "mean_est": 0.5066,
+    "mean_legs": 5.23,
+    "real_sequence": {
+     "ladders": 17,
+     "completed": 0,
+     "busted": 16,
+     "running_at_end": 1,
+     "mean_savings_at_end": 198.0,
+     "mean_net": -802.0,
+     "ladders_detail": [
+      {
+       "from": "2024-11-10",
+       "to": "2024-11-10",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2024-11-23",
+       "to": "2025-01-11",
+       "ended": "busted",
+       "codes": 7,
+       "restarts": 1,
+       "savings": 841.6,
+       "winning": 0.0,
+       "net": -158.4
+      },
+      {
+       "from": "2025-01-12",
+       "to": "2025-02-01",
+       "ended": "busted",
+       "codes": 5,
+       "restarts": 1,
+       "savings": 127.0,
+       "winning": 0.0,
+       "net": -873.0
+      },
+      {
+       "from": "2025-02-02",
+       "to": "2025-02-09",
+       "ended": "busted",
+       "codes": 2,
+       "restarts": 0,
+       "savings": 311.0,
+       "winning": 0.0,
+       "net": -689.0
+      },
+      {
+       "from": "2025-02-15",
+       "to": "2025-02-15",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-02-16",
+       "to": "2025-02-16",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-02-22",
+       "to": "2025-02-22",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-02-23",
+       "to": "2025-02-23",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-03-08",
+       "to": "2025-03-08",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-03-16",
+       "to": "2025-03-16",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-04-05",
+       "to": "2025-04-05",
+       "ended": "busted",
+       "codes": 1,
+       "restarts": 0,
+       "savings": 0.0,
+       "winning": 0.0,
+       "net": -1000.0
+      },
+      {
+       "from": "2025-09-13",
+       "to": "2026-03-14",
+       "ended": "busted",
+       "codes": 16,
+       "restarts": 3,
+       "savings": 956.6,
+       "winning": 0.0,
+       "net": -43.4
+      }
+     ]
+    },
+    "bootstrap": {
+     "runs": 20000,
+     "completed_pct": 0.09,
+     "busted_pct": 99.92,
+     "mean_savings_at_end": 270.0,
+     "mean_net": -699.0,
+     "median_net": -806.1,
+     "mean_codes": 2.9
+    },
+    "examples": [
+     [
+      "2024-11-10",
+      false,
+      1.518,
+      5,
+      0.5103,
+      [
+       "Over 1.5",
+       "Over 0.5",
+       "Over 0.5",
+       "Over 1.5",
+       "DNB home"
+      ]
+     ],
+     [
+      "2024-11-23",
+      true,
+      1.541,
+      5,
+      0.5088,
+      [
+       "Home over 0.5",
+       "Over 0.5",
+       "Over 1.5",
+       "Home over 0.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2024-11-30",
+      true,
+      1.576,
+      6,
+      0.4544,
+      [
+       "Over 0.5",
+       "Over 0.5",
+       "Home over 0.5",
+       "Over 0.5",
+       "Over 1.5",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2024-12-07",
+      true,
+      1.505,
+      5,
+      0.5377,
+      [
+       "Home over 0.5",
+       "DNB home",
+       "Home over 0.5",
+       "Over 1.5",
+       "Home over 0.5"
+      ]
+     ],
+     [
+      "2024-12-14",
+      false,
+      1.506,
+      5,
+      0.512,
+      [
+       "Over 0.5",
+       "Home over 0.5",
+       "Over 1.5",
+       "Home over 0.5",
+       "Over 1.5"
+      ]
+     ],
+     [
+      "2024-12-15",
+      true,
+      1.502,
+      6,
+      0.4909,
+      [
+       "Home over 0.5",
+       "Over 0.5",
+       "Home over 0.5",
+       "Over 0.5",
+       "Over 1.5",
+       "Home over 0.5"
+      ]
+     ]
+    ]
+   }
+  }
+ }
+}

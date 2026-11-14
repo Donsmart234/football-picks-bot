@@ -103,8 +103,9 @@ def uid_of(competitor_id: str) -> str:
 
 
 def ladder_leg_ok(l, c: Constraints | None = None) -> bool:
-    """One leg of a 2-odds ladder code: Safe (safety.py: top league incl. national-team quality, market est AND stats
-    model >= 85%, market-specific last-10 rule), stats-confirmed, odds >= ROLLOVER_MIN_ODDS, no under / half /
+    """One leg of a savings ladder code: Safe (safety.py: top league incl. national-team quality, market est AND stats
+    model >= 85%, market-specific last-10 rule), stats-confirmed, odds >= ladder.LEG_MIN_ODDS (1.05 since
+    2026-11-14, 1.12 before: 85% legs price about 1.05-1.15), no under / half /
     time-window market (ladder.py). Kick-off is checked by the caller."""
     import ladder
     if c is None:
@@ -112,7 +113,7 @@ def ladder_leg_ok(l, c: Constraints | None = None) -> bool:
                         min_leg_prob=ladder.MIN_P)
     get = (lambda k, d=None: l.get(k, d)) if isinstance(l, dict) else (lambda k, d=None: getattr(l, k, d))
     return (get("verdict") == "confirmed" and float(get("est") or 0) + 1e-9 >= ladder.MIN_P
-            and float(get("odds") or 0) >= ROLLOVER_MIN_ODDS and c.leg_ok(l, ladder.MIN_P)
+            and float(get("odds") or 0) + 1e-9 >= ladder.LEG_MIN_ODDS and c.leg_ok(l, ladder.MIN_P)
             and safety.is_safe(l))
 
 
@@ -772,9 +773,11 @@ class Scanner:
                 "generated": datetime.fromtimestamp(pool.created, timezone.utc).isoformat(),
                 "disclaimer": "Estimates from prices + team stats, not guarantees. 18+."}
 
-    async def ladder_slip(self, day: str = "today", exclude: set | None = None, fresh: bool = False) -> dict:
-        """2-odds savings ladder code (ladder.py): total odds 1.90-2.15 (target 2.00), the fewest, strongest Safe legs,
-        at most ladder.MAX_LEGS. Safe = safety.py: top-leagues allowlist without domestic cups, national teams only
+    async def ladder_slip(self, day: str = "today", exclude: set | None = None, fresh: bool = False,
+                          band=None) -> dict:
+        """Savings ladder code (ladder.py): total odds inside the plan's band (default 1.50-1.80; 1.90-2.15 for plans
+        started before 2026-11-14), 1-ladder.MAX_LEGS Safe legs, one per match, the highest combined estimate inside
+        the band (fewest legs on ties). Safe = safety.py: top-leagues allowlist without domestic cups, national teams only
         from the FIFA top ~50, market estimate AND stats model each >= 85%, market-specific last-10 record check,
         missing stats = out, no unders, no half / time-window markets. Search order: home / neutral picks in
         high-hit-rate markets (double chance, match Over, handicap / DNB on the stronger side), then home / neutral
@@ -787,7 +790,8 @@ class Scanner:
         soon = datetime.now(timezone.utc) + timedelta(minutes=5)
         allowed = [e for e in pool.events if rollover_allowed(e)]
         await self.ensure_stats(pool, allowed)
-        lo_t, hi_t = ladder.ODDS_LO, ladder.ODDS_HI
+        band = ladder.norm_band(band)
+        lo_t, hi_t = band
         strong: list[Leg] = []
         rejected: dict[str, int] = {}
         near: list[tuple] = []
@@ -797,21 +801,14 @@ class Scanner:
                     continue
                 if ladder_leg_ok(l, c):
                     strong.append(l)
-                elif l.est >= 0.80 and l.odds >= ROLLOVER_MIN_ODDS and "under" not in l.tags:
+                elif l.est >= 0.80 and l.odds + 1e-9 >= ladder.LEG_MIN_ODDS and "under" not in l.tags:
                     why = safety.safe_problem(l) or ("not stats-confirmed" if l.verdict != "confirmed" else "rules")
                     key = re.sub(r" \d+(\.\d+)?% below", " below", why.split(" (")[0].split(":")[0])[:60]
                     rejected[key] = rejected.get(key, 0) + 1
                     if l.p_fit is not None and FAMILIES.get(l.market_id) and FAMILIES[l.market_id].period == "ft":
                         near.append((min(l.est, l.p_stats if l.p_stats is not None else 0.0), l, why))
 
-        def banded(legs: list[Leg]) -> list[Leg]:
-            out: dict[tuple, Leg] = {}
-            for l in legs:      # strongest leg per match per odds band, so short and longer prices can mix
-                b = 0 if l.odds < 1.2 else 1 if l.odds < 1.35 else 2 if l.odds < 1.55 else 3 if l.odds < 1.8 else 4
-                k = (l.event_id, b)
-                if k not in out or l.est > out[k].est:
-                    out[k] = l
-            return list(out.values())
+        banded = ladder_banded
 
         home_first = [l for l in strong if l.side != "away"]
         found = search_combo(banded([l for l in home_first if safety.preferred_market(l)]), lo_t, hi_t,
@@ -828,22 +825,24 @@ class Scanner:
         best_total = math.prod(sorted((l.odds for l in banded(strong)), reverse=True)[:ladder.MAX_LEGS]) \
             if strong else 0.0
         if legs:
-            note = ("Includes a pick that relies on the away team: no home / neutral-only slip reached 2.00 today."
+            note = (f"Includes a pick that relies on the away team: no home / neutral-only code reached "
+                    f"{ladder.band_text(band)} today."
                     if away_used and any(l.side == "away" for l in legs) else "")
         elif not allowed:
-            note = (f"{ladder.HOLD_TEXT} SportyBet lists no top-league or national-team matches in this window.")
+            note = (f"{ladder.hold_text(band)} SportyBet lists no top-league or national-team matches in this window.")
         else:
             noise = ("no goals model", "half / period", "European handicap")
             top_why = sorted(((k, v) for k, v in rejected.items() if not k.startswith(noise)),
                              key=lambda kv: -kv[1])[:3]
-            note = (f"{ladder.HOLD_TEXT} {len(strong)} leg{'s' if len(strong) != 1 else ''} passed the Safe rules "
+            note = (f"{ladder.hold_text(band)} {len(strong)} leg{'s' if len(strong) != 1 else ''} passed the Safe rules "
                     f"(market and stats model each >={ladder.MIN_P:.0%}, last-10 record check) in {len(allowed)} "
                     f"top-league / national-team matches; no 1-{ladder.MAX_LEGS} leg combination lands on "
                     f"{lo_t:.2f}-{hi_t:.2f}" + (f" (best possible {best_total:.2f})" if strong else "") + "."
                     + (" Most common reasons legs were left out: " + "; ".join(f"{k} ({v})" for k, v in top_why)
                        + "." if top_why else ""))
         jl = [l.to_json() for l in legs]
-        return {"tier": "ladder", "label": "Ladder 2.00", "target": ladder.TARGET, "total_odds": round(total, 2),
+        return {"tier": "ladder", "label": ladder.label(band), "target": ladder.plan_odds(band), "band": list(band),
+                "total_odds": round(total, 2),
                 "est_prob": round(est, 4) if legs else 0.0, "reached": bool(legs), "legs": jl,
                 "candidates": len(strong), "note": note, "away_used": away_used and bool(legs),
                 "held": not legs, "safe_legs": [l.to_json() for l in sorted(strong, key=lambda l: -l.est)[:12]],
@@ -853,9 +852,10 @@ class Scanner:
                                  "why": why} for _, l, why in sorted(near, key=lambda x: -x[0])[:10]],
                 "rules": {"min_p": ladder.MIN_P, "leagues": "allowlist (no domestic cups, national teams FIFA top ~50)",
                           "no_unders": True, "full_match": True, "odds": [lo_t, hi_t], "max_legs": ladder.MAX_LEGS,
+                          "leg_min_odds": ladder.LEG_MIN_ODDS, "one_leg_per_match": True,
                           "model_and_market": True, "last10_check": True},
-                "rules_line": ladder.rules_line(),
-                "constraints": c.to_dict(), "constraint_check": verify({"legs": jl, "target": ladder.TARGET}, c,
+                "rules_line": ladder.rules_line(band),
+                "constraints": c.to_dict(), "constraint_check": verify({"legs": jl, "target": ladder.plan_odds(band)}, c,
                                                                        ladder.MIN_P),
                 "day": pool.day, "scanned": pool.scanned,
                 "with_stats": sum(1 for f in pool.forms.values() if f and f.ok), "top_league_matches": len(allowed),
@@ -905,6 +905,22 @@ def _sv(l) -> float:
     """Survival probability used to choose legs: est, plus the push / half-win chance of an Asian line (a push is a
     refund, not a loss). The reported est / est_prob stay full-win only."""
     return min(0.999, getattr(l, "p_noloss", None) or l.est)
+
+LADDER_BANDS = (1.05, 1.08, 1.11, 1.15, 1.2, 1.35, 1.55, 1.8)
+
+
+def ladder_banded(legs: list) -> list:
+    """Strongest leg per match per odds band, so short and longer prices of one match can both be tried. Bands are
+    fine below 1.20 (since 2026-11-14) because 85% legs price 1.05-1.15: one wide band let a 1.02 leg push out the
+    same match's 1.11 leg and the 1.50 code could never be reached."""
+    out: dict = {}
+    for l in legs:
+        b = sum(1 for x in LADDER_BANDS if l.odds >= x)
+        k = (l.event_id, b)
+        if k not in out or l.est > out[k].est:
+            out[k] = l
+    return list(out.values())
+
 
 def search_combo(legs: list[Leg], lo_t: float, hi_t: float, max_legs: int, min_legs: int = 1,
                  shortlist: int = 80, node_cap: int = 250000) -> list[Leg]:
